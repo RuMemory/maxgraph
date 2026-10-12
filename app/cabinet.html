@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><meta name="referrer" content="no-referrer"><link rel="icon" href="data:,">
+<title>Мой кабинет — Maxgraph</title>
+<style>
+:root{
+  /* поверхности */
+  --bg-page:#060419; --surface-1:#0d0b28; --surface-2:#141230; --surface-3:#1c1940;
+  /* текст */
+  --text-1:#ffffff; --text-2:#f7f5ff; --text-3:#c4c2d6; --text-disabled:#4e4e6c;
+  /* акценты */
+  --blue:#2f39ba; --blue-hover:#2a33a3; --blue-text:#7079d5; --blue-50:#d4d7f5; --blue-400:#5b66cb;
+  --pink:#ff5ec4; --pink-hover:#e040a8; --pink-pressed:#c42d8c; --pink-text:#ff5ec4; --on-pink:#060419;
+  --lavender:#bcbef3;
+  /* границы */
+  --border-subtle:#ffffff0f; --border-default:#ffffff1f; --border-strong:#ffffff33;
+  --border-blue:#2f39ba80; --border-pink:#ff5ec44d; --border-lavender:#9299e64d;
+  /* радиусы */
+  --r-s:4px; --r-m:8px; --r-xl:12px; --r-pill:24px;
+  /* шаг сетки 4px: 8/16/20/24/40 */
+  --sp-1:8px; --sp-2:16px; --sp-3:20px; --sp-4:24px; --sp-5:40px;
+  /* статусы (единственные не-beehiiv цвета, семантика) */
+  --ok:#8dc572; --err:#be6464; --warn:#e0b34e;
+  /* шрифты: ClashGrotesk/Satoshi коммерческие и внешние — правило «0 внешних URL»
+     запрещает подгрузку. Подстановка системных с сохранением ПРОПОРЦИЙ шкалы. */
+  --font-disp:"Segoe UI Variable Display","Segoe UI",Inter,system-ui,sans-serif; /* ~ClashGrotesk: 700/800, tight */
+  --font-body:"Segoe UI",Inter,system-ui,sans-serif;                              /* ~Satoshi */
+  --font-mono:"Cascadia Code","JetBrains Mono",Consolas,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--bg-page);color:var(--text-2);font-family:var(--font-body);font-size:16px;line-height:1.5;min-height:100vh;overflow-x:hidden}
+::selection{background:var(--surface-3);color:var(--text-1)}
+:focus-visible{outline:2px solid var(--blue-text);outline-offset:2px;border-radius:var(--r-s)}
+a{color:var(--blue-text)}
+code{font-family:var(--font-mono);font-size:.86em;color:var(--lavender);background:var(--bg-page);border:1px solid var(--border-subtle);padding:1px 6px;border-radius:var(--r-s);word-break:break-all}
+
+/* ---------- каркас ---------- */
+.wrap{max-width:1200px;margin:0 auto;padding:0 var(--sp-4) 72px}
+.top{display:flex;justify-content:space-between;align-items:center;gap:var(--sp-3);padding:26px 0 4px}
+.logo{font-family:var(--font-disp);font-size:20px;font-weight:700;letter-spacing:.02em;line-height:1.15;padding:8px 0;text-decoration:none;color:var(--text-1)}
+.logo small{display:block;font-family:var(--font-mono);font-size:9px;letter-spacing:.3em;font-weight:500;color:var(--text-3)}
+.top-right{display:flex;align-items:center;gap:var(--sp-3)}
+.pulse{display:flex;flex-direction:column;align-items:center;gap:0}
+.pulse canvas{width:140px;height:140px;display:block}
+.pulse-cap{font-family:var(--font-mono);font-size:9px;letter-spacing:.25em;text-transform:uppercase;color:var(--text-3)}
+
+/* ---------- пилюли и чипы ---------- */
+.pill{display:inline-flex;align-items:center;gap:8px;padding:5px 14px;border-radius:var(--r-pill);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;border:1px solid var(--border-default);color:var(--text-3)}
+.pill[hidden]{display:none}
+.pill::before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor;animation:blink 2.4s ease-in-out infinite}
+@keyframes blink{50%{opacity:.35}}
+.pill.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,transparent)}
+.pill.trial{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+.chip{display:inline-block;padding:3px 11px;border-radius:var(--r-pill);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;border:1px solid var(--border-default);color:var(--text-3)}
+.chip.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,transparent)}
+.chip.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+.chip.info{color:var(--blue-text);border-color:var(--border-blue)}
+
+/* ---------- карточки ---------- */
+.card{background:var(--surface-1);border:1px solid var(--border-default);border-radius:var(--r-xl);padding:var(--sp-4)}
+.ptitle{font-family:var(--font-mono);font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:.12em;color:var(--lavender);margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.note{color:var(--text-3);font-size:14px;line-height:1.6;margin-top:12px}
+main>*+*{margin-top:var(--sp-4)}
+
+/* ---------- герой ---------- */
+.hero{text-align:center;padding:var(--sp-5) 0 10px}
+.hero h1{font-family:var(--font-disp);font-weight:700;letter-spacing:-.02em;font-size:clamp(36px,5vw,60px);line-height:1;color:var(--text-1)}
+.welcome{margin-top:12px;color:var(--text-3);font-size:14px}
+
+/* ---------- сетка 2 колонки: подписка / ключ ---------- */
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-3)}
+.kv{display:flex;justify-content:space-between;align-items:baseline;gap:14px;padding:10px 0;border-bottom:1px solid var(--border-subtle);font-size:14px}
+.kv:last-child{border-bottom:none}
+.kv>span:first-child{color:var(--text-3);flex:none}
+.kv .v{text-align:right;min-width:0;color:var(--text-2)}
+.mono{font-family:var(--font-mono);font-size:12.5px;word-break:break-all}
+.tier{font-size:20px;font-weight:700;color:var(--text-1)}
+.strip{display:flex;gap:10px;align-items:flex-start;margin-top:14px;padding:12px 14px;border-radius:var(--r-m);font-size:13px;line-height:1.55;background:var(--surface-2);border:1px solid var(--border-default);color:var(--text-3)}
+.strip svg{flex:none;margin-top:1px}
+.strip.warn svg{color:var(--warn)}
+.strip.ok svg{color:var(--ok)}
+
+/* ---------- код-блоки ---------- */
+pre{position:relative;margin:0;background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:var(--r-m);padding:16px 70px 16px 16px;font-family:var(--font-mono);font-size:12.5px;line-height:1.65;color:var(--lavender);white-space:pre;overflow-x:auto}
+.copy{position:absolute;top:8px;right:8px;min-width:44px;min-height:44px;padding:0 14px;display:inline-flex;align-items:center;justify-content:center;background:var(--surface-2);border:1px solid var(--border-default);border-radius:var(--r-m);color:var(--text-3);font-family:var(--font-body);font-size:11.5px;cursor:pointer;transition:color 150ms ease,border-color 150ms ease}
+.copy:hover{color:var(--text-1);border-color:var(--border-strong)}
+.copy.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 50%,transparent)}
+
+/* ---------- кнопки / инпуты ---------- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;min-height:46px;padding:12px 26px;border:1px solid transparent;border-radius:var(--r-m);font-family:var(--font-body);font-size:14.5px;font-weight:700;color:var(--on-pink);background:var(--pink);cursor:pointer;text-decoration:none;transition:background-color 150ms ease,border-color 150ms ease,color 150ms ease}
+.btn:hover{background:var(--pink-hover)}
+.btn:active{background:var(--pink-pressed)}
+.btn:disabled{opacity:.65;cursor:default}
+.btn-sec{background:var(--blue);color:#ffffff}
+.btn-sec:hover{background:var(--blue-hover)}
+.btn-ghost{background:transparent;border-color:var(--border-default);color:var(--blue-50)}
+.btn-ghost:hover{background:transparent;border-color:var(--border-strong)}
+.btn-ghost:active{background:transparent}
+.tin{background:var(--bg-page);border:1px solid var(--border-default);color:var(--text-1);padding:13px 16px;border-radius:var(--r-m);font-size:15px;font-family:var(--font-mono);outline:none;transition:border-color 150ms ease}
+.tin:focus{border-color:var(--blue-text)}
+.tin::placeholder{color:var(--text-disabled)}
+.err{color:var(--err);font-size:13px;margin-top:12px;min-height:18px}
+
+/* ---------- гейт ---------- */
+.gate{display:flex;justify-content:center;padding:66px 0 30px}
+.gate-card{width:100%;max-width:470px;text-align:center;padding:36px 30px}
+.gate-card h1{font-family:var(--font-disp);font-size:28px;font-weight:700;letter-spacing:-.02em;margin-bottom:8px;color:var(--text-1)}
+.gate-card .tin{width:100%;max-width:340px;margin-top:18px;text-align:center}
+.gate-card .btn{margin-top:16px}
+
+/* ---------- степпер: привязка локального сервера ---------- */
+.steps{margin-top:8px}
+.step{position:relative;padding:0 0 28px 66px}
+.step:last-child{padding-bottom:2px}
+.step::before{content:'';position:absolute;left:23px;top:54px;bottom:4px;width:1px;background:var(--border-default)}
+.step:last-child::before{display:none}
+.step-num{position:absolute;left:0;top:0;width:47px;height:47px;border-radius:var(--r-xl);border:1px solid var(--border-default);background:var(--surface-2);display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:14px;font-weight:700;color:var(--pink-text)}
+.step h4{font-size:18px;font-weight:700;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:3px;color:var(--text-1)}
+.step p{color:var(--text-3);font-size:14px;margin:6px 0 12px;max-width:640px}
+.step pre{max-width:640px}
+.links3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:6px}
+.mini{display:flex;flex-direction:column;gap:5px;min-height:44px;padding:15px 16px;background:var(--surface-2);border:1px solid var(--border-default);border-radius:var(--r-xl);text-decoration:none;transition:border-color 150ms ease}
+.mini:hover{border-color:var(--border-blue)}
+.mini .t{display:flex;align-items:center;gap:9px;color:var(--text-1);font-weight:700;font-size:14px}
+.mini .t svg{color:var(--blue-text);flex:none}
+.mini code{background:none;border:none;padding:0;font-size:11px}
+.mini span{color:var(--text-3);font-size:12.5px;line-height:1.5}
+
+/* ---------- лицензия / покупка ---------- */
+#buyEmailRow{margin:0 0 14px}
+#buyEmailRow .tin{width:300px;max-width:100%;font-size:14px;padding:11px 15px}
+
+/* ---------- конфиги MCP: плоские окна ---------- */
+.wins{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:18px}
+.win{background:var(--surface-1);border:1px solid var(--border-default);border-radius:var(--r-xl);overflow:hidden}
+.win-bar{display:flex;align-items:center;gap:10px;padding:11px 13px;border-bottom:1px solid var(--border-subtle);background:var(--surface-2)}
+.tl{display:flex;gap:6px;flex:none}
+.tl i{width:10px;height:10px;border-radius:50%}
+.tl i:nth-child(1){background:#FF5F57}.tl i:nth-child(2){background:#FEBC2E}.tl i:nth-child(3){background:#28C840}
+.win-bar span{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.04em;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.win pre{border:none;border-radius:0;background:var(--bg-page);padding:14px 60px 14px 14px;max-height:240px;overflow:auto}
+
+/* ---------- адаптив ---------- */
+@media(max-width:860px){
+  .row2,.wins,.links3{grid-template-columns:1fr}
+  .win pre{max-height:none}
+}
+@media(max-width:640px){
+  .top{flex-direction:column;align-items:flex-start;gap:8px}
+  .top-right{width:100%;justify-content:space-between}
+  .hero{padding:28px 0 6px}
+  .card{padding:18px}
+  .step{padding-left:56px}
+  .step-num{width:41px;height:41px;font-size:12.5px}
+  .step::before{left:20px}
+  .gate{padding:36px 0 20px}
+}
+@media (prefers-reduced-motion: reduce){
+  html{scroll-behavior:auto}
+  .pill::before{animation:none}
+  *{transition-duration:.01ms}
+}
+@media (prefers-reduced-transparency: reduce){
+  :root{--border-subtle:#ffffff26;--border-default:#ffffff40;--border-strong:#ffffff59}
+}
+@media (prefers-contrast: more){
+  :root{--text-2:#ffffff;--text-3:#e6e4f5;--border-subtle:#ffffff33;--border-default:#ffffff59}
+  .card,.strip,.mini,.win{border-color:var(--border-strong)}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <a class="logo" href="/">MAXGRAPH<small>CONTEXT MEMORY</small></a>
+  <div class="top-right">
+    <span class="pill" id="hdrPill" hidden></span>
+    <div class="pulse" aria-hidden="true">
+      <canvas id="pulseCv" width="140" height="140"></canvas>
+      <span class="pulse-cap">memory pulse</span>
+    </div>
+  </div>
+</header>
+
+<section id="gate" class="gate">
+  <div class="card gate-card">
+    <h1>Личный кабинет</h1>
+    <p class="note" style="margin:0 auto;max-width:400px">Введи свой личный ключ (mg_…) из письма/страницы активации кода:</p>
+    <input class="tin" id="keyInput" placeholder="mg_…" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')enter()">
+    <div class="err" id="err" role="alert"></div>
+    <button class="btn" onclick="enter()">Войти</button>
+  </div>
+</section>
+
+<main id="cab" style="display:none">
+  <div class="hero">
+    <h1>Твоя вселенная зажжена</h1>
+    <p class="welcome" id="welcome"></p>
+  </div>
+
+  <div class="row2">
+    <section class="card" aria-label="Подписка">
+      <h3 class="ptitle">Подписка</h3>
+      <div class="kv"><span>Тариф</span><span class="v tier" id="tier">—</span></div>
+      <div class="kv"><span>Email</span><span class="v" id="email">—</span></div>
+      <div class="kv"><span>Код активации</span><span class="v mono" id="code">—</span></div>
+      <div class="kv"><span>Кабинет создан</span><span class="v" id="created">—</span></div>
+      <div class="kv"><span>Статус</span><span class="v"><span class="pill" id="statusPill">—</span></span></div>
+    </section>
+    <section class="card" aria-label="Личный ключ">
+      <h3 class="ptitle">Твой личный ключ</h3>
+      <pre id="tokenPre">…<button class="copy" onclick="copyPre(this)">копировать</button></pre>
+      <div class="strip warn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6l7-3z"/><path d="M12 9v4M12 16.5v.5"/></svg>
+        <span>Ключ привязан к твоему коду навсегда. Не публикуй его — он открывает твою память.</span>
+      </div>
+    </section>
+  </div>
+
+  <section class="card" aria-label="Привязка локального сервера">
+    <h3 class="ptitle">Привязка локального сервера <span class="chip info">self-hosted</span></h3>
+    <p class="note" style="margin:0 0 14px">Твой сервер — твои данные: память живёт на твоей машине, облако хранит только лицензию.</p>
+    <div class="steps">
+
+      <div class="step">
+        <div class="step-num" aria-hidden="true">01</div>
+        <h4>Запусти сервер <span class="chip info">2 минуты</span></h4>
+        <p>Нужен только Docker. Клонируй репозиторий и подними контейнер:</p>
+        <pre id="setupPre">git clone https://github.com/RuMemory/maxgraph
+cd maxgraph
+cp .env.example .env
+docker compose up -d --build
+<button class="copy" onclick="copyPre(this)">копировать</button></pre>
+      </div>
+
+      <div class="step">
+        <div class="step-num" aria-hidden="true">02</div>
+        <h4>Активируй лицензию <span class="chip warn" id="s2chip">доступно после оплаты</span></h4>
+        <p>Открой <code>http://localhost:8787/app</code> на своём компьютере и введи license key. Локальный сервер сам свяжется с магазином и подтвердит ключ — онлайн-валидация проходит один раз, дальше всё работает офлайн.</p>
+        <button class="btn btn-ghost" id="s2btn" onclick="step2()">Перейти к оплате</button>
+      </div>
+
+      <div class="step">
+        <div class="step-num" aria-hidden="true">03</div>
+        <h4>Смотри память вживую</h4>
+        <p>Оставь вкладку открытой и наблюдай, как агент зажигает новые звёзды в твоём графе.</p>
+        <div class="links3">
+          <a class="mini" href="http://localhost:8787/app" target="_blank" rel="noopener">
+            <span class="t"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="11" cy="17" r="2.5"/><path d="M8.2 7.1l7.4.6M7.2 8.4l2.9 6.2M16.9 10.2l-4.1 4.6"/></svg>Открыть дашборд</span>
+            <code>http://localhost:8787/app</code>
+            <span>Живой граф памяти, обновляется каждые 8 с.</span>
+          </a>
+          <a class="mini" href="http://localhost:8787/app" target="_blank" rel="noopener">
+            <span class="t"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></svg>Таймлайн</span>
+            <code>вкладка в дашборде</code>
+            <span>Все мутации графа: что, когда и кем записано.</span>
+          </a>
+          <a class="mini" href="http://localhost:8787/app" target="_blank" rel="noopener">
+            <span class="t"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v11m0 0l-4-4m4 4l4-4"/><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>Экспорт</span>
+            <code>кнопка Export в дашборде</code>
+            <span>Полный бэкап памяти одним JSON-файлом.</span>
+          </a>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="card" id="licCard" style="display:none" aria-label="License key">
+    <h3 class="ptitle">License key (self-hosted) <span class="chip ok">оплачен</span></h3>
+    <pre id="licPre">…<button class="copy" onclick="copyPre(this)">копировать</button></pre>
+    <p class="note">Введи ключ в дашборде <code>http://localhost:8787/app</code> своей установки или вызови <code>POST /api/license/activate {"key":"…"}</code>. Оплачен: <span id="paidAt">—</span>. Действует до: <span id="paidUntil">—</span>.</p>
+  </section>
+
+  <section class="card" id="buyCard" style="display:none" aria-label="Покупка Pro">
+    <h3 class="ptitle">Перейти на оплаченный план</h3>
+    <p class="note" style="margin:0 0 14px">Облачный триал не включает license key для self-hosted. Оплата Pro — от 149₽/мес: license key + код закрепляются за этим кабинетом автоматически. Выгоднее на 3/6/12 мес (−11/−16/−27%) — на <a href="/#pricing">лендинге</a>.</p>
+    <div id="buyEmailRow" style="display:none"><input class="tin" id="buyEmail" type="email" placeholder="name@example.com" autocomplete="email"></div>
+    <button class="btn" id="buyBtn" onclick="buyPro()">Купить Pro — 149₽/мес</button>
+    <div class="err" id="buyErr" role="alert"></div>
+  </section>
+
+  <section aria-label="Подключение агентов">
+    <h3 class="ptitle">Подключение агентов (MCP)</h3>
+    <p class="note" style="margin:0">Облачные конфиги используют endpoint <code>https://rezon-ai.ru/mcp</code> — твой ключ уже подставлен. Вставь конфиг в клиент, перезапусти его — и у агента появятся инструменты памяти.</p>
+    <div class="wins">
+      <div class="win">
+        <div class="win-bar"><span class="tl" aria-hidden="true"><i></i><i></i><i></i></span><span>claude_desktop_config.json</span></div>
+        <pre id="cfgClaude">…<button class="copy" onclick="copyPre(this)">копировать</button></pre>
+      </div>
+      <div class="win">
+        <div class="win-bar"><span class="tl" aria-hidden="true"><i></i><i></i><i></i></span><span>deepseek harness — cordis patch</span></div>
+        <pre id="cfgDsh">…<button class="copy" onclick="copyPre(this)">копировать</button></pre>
+      </div>
+      <div class="win">
+        <div class="win-bar"><span class="tl" aria-hidden="true"><i></i><i></i><i></i></span><span>любой агент — rest</span></div>
+        <pre id="cfgRest">…<button class="copy" onclick="copyPre(this)">копировать</button></pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" aria-label="Статус облака">
+    <h3 class="ptitle">Статус облака</h3>
+    <div class="strip ok" style="margin-top:0">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>
+      <span>Твой личный ключ и тариф закреплены за этим кабинетом навсегда. Личные графы и профили провайдеров (Claude / GPT / Kimi / GLM / Hermes) включаются обновлением v0.6 «Кабинет»: при запуске всё заработает автоматически, а цена раннего доступа останется твоей.</span>
+    </div>
+  </section>
+</main>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const saved=localStorage.getItem('mg_cabinet_key');
+const urlKey=new URLSearchParams(location.search).get('key');
+const key=urlKey||saved;
+let CAB_EMAIL=null,PAID=false,LIC_KEY=null;
+const RM=matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+function enter(){const k=$('keyInput').value.trim();if(!k)return;localStorage.setItem('mg_cabinet_key',k);load(k);}
+
+function copyPre(btn){
+  const pre=btn.parentElement;
+  navigator.clipboard.writeText(pre.innerText.replace('копировать','').trim());
+  btn.textContent='✓';btn.classList.add('ok');
+  setTimeout(()=>{btn.textContent='копировать';btn.classList.remove('ok');},1200);
+}
+
+function step2(){
+  const b=$('s2btn');
+  if(PAID&&LIC_KEY){
+    navigator.clipboard.writeText(LIC_KEY);
+    const t=b.textContent;b.textContent='✓ Скопировано';
+    setTimeout(()=>{b.textContent=t;},1200);
+  }else{
+    $('buyCard').scrollIntoView({behavior:RM?'auto':'smooth',block:'center'});
+    setTimeout(()=>$('buyBtn').focus({preventScroll:true}),RM?0:450);
+  }
+}
+
+async function load(k){
+  const r=await fetch('/api/cabinet',{headers:{Authorization:'Bearer '+k}});
+  if(!r.ok){if(!urlKey){$('err').textContent='Ключ не подошёл — проверь написание';}else{location.href=location.pathname;}return;}
+  const j=await r.json();
+  $('gate').style.display='none';$('cab').style.display='block';
+  $('welcome').textContent='Кабинет '+j.id+(j.paid?' · оплачен':' · облачный триал');
+  $('tier').textContent=j.tierLabel||j.tier;
+  $('email').textContent=j.email||'—';
+  CAB_EMAIL=j.email||null;
+  $('code').textContent=j.code;$('created').textContent=new Date(j.createdAt).toLocaleString('ru');
+  $('statusPill').textContent=j.paid?'оплачен':'триал';
+  $('statusPill').className='pill '+(j.paid?'ok':'trial');
+  const hp=$('hdrPill');hp.hidden=false;hp.textContent=j.paid?'оплачен':'триал';hp.className='pill '+(j.paid?'ok':'trial');
+  PAID=!!j.paid;
+  if(j.paid&&j.licenseKey){
+    LIC_KEY=j.licenseKey;
+    $('licCard').style.display='block';
+    $('licPre').firstChild.textContent=j.licenseKey+'\n';
+    $('paidAt').textContent=j.paidAt?new Date(j.paidAt).toLocaleString('ru'):'—';
+    $('paidUntil').textContent=j.paidUntil?new Date(j.paidUntil*1000).toLocaleDateString('ru'):'бессрочно';
+  }
+  if(!j.paid){$('buyCard').style.display='block';if(!j.email)$('buyEmailRow').style.display='block';}
+  const s2c=$('s2chip'),s2b=$('s2btn');
+  if(PAID&&LIC_KEY){s2c.textContent='лицензия выдана';s2c.className='chip ok';s2b.textContent='Копировать license key';}
+  else{s2c.textContent='доступно после оплаты';s2c.className='chip warn';s2b.textContent='Перейти к оплате';}
+  $('tokenPre').firstChild.textContent=k+'\n';
+  $('cfgClaude').firstChild.textContent=JSON.stringify({mcpServers:{maxgraph:{url:'https://rezon-ai.ru/mcp',headers:{Authorization:'Bearer '+k}}}},null,2)+'\n';
+  $('cfgDsh').firstChild.textContent='- id: mcp-maxgraph\n  name: "@deepseek-ai/dsh-mcp-client"\n  config:\n    serverName: maxgraph\n    transport: streamable-http\n    url: https://rezon-ai.ru/mcp\n    headers:\n      Authorization: Bearer '+k+'\n';
+  $('cfgRest').firstChild.textContent='curl -H "Authorization: Bearer '+k+'" https://rezon-ai.ru/api/graph\n';
+}
+
+async function buyPro(){
+  const b=$('buyBtn'),e=$('buyErr');e.textContent='';
+  let email=CAB_EMAIL;
+  if(!email){const ie=$('buyEmail');email=ie.value.trim();if(!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)){e.textContent='Введи корректный email';ie.focus();return;}}
+  b.disabled=true;b.textContent='Создаю платёж…';
+  try{
+    const r=await fetch('/billing/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:'pro1',email:email,key:key})});
+    const j=await r.json();
+    if(r.ok&&j.payment_url){
+      try{const u=new URL(j.payment_url);if(u.protocol==='https:'&&(u.hostname==='app.platega.io'||u.hostname==='pay.platega.io')){location.href=j.payment_url;return;}}catch(_){}
+      e.textContent='Некорректная ссылка оплаты — напиши в поддержку';
+    }else{
+      e.textContent=j.error||'Ошибка сети — попробуй ещё раз';
+    }
+  }catch(x){e.textContent='Ошибка сети — попробуй ещё раз';}
+  b.disabled=false;b.textContent='Купить Pro — 149₽/мес';
+}
+
+if(key){if(urlKey)localStorage.setItem('mg_cabinet_key',urlKey);load(key);history.replaceState({},'',location.pathname);}
+
+/* ---------- пульс памяти: сфера-сеть 140px (плоская палитра v3) ---------- */
+(function(){
+  const cv=$('pulseCv');if(!cv||!cv.getContext)return;
+  const ctx=cv.getContext('2d');
+  const S=140,dpr=Math.min(window.devicePixelRatio||1,2);
+  cv.width=S*dpr;cv.height=S*dpr;ctx.scale(dpr,dpr);
+  const N=28,pts=[];
+  for(let i=0;i<N;i++){
+    const th=Math.acos(1-2*(i+.5)/N),ph=Math.PI*(1+Math.sqrt(5))*i;
+    pts.push({x:Math.sin(th)*Math.cos(ph),y:Math.cos(th),z:Math.sin(th)*Math.sin(ph),c:(i===3||i===17)?2:(i%2)});
+  }
+  const edges=[];
+  for(let i=0;i<N;i++)for(let j=i+1;j<N;j++){
+    const dx=pts[i].x-pts[j].x,dy=pts[i].y-pts[j].y,dz=pts[i].z-pts[j].z;
+    if(dx*dx+dy*dy+dz*dz<0.62)edges.push([i,j]);
+  }
+  const COLS=['112,121,213','188,190,243','255,94,196']; /* blue-text / lavender / pink, 2 акцентных узла */
+  const EDGE='47,57,186'; /* blue */
+  const R=52,CX=S/2,CY=S/2,ct=Math.cos(.42),st=Math.sin(.42);
+  function proj(p,rot){
+    const cr=Math.cos(rot),sr=Math.sin(rot);
+    const x=p.x*cr+p.z*sr,z=-p.x*sr+p.z*cr,y=p.y*ct-z*st,zz=p.y*st+z*ct;
+    return{x:CX+x*R,y:CY+y*R,z:zz,c:p.c};
+  }
+  function frame(rot){
+    ctx.clearRect(0,0,S,S);
+    const P=pts.map(p=>proj(p,rot));
+    for(let n=0;n<edges.length;n++){
+      const a=P[edges[n][0]],b=P[edges[n][1]];
+      const al=.10+.25*((a.z+b.z)/2+1)/2;
+      const mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
+      const vx=mx-CX,vy=my-CY,L=Math.hypot(vx,vy)||1;
+      ctx.strokeStyle='rgba('+EDGE+','+al.toFixed(3)+')';
+      ctx.lineWidth=.8;
+      ctx.beginPath();ctx.moveTo(a.x,a.y);
+      ctx.quadraticCurveTo(mx+vx/L*9,my+vy/L*9,b.x,b.y);ctx.stroke();
+    }
+    for(const p of P){
+      const d=(p.z+1)/2,r=1.5+1.2*d,col=COLS[p.c];
+      ctx.fillStyle='rgba('+col+','+(.55+.45*d).toFixed(3)+')';
+      ctx.beginPath();ctx.arc(p.x,p.y,r,0,7);ctx.fill();
+    }
+  }
+  if(RM){frame(.9);return;}
+  const t0=performance.now();
+  requestAnimationFrame(function loop(now){
+    frame((now-t0)/48000*Math.PI*2);
+    requestAnimationFrame(loop);
+  });
+})();
+</script>
+</body>
+</html>

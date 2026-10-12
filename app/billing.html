@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><meta name="referrer" content="no-referrer"><link rel="icon" href="data:,">
+<title>Maxgraph — статус оплаты</title>
+<meta name="description" content="Проверка статуса оплаты Maxgraph">
+<style>
+:root{
+  /* поверхности */
+  --bg-page:#060419; --surface-1:#0d0b28; --surface-2:#141230; --surface-3:#1c1940;
+  /* текст */
+  --text-1:#ffffff; --text-2:#f7f5ff; --text-3:#c4c2d6; --text-disabled:#4e4e6c;
+  /* акценты */
+  --blue:#2f39ba; --blue-hover:#2a33a3; --blue-text:#7079d5; --blue-50:#d4d7f5; --blue-400:#5b66cb;
+  --pink:#ff5ec4; --pink-hover:#e040a8; --pink-pressed:#c42d8c; --pink-text:#ff5ec4; --on-pink:#060419;
+  --lavender:#bcbef3;
+  /* границы */
+  --border-subtle:#ffffff0f; --border-default:#ffffff1f; --border-strong:#ffffff33;
+  --border-blue:#2f39ba80; --border-pink:#ff5ec44d; --border-lavender:#9299e64d;
+  /* радиусы */
+  --r-s:4px; --r-m:8px; --r-xl:12px; --r-pill:24px;
+  /* шаг сетки 4px: 8/16/20/24/40 */
+  --sp-1:8px; --sp-2:16px; --sp-3:20px; --sp-4:24px; --sp-5:40px;
+  /* статусы (единственные не-beehiiv цвета, семантика) */
+  --ok:#8dc572; --err:#be6464; --warn:#e0b34e;
+  /* шрифты: ClashGrotesk/Satoshi коммерческие и внешние — правило «0 внешних URL»
+     запрещает подгрузку. Подстановка системных с сохранением ПРОПОРЦИЙ шкалы. */
+  --font-disp:"Segoe UI Variable Display","Segoe UI",Inter,system-ui,sans-serif; /* ~ClashGrotesk: 700/800, tight */
+  --font-body:"Segoe UI",Inter,system-ui,sans-serif;                              /* ~Satoshi */
+  --font-mono:"Cascadia Code","JetBrains Mono",Consolas,monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg-page);color:var(--text-2);font-family:var(--font-body);font-size:16px;line-height:1.5;overflow-x:hidden;min-height:100vh}
+::selection{background:var(--surface-3);color:var(--text-1)}
+:focus-visible{outline:2px solid var(--blue-text);outline-offset:2px;border-radius:var(--r-s)}
+.wrap{max-width:1120px;margin:0 auto;padding:0 var(--sp-4)}
+nav{display:flex;justify-content:space-between;align-items:center;padding:22px 0;gap:12px}
+.logo{font-family:var(--font-disp);font-size:19px;font-weight:700;letter-spacing:.02em;color:var(--text-1);text-decoration:none;flex-shrink:0}
+.logo small{display:block;font-family:var(--font-mono);font-size:9px;letter-spacing:.3em;font-weight:500;color:var(--text-3)}
+nav .links{display:flex;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+nav .links a{color:var(--text-3);text-decoration:none;margin-left:22px;font-size:13.5px;transition:color 150ms ease}
+nav .links a:hover{color:var(--text-1)}
+.lang{display:inline-flex;align-items:center;gap:5px;margin-left:22px;border:1px solid var(--border-default);border-radius:var(--r-pill);padding:4px 10px;background:var(--surface-1)}
+.lang button{background:none;border:none;color:var(--text-3);cursor:pointer;font-size:12px;font-weight:700;letter-spacing:.6px;padding:1px 3px;font-family:inherit;transition:color 150ms ease}
+.lang button.on{color:var(--pink-text)}
+.lang i{color:var(--text-disabled);font-style:normal;font-size:11px}
+.btn{display:inline-block;padding:13px 30px;border-radius:var(--r-m);font-size:15px;font-weight:600;text-decoration:none;transition:background-color 150ms ease,border-color 150ms ease,color 150ms ease;border:1px solid transparent;cursor:pointer;font-family:inherit}
+.btn.pri{background:var(--pink);color:var(--on-pink)}
+.btn.pri:hover{background:var(--pink-hover)}
+.btn.pri:active{background:var(--pink-pressed)}
+.btn.ghost{border-color:var(--border-default);color:var(--blue-50);background:transparent}
+.btn.ghost:hover{border-color:var(--border-strong)}
+.main{display:flex;justify-content:center;padding:64px 0 90px}
+.panel{background:var(--surface-1);border:1px solid var(--border-default);border-radius:var(--r-xl);padding:44px 38px;max-width:560px;width:100%;text-align:center}
+.panel h1{font-family:var(--font-disp);font-size:25px;font-weight:700;letter-spacing:-.02em;margin:18px 0 10px;color:var(--text-1)}
+.panel p{color:var(--text-3);font-size:14.5px;line-height:1.6}
+.stateic{font-size:42px;line-height:1}
+.stateic.bad{color:var(--err)}
+.bigspin{width:46px;height:46px;margin:8px auto;border:3px solid var(--surface-3);border-top-color:var(--pink);border-radius:50%;animation:rot .8s linear infinite}
+@keyframes rot{to{transform:rotate(360deg)}}
+.refline{margin-top:16px;font-size:12.5px}
+.refline code{color:var(--blue-text);font-family:var(--font-mono)}
+#btnCheck{margin-top:22px}
+.tiername{color:var(--text-1);font-weight:600;font-size:15px;margin-bottom:6px}
+.code{font-family:var(--font-mono);font-size:clamp(20px,4.5vw,28px);letter-spacing:3px;color:var(--ok);background:var(--bg-page);border:1px solid var(--border-subtle);border-radius:var(--r-m);padding:16px 12px;margin:18px 0 22px;user-select:all;word-break:break-all}
+.row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin-top:8px}
+[hidden]{display:none!important}
+@media (prefers-reduced-motion: reduce){
+  .bigspin{animation:none}
+  *{transition-duration:.01ms}
+}
+@media (prefers-reduced-transparency: reduce){
+  :root{--border-subtle:#ffffff26;--border-default:#ffffff40;--border-strong:#ffffff59}
+}
+@media (prefers-contrast: more){
+  :root{--text-2:#ffffff;--text-3:#e6e4f5;--border-subtle:#ffffff33;--border-default:#ffffff59}
+  .panel{border-color:var(--border-strong)}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav>
+<a class="logo" href="/">MAXGRAPH<small>CONTEXT MEMORY</small></a>
+<div class="links">
+<a href="/" data-i18n="nav.home">На главную</a>
+<span class="lang" role="group" aria-label="Language / Язык"><button type="button" data-lang="ru">RU</button><i>|</i><button type="button" data-lang="en">EN</button></span>
+</div>
+</nav>
+
+<main class="main">
+<div class="panel">
+
+  <div id="stWait">
+    <div class="bigspin" role="status" aria-live="polite"></div>
+    <h1 data-i18n="wait.h">Ждём подтверждения оплаты…</h1>
+    <p data-i18n="wait.p">Обычно это занимает меньше минуты. Страница сама проверяет статус каждые 3 секунды — ничего нажимать не нужно.</p>
+    <p class="refline"><span data-i18n="wait.ref">Заказ</span>: <code id="refView"></code></p>
+    <button type="button" class="btn ghost" id="btnCheck" data-i18n="wait.check">Я оплатил — проверить</button>
+  </div>
+
+  <div id="stOk" hidden>
+    <div class="stateic">✨</div>
+    <h1 data-i18n="ok.h">Оплата подтверждена ✨</h1>
+    <p class="tiername" id="tierView"></p>
+    <p data-i18n="ok.p">Вот твой ключ активации — сохрани его:</p>
+    <div class="code" id="codeView" style="font-size:13px;letter-spacing:.5px"></div>
+    <p class="refline" data-i18n="ok.howto" style="text-align:left;line-height:1.6">Куда вставить: в дашборде MaxGraph нажми на статус лицензии вверху (или шестерёнку → «Лицензия») → вставь ключ → «Активировать». Если покупал прямо из дашборда — ключ уже активирован автоматически, ничего делать не нужно.</p>
+    <div class="row">
+      <button type="button" class="btn pri" id="btnCopy" data-i18n="ok.copykey">Скопировать ключ</button>
+    </div>
+    <details id="reserveWrap" style="margin-top:18px;text-align:left">
+      <summary style="cursor:pointer;color:var(--text-3);font-size:13px" data-i18n="ok.reserve">Резервный код (восстановление ключа)</summary>
+      <div class="code" id="codeReserve" style="font-size:15px"></div>
+      <div class="row" style="justify-content:flex-start">
+        <a class="btn ghost" id="btnActivate" href="/" data-i18n="ok.activate">На главную</a>
+        <button type="button" class="btn ghost" id="btnCopy2" data-i18n="ok.copy">Скопировать код</button>
+      </div>
+    </details>
+    <p class="refline" data-i18n="ok.note">Ключ = доступ к твоей памяти. Передача третьим лицам запрещена: чужой доступ к ключу — чужой доступ к графу. При нарушении ключ блокируется без возврата средств.</p>
+  </div>
+
+  <div id="stFail" hidden>
+    <div class="stateic bad">✕</div>
+    <h1 data-i18n="fail.h">Оплата не прошла</h1>
+    <p data-i18n="fail.p">Платёж был отменён или отклонён банком. Деньги не списаны. Попробуй ещё раз — если повторяется, напиши нам через кабинет.</p>
+    <div class="row"><a class="btn pri" href="/#pricing" data-i18n="fail.link">Вернуться к тарифам</a></div>
+  </div>
+
+  <div id="stNf" hidden>
+    <div class="stateic">🛰️</div>
+    <h1 data-i18n="nf.h">Платёж не найден</h1>
+    <p data-i18n="nf.p">По этой ссылке платежа нет. Возможно, ссылка устарела или обрезалась при копировании.</p>
+    <div class="row"><a class="btn ghost" href="/" data-i18n="nf.link">На лендинг</a></div>
+  </div>
+
+  <div id="stTo" hidden>
+    <div class="stateic">⏳</div>
+    <h1 data-i18n="to.h">Оплата занимает больше времени</h1>
+    <p data-i18n="to.p">Код придёт сюда автоматически, как только платёж подтвердится. Страницу можно закрыть и вернуться по ссылке из оплаты.</p>
+    <p class="refline"><span data-i18n="wait.ref">Заказ</span>: <code id="refView2"></code></p>
+  </div>
+
+</div>
+</main>
+</div>
+<script>
+const I18N = {
+ru: {
+ 'meta.title':'Maxgraph — статус оплаты',
+ 'meta.desc':'Проверка статуса оплаты Maxgraph',
+ 'nav.home':'На главную',
+ 'wait.h':'Ждём подтверждения оплаты…',
+ 'wait.p':'Обычно это занимает меньше минуты. Страница сама проверяет статус каждые 3 секунды — ничего нажимать не нужно.',
+ 'wait.ref':'Заказ',
+ 'wait.check':'Я оплатил — проверить',
+ 'ok.h':'Оплата подтверждена ✨',
+ 'ok.p':'Вот твой ключ активации — сохрани его:',
+ 'ok.howto':'Куда вставить: в дашборде MaxGraph нажми на статус лицензии вверху (или шестерёнку → «Лицензия») → вставь ключ → «Активировать». Если покупал прямо из дашборда — ключ уже активирован автоматически, ничего делать не нужно.',
+ 'ok.copykey':'Скопировать ключ',
+ 'ok.reserve':'Резервный код (восстановление ключа)',
+ 'ok.activate':'На главную',
+ 'ok.copy':'Скопировать код',
+ 'ok.copied':'Скопировано ✓',
+ 'ok.note':'Ключ = доступ к твоей памяти. Передача третьим лицам запрещена: чужой доступ к ключу — чужой доступ к графу. При нарушении ключ блокируется без возврата средств.',
+ 'ok.plan.pro':'Maxgraph Pro — 1 месяц',
+ 'ok.plan.pro1':'Maxgraph Pro — 1 месяц',
+ 'ok.plan.pro3':'Maxgraph Pro — 3 месяца',
+ 'ok.plan.pro6':'Maxgraph Pro — 6 месяцев',
+ 'ok.plan.pro12':'Maxgraph Pro — 12 месяцев',
+ 'fail.h':'Оплата не прошла',
+ 'fail.p':'Платёж был отменён или отклонён банком. Деньги не списаны. Попробуй ещё раз — если повторяется, напиши нам через кабинет.',
+ 'fail.link':'Вернуться к тарифам',
+ 'nf.h':'Платёж не найден',
+ 'nf.p':'По этой ссылке платежа нет. Возможно, ссылка устарела или обрезалась при копировании.',
+ 'nf.link':'На лендинг',
+ 'to.h':'Оплата занимает больше времени',
+ 'to.p':'Код придёт сюда автоматически, как только платёж подтвердится. Страницу можно закрыть и вернуться по ссылке из оплаты.'
+},
+en: {
+ 'meta.title':'Maxgraph — payment status',
+ 'meta.desc':'Maxgraph payment status check',
+ 'nav.home':'Home',
+ 'wait.h':'Waiting for payment confirmation…',
+ 'wait.p':'Usually takes under a minute. This page re-checks the status every 3 seconds — no need to touch anything.',
+ 'wait.ref':'Order',
+ 'wait.check':"I've paid — check now",
+ 'ok.h':'Payment confirmed ✨',
+ 'ok.p':"Here's your activation key — keep it safe:",
+ 'ok.howto':'Where to paste it: in the MaxGraph dashboard click the license status at the top (or the gear → "License") → paste the key → "Activate". If you bought right from the dashboard, the key is already activated automatically — nothing to do.',
+ 'ok.copykey':'Copy key',
+ 'ok.reserve':'Backup code (key recovery)',
+ 'ok.activate':'Back to home',
+ 'ok.copy':'Copy code',
+ 'ok.copied':'Copied ✓',
+ 'ok.note':"The key = access to your memory. Sharing it with third parties is prohibited: anyone with the key can read your graph. On violation the key is blocked without refund.",
+ 'ok.plan.pro':'Maxgraph Pro — 1 month',
+ 'ok.plan.pro1':'Maxgraph Pro — 1 month',
+ 'ok.plan.pro3':'Maxgraph Pro — 3 months',
+ 'ok.plan.pro6':'Maxgraph Pro — 6 months',
+ 'ok.plan.pro12':'Maxgraph Pro — 12 months',
+ 'fail.h':"Payment didn't go through",
+ 'fail.p':'The payment was canceled or declined. No money was charged. Try again — if it keeps failing, contact us via the cabinet.',
+ 'fail.link':'Back to pricing',
+ 'nf.h':'Payment not found',
+ 'nf.p':'No payment exists for this link. It may be outdated or got cut off when copied.',
+ 'nf.link':'Back to landing',
+ 'to.h':'Payment is taking longer',
+ 'to.p':'Your code will appear here automatically once the payment confirms. You can close this page and come back via the payment link.'
+}
+};
+
+let LANG = (() => {
+  const saved = localStorage.getItem('mg_lang');
+  if (saved === 'ru' || saved === 'en') return saved;
+  const nl = (navigator.language || '').toLowerCase();
+  return nl ? (nl.startsWith('ru') ? 'ru' : 'en') : 'ru';
+})();
+
+function t(k){ return (I18N[LANG] && I18N[LANG][k]) ?? I18N.ru[k] ?? k; }
+
+let paid = null; // {code, plan} — чтобы переводить динамику при смене языка
+function renderDyn(){
+  if (!paid) return;
+  const pid = paid.plan || paid.tier || 'pro1';
+  document.getElementById('tierView').textContent = I18N[LANG]['ok.plan.' + pid] || I18N.ru['ok.plan.' + pid] || pid;
+}
+
+function applyLang(){
+  document.documentElement.lang = LANG;
+  document.title = t('meta.title');
+  document.querySelector('meta[name="description"]').setAttribute('content', t('meta.desc'));
+  document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
+  document.querySelectorAll('[data-lang]').forEach(b => b.classList.toggle('on', b.dataset.lang === LANG));
+  renderDyn();
+}
+function setLang(l){ if (l === LANG) return; LANG = l; localStorage.setItem('mg_lang', l); applyLang(); }
+document.querySelectorAll('[data-lang]').forEach(b => b.addEventListener('click', () => setLang(b.dataset.lang)));
+applyLang();
+
+// ---- опрос статуса платежа ----
+const ref = new URLSearchParams(location.search).get('ref') || '';
+const STATES = ['stWait', 'stOk', 'stFail', 'stNf', 'stTo'];
+const TIMEOUT = 10 * 60 * 1000; // 10 минут
+let timer = null, done = false, lastManual = 0;
+const startedAt = Date.now();
+
+function setState(id){ STATES.forEach(s => { document.getElementById(s).hidden = (s !== id); }); }
+function stop(){ done = true; if (timer){ clearInterval(timer); timer = null; } }
+
+async function check(){
+  if (done) return;
+  if (Date.now() - startedAt > TIMEOUT){ setState('stTo'); stop(); return; }
+  try{
+    const r = await fetch('/api/billing/status', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ref})});  // ref в теле, не в query — не оседает в access-логах (v0.18.0)
+    if (r.status === 404){ setState('stNf'); stop(); return; }
+    if (!r.ok) return; // 429/5xx — попробуем на следующем тике
+    const j = await r.json();
+    const s = String(j.status || '').toLowerCase();
+    if (j.code && /confirm|success|paid|complet/.test(s)){
+      paid = {code: j.code, key: j.licenseKey || '', plan: j.plan, tier: j.tier || 'pro'};
+      // v0.22.2: кабинет отменён — ключ выше на странице, вставляется в дашборд локально
+      document.getElementById('codeView').textContent = j.licenseKey || j.code;
+      document.getElementById('codeReserve').textContent = j.code;
+      document.getElementById('reserveWrap').hidden = false;
+      renderDyn();
+      setState('stOk'); stop(); return;
+    }
+    if (/cancel|fail|expire|reject/.test(s)){ setState('stFail'); stop(); return; }
+    // created/pending — продолжаем ждать
+  }catch(e){ /* сеть моргнула — следующий тик */ }
+}
+
+document.getElementById('btnCheck').addEventListener('click', () => {
+  if (done || Date.now() - lastManual < 1500) return;
+  lastManual = Date.now();
+  check();
+});
+
+document.getElementById('btnCopy').addEventListener('click', async () => {
+  const c = document.getElementById('codeView').textContent;
+  try{ await navigator.clipboard.writeText(c); }
+  catch(e){
+    const ta = document.createElement('textarea');
+    ta.value = c; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); ta.remove();
+  }
+  const b = document.getElementById('btnCopy');
+  b.textContent = t('ok.copied');
+  setTimeout(() => { b.textContent = t('ok.copykey'); }, 1600);
+});
+
+document.getElementById('btnCopy2').addEventListener('click', async () => {
+  const c = document.getElementById('codeReserve').textContent;
+  try{ await navigator.clipboard.writeText(c); }
+  catch(e){
+    const ta = document.createElement('textarea');
+    ta.value = c; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); ta.remove();
+  }
+  const b = document.getElementById('btnCopy2');
+  b.textContent = t('ok.copied');
+  setTimeout(() => { b.textContent = t('ok.copy'); }, 1600);
+});
+
+if (!ref){ setState('stNf'); }
+else {
+  document.getElementById('refView').textContent = ref;
+  document.getElementById('refView2').textContent = ref;
+  setState('stWait');
+  check();
+  timer = setInterval(check, 3000);
+}
+</script>
+</body>
+</html>

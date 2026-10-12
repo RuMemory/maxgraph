@@ -1,0 +1,12 @@
+data/
+data-local/
+.env
+*.tmp
+__pycache__/
+.DS_Store
+
+.venv/
+.tmp-issues/
+
+# служебные страницы магазина — только на сервере (DATA_DIR hot-override), не в репо
+app/admin.html

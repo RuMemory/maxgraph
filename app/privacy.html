@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Политика конфиденциальности — MaxGraph</title>
+<meta name="description" content="Политика конфиденциальности MaxGraph: что собирает сайт rezon-ai.ru и что не собирает программа на твоём компьютере.">
+<link rel="icon" href="/og.png" type="image/png">
+<style>
+@font-face{font-family:'Caveat';font-style:normal;font-weight:500;font-display:swap;src:url(/static/fonts/caveat-500-cyrillic.woff2) format('woff2');unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:'Caveat';font-style:normal;font-weight:500;font-display:swap;src:url(/static/fonts/caveat-500-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:'Caveat';font-style:normal;font-weight:700;font-display:swap;src:url(/static/fonts/caveat-700-cyrillic.woff2) format('woff2');unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:'Caveat';font-style:normal;font-weight:700;font-display:swap;src:url(/static/fonts/caveat-700-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400;font-display:swap;src:url(/static/fonts/inter-400-cyrillic.woff2) format('woff2');unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400;font-display:swap;src:url(/static/fonts/inter-400-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:500;font-display:swap;src:url(/static/fonts/inter-500-cyrillic.woff2) format('woff2');unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:500;font-display:swap;src:url(/static/fonts/inter-500-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:600;font-display:swap;src:url(/static/fonts/inter-600-cyrillic.woff2) format('woff2');unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:600;font-display:swap;src:url(/static/fonts/inter-600-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:800;font-display:swap;src:url(/static/fonts/inter-800-cyrillic.woff2) format('woff2');unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:800;font-display:swap;src:url(/static/fonts/inter-800-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400;font-display:swap;src:url(/static/fonts/jetbrainsmono-400.woff2) format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:500;font-display:swap;src:url(/static/fonts/jetbrainsmono-500.woff2) format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:700;font-display:swap;src:url(/static/fonts/jetbrainsmono-700.woff2) format('woff2');}
+</style>
+<style>
+:root{--bg:#191613;--panel:#231F1A;--ink:#EDE6DA;--muted:#A79C8B;--dim:#8F8778;--hair:#3A342C;--amber:#D98E32}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font-family:'Inter',system-ui,sans-serif;line-height:1.65;padding:56px 20px 80px}
+.wrap{max-width:720px;margin:0 auto}
+a{color:var(--amber);text-decoration:none}
+a:hover{text-decoration:underline}
+.back{font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.08em;color:var(--muted);display:inline-block;margin-bottom:36px}
+h1{font-size:32px;font-weight:800;letter-spacing:-.02em;margin-bottom:6px}
+.date{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--dim);margin-bottom:28px}
+.intro{color:var(--muted);margin-bottom:28px}
+h2{font-size:17px;font-weight:600;margin:30px 0 8px}
+p{margin-bottom:8px}
+p.sub{margin-left:18px;color:var(--muted)}
+.foot{margin-top:44px;padding-top:18px;border-top:1px solid var(--hair);font-size:14px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="/">← MaxGraph</a>
+  <h1>Политика конфиденциальности</h1>
+  <p class="date">Редакция от 12 октября 2026 г.</p>
+  <p class="intro">Политика конфиденциальности регулирует сбор, использование и защиту информации при использовании сайта rezon-ai.ru (далее — «Сайт») и программы MaxGraph (далее — «Программа»).</p>
+
+  <h2>1. Общие положения</h2>
+  <p class="sub">1.1. Используя Сайт или Программу, ты подтверждаешь согласие с условиями Политики. Если не согласен — прекрати использование.</p>
+  <p class="sub">1.2. Программа устроена так, что твои записи не покидают твой компьютер: память, факты и настройки хранятся локально. Единственное исключение — анонимные технические события без содержимого записей: сигнал об установке и анонимная статистика использования функций. Отключаются переменной окружения TELEMETRY=0.</p>
+
+  <h2>2. Что собирает Сайт</h2>
+  <p class="sub">2.1. Email — при покупке, для чека и доставки ключа активации.</p>
+  <p class="sub">2.2. Техническую информацию (IP-адрес) — для защиты от злоупотреблений и ограничения частоты запросов.</p>
+  <p class="sub">2.3. Платёжные данные обрабатывают платёжные провайдеры (Platega, Digiseller) по своим политикам. Сайт их не получает и не хранит.</p>
+
+  <h2>3. Что собирает Программа</h2>
+  <p class="sub">3.1. Программа работает на твоём компьютере, записи памяти лежат в твоём Docker-volume и наружу не отправляются. Интернет нужен для активации лицензии и, если телеметрия не отключена (TELEMETRY=0), для анонимных технических событий из пункта 1.2.</p>
+
+  <h2>4. Использование информации</h2>
+  <p class="sub">4.1. Email используется для доставки ключа активации, чека, восстановления ключа по резервному коду и ответов поддержки.</p>
+
+  <h2>5. Передача третьим лицам</h2>
+  <p class="sub">5.1. Данные передаются только платёжным провайдерам для проведения оплаты и по требованию закона.</p>
+
+  <h2>6. Хранение и защита</h2>
+  <p class="sub">6.1. Email и связь «резервный код → ключ» хранятся на сервере Сайта, пока действует продажа.</p>
+  <p class="sub">6.2. Записи Программы хранятся только у тебя. Удаление контейнера и volume удаляет их полностью.</p>
+
+  <h2>7. Изменения</h2>
+  <p class="sub">7.1. Актуальная версия всегда на этой странице. Продолжение использования означает согласие с новой редакцией.</p>
+
+  <h2>8. Контакты</h2>
+  <p class="sub">8.1. Почта поддержки: <a href="mailto:help@rezon-ai.ru">help@rezon-ai.ru</a></p>
+  <p class="sub">8.2. Репозиторий: <a href="https://github.com/RuMemory/maxgraph">github.com/RuMemory/maxgraph</a></p>
+
+  <p class="foot">MaxGraph · <a href="/offer">Пользовательское соглашение</a></p>
+</div>
+</body>
+</html>

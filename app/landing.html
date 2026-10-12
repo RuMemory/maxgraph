@@ -1,0 +1,1499 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MaxGraph: хватит объяснять нейросети всё сначала</title>
+<meta name="description" content="MaxGraph: память для работы с нейросетью. Агент помнит проект между сессиями, данные лежат на твоей машине, триал 7 дней без карты.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://rezon-ai.ru/">
+<meta property="og:title" content="MaxGraph: хватит объяснять нейросети всё сначала">
+<meta property="og:description" content="MaxGraph: память для работы с нейросетью. Агент помнит проект между сессиями, данные лежат на твоей машине, триал 7 дней без карты.">
+<meta property="og:image" content="https://rezon-ai.ru/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="canonical" href="https://rezon-ai.ru/">
+<link rel="icon" href="/og.png" type="image/png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "MaxGraph",
+  "alternateName": "MAXGRAPH Context Memory",
+  "description": "Память для работы с ИИ-агентами: записи решений, багов и задач, журнал событий и дашборд в одном Docker-контейнере на твоей машине.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Any (Docker)",
+  "url": "https://rezon-ai.ru/",
+  "downloadUrl": "https://github.com/RuMemory/maxgraph",
+  "inLanguage": ["ru", "en"],
+  "offers": [
+    { "@type": "Offer", "name": "MaxGraph Pro 1 месяц", "price": "149", "priceCurrency": "RUB", "description": "Pro: все функции ядра, семантический поиск из коробки, приоритетная поддержка. Триал 7 дней бесплатно." },
+    { "@type": "Offer", "name": "MaxGraph Pro 3 месяца", "price": "399", "priceCurrency": "RUB", "description": "Pro на 3 месяца: −11% к помесячной оплате." },
+    { "@type": "Offer", "name": "MaxGraph Pro 6 месяцев", "price": "749", "priceCurrency": "RUB", "description": "Pro на 6 месяцев: −16% к помесячной оплате." },
+    { "@type": "Offer", "name": "MaxGraph Pro 12 месяцев", "price": "1299", "priceCurrency": "RUB", "description": "Pro на 12 месяцев: −27% к помесячной оплате, самый выгодный план." }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    { "@type": "Question", "name": "Что такое MaxGraph?", "acceptedAnswer": { "@type": "Answer", "text": "Память для работы с нейросетью. MaxGraph запоминает, что вы с агентом решали и делали, и находит это в следующих сессиях. Всё живёт на твоей машине, каждую запись видно в дашборде." } },
+    { "@type": "Question", "name": "С какими агентами работает?", "acceptedAnswer": { "@type": "Answer", "text": "ChatGPT, Claude, Gemini, Copilot, Cursor, Kimi, DeepSeek Harness и любой клиент с поддержкой MCP. Подключение занимает один промпт из блока установки." } },
+    { "@type": "Question", "name": "Где лежат мои данные?", "acceptedAnswer": { "@type": "Answer", "text": "На твоей машине. Наружу ничего не уходит, телеметрии нет. Интернет нужен один раз для активации, дальше всё работает автономно." } },
+    { "@type": "Question", "name": "Что будет после триала?", "acceptedAnswer": { "@type": "Answer", "text": "Запись новых фактов остановится. Дашборд, поиск и выгрузка останутся доступны без ограничений по сроку: накопленная память остаётся с тобой." } },
+    { "@type": "Question", "name": "Как забрать данные, если решу уйти?", "acceptedAnswer": { "@type": "Answer", "text": "Выгрузка в NDJSON одной кнопкой из дашборда. Это обычный текстовый формат, он читается хоть блокнотом." } },
+    { "@type": "Question", "name": "Поиск отправляет мои тексты наружу?", "acceptedAnswer": { "@type": "Answer", "text": "Нет. Смысловой поиск считает твой собственный MaxGraph на твоей машине, тексты никуда не уходят и не сохраняются. Поиск можно отключить совсем." } }
+  ]
+}
+</script>
+<script>
+/* Классы до первой отрисовки: js = можно прятать то, что оживёт; rm = reduced motion */
+(function(){var d=document.documentElement;d.classList.add('js');
+if(window.matchMedia('(prefers-reduced-motion: reduce)').matches)d.classList.add('rm');})();
+</script>
+<style>
+@font-face{font-family:'Caveat';font-style:normal;font-weight:500;font-display:swap;src:url(/static/fonts/caveat-500-cyrillic.woff2) format('woff2');unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:'Caveat';font-style:normal;font-weight:500;font-display:swap;src:url(/static/fonts/caveat-500-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:'Caveat';font-style:normal;font-weight:700;font-display:swap;src:url(/static/fonts/caveat-700-cyrillic.woff2) format('woff2');unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:'Caveat';font-style:normal;font-weight:700;font-display:swap;src:url(/static/fonts/caveat-700-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400;font-display:swap;src:url(/static/fonts/inter-400-cyrillic.woff2) format('woff2');unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:400;font-display:swap;src:url(/static/fonts/inter-400-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:500;font-display:swap;src:url(/static/fonts/inter-500-cyrillic.woff2) format('woff2');unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:500;font-display:swap;src:url(/static/fonts/inter-500-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:600;font-display:swap;src:url(/static/fonts/inter-600-cyrillic.woff2) format('woff2');unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:600;font-display:swap;src:url(/static/fonts/inter-600-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:800;font-display:swap;src:url(/static/fonts/inter-800-cyrillic.woff2) format('woff2');unicode-range:U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;}
+@font-face{font-family:'Inter';font-style:normal;font-weight:800;font-display:swap;src:url(/static/fonts/inter-800-latin.woff2) format('woff2');unicode-range:U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400;font-display:swap;src:url(/static/fonts/jetbrainsmono-400.woff2) format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:500;font-display:swap;src:url(/static/fonts/jetbrainsmono-500.woff2) format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:700;font-display:swap;src:url(/static/fonts/jetbrainsmono-700.woff2) format('woff2');}
+</style>
+<style>
+/* ═══════════ Токены: палитра F «Тёмная мастерская» (BRIEF §11) ═══════════ */
+:root{
+  --base:#191613;      /* тёплый тёмный фон страницы */
+  --panel:#231F1A;     /* приподнятые панели */
+  --panel-2:#2A241E;   /* вложенные элементы на панелях */
+  --ink:#EDE6DA;       /* светлые тёплые чернила */
+  --muted:#A79C8B;     /* вторичный текст */
+  --dim:#8F8778;       /* мета, самое тихое */
+  --hairline:#3A342C;  /* волосяные линии */
+  --hairline-soft:#2C2721;
+  --amber:#D98E32;     /* единственный акцент: лампа */
+  --amber-deep:#C67F28;/* hover для янтарных кнопок */
+  --on-amber:#191613;  /* текст на янтаре */
+  --err:#E15A4F;       /* тихий красный для ошибок форм */
+  --ok:#5FB87A;        /* тихий зелёный для успеха форм */
+  --ease:cubic-bezier(0.4,0,0.2,1);
+  --mono:'JetBrains Mono',ui-monospace,'Cascadia Mono',Consolas,monospace;
+  --sans:'Inter',-apple-system,'Segoe UI',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+html.rm{scroll-behavior:auto}
+body{
+  font-family:var(--sans);background:var(--base);color:var(--ink);
+  font-size:16px;line-height:1.6;-webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;overflow-x:clip;
+}
+::selection{background:var(--amber);color:var(--on-amber)}
+:focus-visible{outline:2px solid var(--amber);outline-offset:2px;border-radius:4px}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+input{font:inherit;color:inherit}
+a{color:inherit}
+.mono{font-family:var(--mono);font-feature-settings:'tnum'}
+img,svg{display:block;max-width:100%}
+section{scroll-margin-top:80px}
+
+/* ═══════════ Градиентное дыхание: два тёплых radial-gradient по краям ═══════════ */
+body::before,body::after{
+  content:"";position:fixed;inset:-12%;z-index:-1;pointer-events:none;
+}
+body::before{
+  background:radial-gradient(40vw 40vw at 7% 10%, rgba(217,142,50,.060), rgba(217,142,50,0) 68%);
+  animation:breatheA 10s ease-in-out infinite alternate;
+}
+body::after{
+  background:radial-gradient(36vw 36vw at 95% 84%, rgba(198,127,40,.050), rgba(198,127,40,0) 70%);
+  animation:breatheB 11s ease-in-out infinite alternate;
+}
+@keyframes breatheA{
+  from{transform:translate3d(0,0,0);opacity:.75}
+  to{transform:translate3d(2.2vw,1.6vh,0);opacity:1}
+}
+@keyframes breatheB{
+  from{transform:translate3d(0,0,0);opacity:.7}
+  to{transform:translate3d(-1.8vw,-1.4vh,0);opacity:1}
+}
+
+.container{max-width:1120px;margin:0 auto;padding:0 24px}
+
+/* ═══════════ Прогресс скролла ═══════════ */
+#progress{position:fixed;top:0;left:0;right:0;height:2px;background:var(--amber);
+  transform:scaleX(0);transform-origin:0 50%;z-index:60}
+
+/* ═══════════ Навигация ═══════════ */
+.nav{
+  position:sticky;top:0;z-index:50;
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  background:rgba(25,22,19,.78);
+  border-bottom:1px solid var(--hairline-soft);
+}
+.nav-in{display:flex;align-items:center;justify-content:space-between;height:64px;gap:16px}
+.brand{display:flex;align-items:center;gap:10px;text-decoration:none}
+.brand-mark{width:22px;height:22px;flex:none}
+.brand-word{font-weight:800;font-size:17px;letter-spacing:-.01em}
+.nav-links{display:flex;gap:24px;align-items:center}
+.nav-links a{
+  font-size:14px;color:var(--muted);text-decoration:none;
+  transition:color .2s var(--ease);
+}
+.nav-links a:hover{color:var(--ink)}
+.nav-right{display:flex;align-items:center;gap:12px}
+.langseg{display:flex;gap:2px;padding:2px;background:var(--panel);border-radius:6px}
+.langseg button{
+  padding:3px 9px;border-radius:4px;font-family:var(--mono);
+  font-size:11px;font-weight:500;color:var(--muted);
+  transition:background-color .2s var(--ease),color .2s var(--ease);
+}
+.langseg button.on{background:var(--panel-2);color:var(--ink)}
+.nav-copy{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:500;
+  padding:8px 14px;border:1px solid var(--hairline);border-radius:6px;color:var(--ink);
+  transition:border-color .2s var(--ease),background-color .2s var(--ease)}
+.nav-copy:hover{border-color:var(--amber);background:rgba(217,142,50,.07)}
+.nav-copy svg{flex:none}
+
+/* ═══════════ Кнопки ═══════════ */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:10px;
+  border-radius:6px;font-weight:600;text-decoration:none;cursor:pointer;
+  transition:background-color .18s var(--ease),border-color .18s var(--ease);
+}
+.btn-amber{background:var(--amber);color:var(--on-amber);padding:15px 26px;font-size:15.5px}
+.btn-amber:hover{background:var(--amber-deep)}
+.btn-ghost{border:1px solid var(--hairline);color:var(--ink);padding:14px 22px;font-size:15px}
+.btn-ghost:hover{border-color:var(--amber)}
+.btn:disabled{opacity:.6;cursor:wait}
+
+/* ═══════════ Хиро ═══════════ */
+.hero{padding:72px 0 34px}
+.hero-in{display:grid;grid-template-columns:1.15fr .85fr;gap:64px;align-items:center}
+.hero-tag{
+  font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--muted);margin-bottom:22px;
+}
+.hero h1{
+  font-size:clamp(42px,6.4vw,76px);font-weight:800;line-height:1.04;
+  letter-spacing:-.022em;max-width:13ch;
+}
+.hero-sub{margin-top:22px;font-size:18px;line-height:1.55;color:var(--muted);max-width:44ch}
+.hero-cta{margin-top:34px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.hero-fact{
+  margin-top:22px;font-family:var(--mono);font-size:12.5px;color:var(--dim);max-width:60ch;
+}
+.hero-fact b{color:var(--ink);font-weight:500}
+
+/* Правая колонка хиро: живая лента памяти */
+.hero-feed{
+  justify-self:end;width:100%;max-width:400px;
+  border:1px solid var(--hairline);border-radius:6px;background:var(--panel);
+  padding:20px 22px 14px;
+}
+.feed-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding-bottom:12px;margin-bottom:4px;border-bottom:1px solid var(--hairline-soft);
+  font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+}
+.feed-live{display:inline-flex;align-items:center;gap:7px;color:#5FB87A;letter-spacing:.12em}
+.feed-live i{position:relative;width:6px;height:6px;flex:none}
+.feed-live i::before{content:"";position:absolute;inset:0;border-radius:50%;background:#5FB87A}
+.feed-live i::after{content:"";position:absolute;inset:0;border-radius:50%;background:#5FB87A;animation:ping 2s cubic-bezier(0,0,.2,1) infinite}
+@keyframes ping{0%{transform:scale(1);opacity:.7}75%,100%{transform:scale(2.6);opacity:0}}
+.feed-list{list-style:none}
+.feed-list li{
+  display:grid;grid-template-columns:8px 1fr;gap:10px;align-items:baseline;
+  padding:9px 0;border-top:1px solid var(--hairline-soft);
+}
+.feed-list li:first-child{border-top:none}
+.feed-list .fd{width:7px;height:7px;border-radius:50%;background:var(--fc,var(--amber));transform:translateY(-1px)}
+.feed-list .fk{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);display:block;margin-bottom:2px}
+.feed-list .fv{font-size:13.5px;line-height:1.45;color:var(--muted)}
+.feed-list .fv b{color:var(--ink);font-weight:500}
+/* каскадное появление + тихий цикл «пишется память» */
+html.js:not(.rm) .feed-list li{opacity:0;transform:translateY(8px)}
+html.js:not(.rm) .hero-feed.go .feed-list li{
+  opacity:1;transform:none;
+  transition:opacity .45s cubic-bezier(.4,0,.2,1),transform .45s cubic-bezier(.4,0,.2,1);
+  transition-delay:var(--fd,0s);
+}
+html.js:not(.rm) .feed-list li.fresh{opacity:0;transform:translateY(8px)}
+html.js:not(.rm) .feed-list li.fresh.in{opacity:1;transform:none;transition:opacity .45s cubic-bezier(.4,0,.2,1),transform .45s cubic-bezier(.4,0,.2,1)}
+
+/* ═══════════ Лента «работает с» ═══════════ */
+.strip{border-top:1px solid var(--hairline-soft);border-bottom:1px solid var(--hairline-soft);padding:18px 0;margin:26px 0 0}
+.strip-in{display:flex;gap:26px;align-items:center;flex-wrap:wrap}
+.strip-label{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+.strip-agents{display:flex;gap:10px;flex-wrap:wrap}
+.agent-chip{
+  font-family:var(--mono);font-size:12px;color:var(--muted);
+  border:1px solid var(--hairline);border-radius:999px;padding:5px 13px;
+}
+
+/* ═══════════ Секции: общий каркас (заголовки по центру) ═══════════ */
+.section{padding:76px 0}
+.sec-head{max-width:1040px;margin:0 auto 30px;text-align:center}
+.sec-tag{font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+h2{font-size:clamp(28px,4.2vw,42px);font-weight:800;letter-spacing:-.02em;line-height:1.1}
+.sec-sub{margin:12px auto 0;color:var(--muted);font-size:16.5px;max-width:62ch}
+
+/* ═══════════ Как работает ═══════════ */
+.steps{list-style:none;max-width:1040px;margin:0 auto;position:relative}
+/* вертикальная рельса: трек + янтарная заливка, растёт со скроллом (--railp 0..1) */
+.steps::before{content:"";position:absolute;left:35.5px;top:28px;bottom:28px;width:1px;background:var(--hairline)}
+.steps::after{content:"";position:absolute;left:35.5px;top:28px;height:calc(100% - 56px);width:1px;
+  background:var(--amber);transform-origin:top;transform:scaleY(var(--railp,0))}
+.steps li{
+  position:relative;display:grid;grid-template-columns:72px 1fr;gap:18px;
+  padding:22px 0;border-top:1px solid var(--hairline-soft);
+}
+.steps li:first-child{border-top:none;padding-top:6px}
+/* коннектор от рельсы к тексту: дорисовывается, когда шаг у центра вьюпорта */
+.steps li::before{content:"";position:absolute;left:44px;top:27px;width:40px;height:1px;
+  background:var(--amber);transform:scaleX(0);transform-origin:left;transition:transform .25s var(--ease)}
+.steps li.on::before{transform:scaleX(1)}
+.stepnum{font-family:var(--mono);font-size:12px;color:var(--dim);padding-top:5px;transition:color .25s var(--ease)}
+.steps li.on .stepnum{color:var(--amber)}
+.steps h3{font-size:19px;font-weight:600;letter-spacing:-.01em}
+.steps p{margin-top:6px;color:var(--muted);font-size:15.5px;max-width:64ch}
+
+/* ═══════════ Преимущества MaxGraph: 6 фактов ═══════════ */
+.facts{list-style:none;max-width:1040px;margin:0 auto;
+  display:grid;grid-template-columns:1fr 1fr;column-gap:56px}
+.facts li{
+  display:grid;grid-template-columns:14px 1fr;gap:14px;
+  padding:20px 0;border-top:1px solid var(--hairline-soft);
+}
+.facts li:nth-child(-n+2){border-top:none;padding-top:4px}
+.fdot{width:8px;height:8px;border-radius:50%;background:var(--fc,var(--amber));margin-top:9px}
+.facts h3{font-size:16.5px;font-weight:600;letter-spacing:-.01em}
+.facts p{margin-top:6px;font-size:14.5px;line-height:1.6;color:var(--muted)}
+
+/* ═══════════ Демо: тёмный скриншот + оживающая карта памяти поверх ═══════════ */
+.demo-wrap{max-width:1120px;margin:0 auto}
+html.js:not(.rm) .demo-frame{opacity:0;transform:translateY(16px) scale(.995);
+  transition:opacity .6s var(--ease) .1s,transform .6s var(--ease) .1s}
+html.js:not(.rm) .demo-frame.awake{opacity:1;transform:none}
+.demo-frame{
+  border:1px solid var(--hairline);border-radius:8px;overflow:hidden;
+  background:var(--base);
+}
+.shot-wrap{position:relative;aspect-ratio:1428/900;container-type:inline-size}
+.shot-wrap img{width:100%;height:auto}
+/* Подложка цвета панели: закрывает нарисованную в скриншоте карту, чтобы не было двоения */
+.shot-cover{
+  position:absolute;left:6.5126%;top:14.6667%;width:91.3866%;height:58%;
+  background:linear-gradient(180deg,#15120F 0%,#171411 100%);
+}
+.shot-graph{position:absolute;left:6.5126%;top:14.6667%;width:91.3866%;height:58%}
+.mg-edge{fill:none;stroke:#3A342C;stroke-width:1;vector-effect:non-scaling-stroke;
+  stroke-dasharray:100;stroke-dashoffset:0}
+.mg-node{transform-box:fill-box;transform-origin:center}
+.mg-rip{fill:none;stroke-width:1;vector-effect:non-scaling-stroke;
+  transform-box:fill-box;transform-origin:center;pointer-events:none;
+  animation:rip 1.7s ease-out forwards}
+@keyframes rip{from{transform:scale(1);opacity:.55}to{transform:scale(2.6);opacity:0}}
+/* До входа во вьюпорт карта пустая; класс .play запускает заполнение каскадом */
+html.js:not(.rm) .shot-wrap:not(.play) .mg-node{opacity:0}
+html.js:not(.rm) .shot-wrap:not(.play) .mg-edge{stroke-dashoffset:100}
+html.js:not(.rm) .shot-wrap:not(.play) .mg-lab{opacity:0}
+.shot-wrap.play .mg-node{animation:nodeIn .45s cubic-bezier(.34,1.3,.64,1) both;
+  animation-delay:calc(var(--t) + var(--jump,0s))}
+.shot-wrap.play .mg-edge{animation:edgeIn .38s var(--ease) both;
+  animation-delay:calc(var(--t) + var(--jump,0s))}
+.shot-wrap.play .mg-lab{animation:labIn .3s ease-out both;
+  animation-delay:calc(var(--t) + .1s + var(--jump,0s))}
+@keyframes nodeIn{from{transform:scale(0);opacity:0}to{transform:scale(1);opacity:1}}
+@keyframes edgeIn{from{stroke-dashoffset:100}to{stroke-dashoffset:0}}
+@keyframes labIn{from{opacity:0}to{opacity:1}}
+/* Подписи узлов: фиксированный кегль, якорение к ближней стороне от центра */
+.shot-labels{position:absolute;inset:0;pointer-events:none}
+.mg-lab{
+  position:absolute;font-family:var(--mono);font-feature-settings:'tnum';
+  font-size:clamp(9px,.95cqw,10.5px);line-height:1.3;color:var(--muted);
+  white-space:nowrap;
+}
+.mg-lab.s{transform:translate(0,-50%);margin-left:1cqw}
+.mg-lab.e{transform:translate(-100%,-50%);margin-left:-1cqw}
+.mg-lab.c{transform:translate(-50%,0);margin-top:1.1cqw}
+.mg-lab.hub{color:var(--ink);font-size:clamp(9.5px,1.02cqw,11px)}
+/* LIVE-бейдж поверх скриншотного: тихий пульс точки */
+.shot-live{
+  position:absolute;left:15.2661%;top:11%;width:3.8515%;height:2.3333%;
+  display:flex;align-items:center;justify-content:center;gap:.3cqw;
+  background:#1E291B;border:1px solid #315238;border-radius:999px;
+  font-family:var(--mono);font-size:.66cqw;font-weight:500;letter-spacing:.08em;
+  color:#4F9764;
+}
+.shot-live i{width:.38cqw;height:.38cqw;border-radius:50%;background:#529C68;flex:none;
+  animation:livePulse 2.2s ease-in-out infinite}
+@keyframes livePulse{50%{opacity:.35}}
+/* KPI-каверы поверх скриншотных чипов: count-up при входе */
+.kpi{
+  position:absolute;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:.15cqw;background:#14110D;
+  border:1px solid var(--hairline);border-radius:.42cqw;
+}
+.kpi-num{font-weight:600;font-size:1.4cqw;line-height:1;color:var(--ink);
+  font-feature-settings:'tnum'}
+.kpi-lab{font-family:var(--mono);font-size:.63cqw;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--dim)}
+
+/* ═══════════ Установка ═══════════ */
+.install-box{
+  max-width:1040px;margin:0 auto;background:var(--panel);
+  border:1px solid var(--hairline);border-radius:6px;padding:34px 34px 30px;
+}
+.install-sub{color:var(--muted);margin-bottom:24px;font-size:16px}
+.prompt-label{font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--dim);margin-bottom:10px}
+.prompt{
+  font-family:var(--mono);font-size:14.5px;line-height:1.65;
+  background:var(--base);border:1px solid var(--hairline-soft);border-radius:6px;
+  padding:18px 22px;user-select:all;
+}
+.install-actions{display:flex;gap:14px;align-items:center;margin-top:20px;flex-wrap:wrap}
+.install-hint{font-size:13.5px;color:var(--dim)}
+
+/* ═══════════ Цены ═══════════ */
+.plan-card{
+  max-width:1040px;margin:0 auto;background:var(--panel);
+  border:1px solid var(--hairline);border-radius:6px;
+  display:grid;grid-template-columns:1.05fr .95fr;
+}
+.plan-left{padding:32px;border-right:1px solid var(--hairline)}
+.plan-name{font-size:26px;font-weight:800;letter-spacing:-.01em}
+.plan-sub{margin-top:8px;font-size:14px;color:var(--muted)}
+.flist{list-style:none;margin-top:24px}
+.flist li{
+  display:grid;grid-template-columns:34px 1fr;padding:12px 0;
+  border-bottom:1px solid var(--hairline-soft);font-size:14.5px;line-height:1.45;
+}
+.flist li:last-child{border-bottom:none;padding-bottom:2px}
+.fnum{font-family:var(--mono);font-size:12px;color:var(--dim);padding-top:2px}
+.fname{font-weight:600}
+.fdesc{color:var(--muted)}
+.plan-terms{padding:32px;display:flex;flex-direction:column}
+.terms-label{font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--muted);margin-bottom:16px}
+.terms-list{display:flex;flex-direction:column;margin-bottom:24px}
+.term{
+  position:relative;display:flex;justify-content:space-between;align-items:center;
+  width:100%;min-height:48px;padding:10px 16px;margin-bottom:8px;
+  background:#1E1A15;border:1px solid var(--hairline);border-radius:4px;
+  color:var(--ink);font-size:15px;font-weight:500;text-align:left;cursor:pointer;
+  transition:background-color .15s var(--ease),border-color .15s var(--ease);
+}
+.term:last-child{margin-bottom:0}
+.term:hover{background:var(--panel-2)}
+.term.is-selected{background:#2E2820;border-color:var(--amber)}
+.tprice{font-family:var(--mono);font-size:15.5px;font-weight:500;white-space:nowrap;
+  padding-left:16px;text-align:right}
+.tper{display:block;margin-top:2px;font-size:11.5px;color:var(--dim);letter-spacing:.04em}
+.buy{margin-top:auto;height:50px;font-size:15px}
+/* тихая email-строка под кнопкой оплаты */
+.buy-row{display:flex;gap:10px;margin-top:12px}
+.buy-row[hidden]{display:none}
+.buy-row input{
+  flex:1;min-width:0;height:46px;background:var(--base);
+  border:1px solid var(--hairline);border-radius:6px;padding:0 14px;
+  font-size:14px;color:var(--ink);
+}
+.buy-row input::placeholder{color:var(--dim)}
+.buy-row input:focus{border-color:var(--amber);outline:none}
+.buy-row .btn{padding:0 18px;height:46px;font-size:14px;white-space:nowrap;flex:none}
+
+/* тихие сообщения форм (ошибка красным, успех зелёным) */
+.form-err{margin:10px 0 0;font-size:13px;line-height:1.45;color:var(--err);text-align:left}
+.form-err:empty{margin-top:0}
+.form-err.ok{color:var(--ok)}
+
+/* ═══════════ Активация резервного кода ═══════════ */
+.redeem-card{
+  max-width:560px;margin:0 auto;background:var(--panel);
+  border:1px solid var(--hairline);border-radius:6px;padding:30px 32px 32px;
+  text-align:center;
+}
+.redeem-card .sec-tag{margin-bottom:10px}
+.redeem-title{font-size:20px;font-weight:600;letter-spacing:-.01em;margin-bottom:10px}
+.redeem-sub{margin-bottom:20px;font-size:13.5px;color:var(--muted)}
+.redeem-fields{display:flex;flex-direction:column;gap:10px;margin-bottom:12px}
+.redeem-fields input{
+  width:100%;height:48px;background:var(--base);
+  border:1px solid var(--hairline);border-radius:6px;padding:0 16px;
+  font-size:14px;color:var(--ink);
+}
+.redeem-fields input::placeholder{color:var(--dim)}
+.redeem-fields input:focus{border-color:var(--amber);outline:none}
+.redeem-fields .rcode{font-family:var(--mono);text-transform:uppercase}
+.redeem-fields .rcode::placeholder{text-transform:none}
+.redeem-go{width:100%;height:48px}
+.redeem-selfhost{margin-top:6px;font-size:14.5px}
+.redeem-selfhost a{color:var(--amber);text-decoration:none;border-bottom:1px solid var(--hairline);transition:border-color .2s var(--ease)}
+.redeem-selfhost a:hover{border-color:var(--amber)}
+.redeem-ok{margin-top:20px;text-align:left}
+.redeem-keylabel{font-family:var(--mono);font-size:11px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--dim);margin-bottom:8px}
+.redeem-keyrow{display:flex;gap:10px;align-items:stretch}
+#redeemKey{
+  flex:1;min-width:0;font-family:var(--mono);font-size:13px;line-height:1.5;
+  background:var(--base);border:1px solid var(--hairline);border-radius:6px;
+  padding:12px 14px;word-break:break-all;user-select:all;color:var(--ink);
+}
+.redeem-copy{padding:0 18px;font-size:13.5px;white-space:nowrap;flex:none}
+.redeem-where{margin-top:10px;font-size:12.5px;color:var(--dim)}
+
+/* ═══════════ FAQ ═══════════ */
+.faq{max-width:760px;margin:0 auto}
+.faq-item{border-top:1px solid var(--hairline-soft)}
+.faq-item:last-child{border-bottom:1px solid var(--hairline-soft)}
+.faq-q{
+  display:flex;justify-content:space-between;align-items:center;gap:16px;width:100%;
+  padding:19px 2px;font-size:16px;font-weight:600;text-align:left;cursor:pointer;
+}
+.faq-ic{font-family:var(--mono);color:var(--dim);font-size:18px;font-weight:400;
+  transition:transform .3s var(--ease);line-height:1}
+.faq-item.open .faq-ic{transform:rotate(45deg);color:var(--amber)}
+.faq-a{display:grid;grid-template-rows:0fr;transition:grid-template-rows .32s var(--ease)}
+.faq-item.open .faq-a{grid-template-rows:1fr}
+.faq-a-in{overflow:hidden}
+.faq-a-in p{padding:0 2px 20px;color:var(--muted);font-size:15px;max-width:64ch}
+
+/* ═══════════ Футер ═══════════ */
+footer{border-top:1px solid var(--hairline-soft);padding:40px 0 48px}
+.foot-in{display:flex;justify-content:space-between;align-items:flex-start;gap:28px;flex-wrap:wrap}
+.foot-brand p{margin-top:10px;font-size:13.5px;color:var(--dim);max-width:34ch}
+.foot-links{display:flex;gap:20px;flex-wrap:wrap}
+.foot-links a{font-size:13.5px;color:var(--muted);text-decoration:none;transition:color .2s var(--ease)}
+.foot-links a:hover{color:var(--ink)}
+.foot-note{font-size:12.5px;color:var(--dim);font-family:var(--mono)}
+/* правовые ссылки: тихие, через hairline-разделители */
+.foot-legal{display:flex;flex-wrap:wrap;align-items:center;margin-top:26px;padding-top:20px;
+  border-top:1px solid var(--hairline-soft)}
+.foot-legal a{font-size:13px;color:var(--muted);text-decoration:none;transition:color .2s var(--ease)}
+.foot-legal a:hover{color:var(--ink)}
+.foot-legal a + a{margin-left:16px;padding-left:16px;border-left:1px solid var(--hairline)}
+
+/* ═══════════ Reveal по скроллу: fade + подъём на 14px ═══════════ */
+html.js:not(.rm) .reveal{opacity:0;transform:translateY(14px);
+  transition:opacity .5s var(--ease) var(--rd,0s),transform .5s var(--ease) var(--rd,0s)}
+html.js:not(.rm) .reveal.on{opacity:1;transform:none}
+
+/* ═══════════ Адаптив ═══════════ */
+@media (max-width:1020px){
+  .hero-in{grid-template-columns:1fr;gap:40px}
+  .hero-feed{justify-self:stretch;max-width:none}
+}
+@media (max-width:900px){
+  .plan-card{grid-template-columns:1fr}
+  .plan-left{border-right:none;border-bottom:1px solid var(--hairline)}
+  .facts{grid-template-columns:1fr}
+  .facts li:nth-child(-n+2){padding-top:20px}
+  .facts li:nth-child(2){border-top:1px solid var(--hairline-soft)}
+  .facts li:first-child{border-top:none;padding-top:4px}
+}
+@media (max-width:960px){
+  .nav-links{display:none}
+}
+@media (max-width:640px){
+  /* Узкий экран: подписи графа мельче и могут переноситься, чтобы не резались о край */
+  .mg-lab{font-size:8px;white-space:normal;line-height:1.25}
+  .mg-lab.e{text-align:right;max-width:27cqw}
+  .mg-lab.s{max-width:30cqw}
+  .mg-lab.c{max-width:44cqw;text-align:center}
+  .mg-lab.hub{white-space:nowrap}
+}
+@media (max-width:640px){
+  .hero{padding-top:54px}
+  .hero-sub{font-size:16.5px}
+  .section{padding:56px 0}
+  .install-box{padding:24px 20px}
+  .nav-copy .nav-cta-label{display:none}
+  .nav-copy::after{content:attr(data-short)}
+  .steps li{grid-template-columns:1fr;gap:6px}
+  .steps::before,.steps::after,.steps li::before{display:none}
+  .stepnum{padding-top:0}
+  .buy-row{flex-direction:column}
+  .buy-row .btn{width:100%}
+  .redeem-keyrow{flex-direction:column}
+  .redeem-copy{height:42px}
+  .redeem-card{padding:24px 20px}
+  .foot-legal a + a{margin-left:12px;padding-left:12px}
+}
+
+/* ═══════════ Reduced motion: полностью статичная страница, всё видимо ═══════════ */
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  body::before,body::after{animation:none}
+  .reveal{opacity:1;transform:none;transition:none}
+  .demo-frame{opacity:1;transform:none;transition:none}
+  .steps::after{transform:scaleY(1)}
+  .steps li::before{transform:scaleX(1)}
+  .stepnum{color:var(--amber)}
+  *{transition:none !important;animation:none !important}
+}
+</style>
+</head>
+<body>
+
+<div id="progress" aria-hidden="true"></div>
+
+<!-- ═══ Навигация ═══ -->
+<nav class="nav" aria-label="Основная" data-i18n-aria="a11y.nav">
+  <div class="container nav-in">
+    <a class="brand" href="#top" aria-label="MaxGraph, наверх" data-i18n-aria="a11y.top">
+      <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="6.2" cy="6.4" r="2.6" fill="#7DA2E8"/>
+        <circle cx="17.8" cy="6.4" r="2.6" fill="#E15A4F"/>
+        <circle cx="12" cy="17.8" r="2.9" fill="#D98E32"/>
+        <path d="M8.4 7.6 10.8 15.6M15.6 7.6 13.2 15.6M8.8 6.4h6.4" stroke="#3A342C" stroke-width="1.3"/>
+      </svg>
+      <span class="brand-word">MaxGraph</span>
+    </a>
+    <div class="nav-links">
+      <a href="#how" data-i18n="nav.how">Как работает</a>
+      <a href="#memory" data-i18n="nav.memory">Память</a>
+      <a href="#demo" data-i18n="nav.demo">Демо</a>
+      <a href="#install" data-i18n="nav.install">Установка</a>
+      <a href="#pricing" data-i18n="nav.pricing">Цены</a>
+      <a href="#faq" data-i18n="nav.faq">Вопросы</a>
+    </div>
+    <div class="nav-right">
+      <div class="langseg" role="group" aria-label="Язык" data-i18n-aria="a11y.lang">
+        <button type="button" class="on" data-lang="ru" aria-pressed="true">RU</button>
+        <button type="button" data-lang="en" aria-pressed="false">EN</button>
+      </div>
+      <button type="button" class="nav-copy" data-copy="nav" data-short="Промпт">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/>
+        </svg>
+        <span class="nav-cta-label" data-i18n="nav.copy">Скопировать промпт</span>
+      </button>
+    </div>
+  </div>
+</nav>
+
+<!-- ═══ 1. Хиро ═══ -->
+<header class="hero" id="top">
+  <div class="container hero-in">
+    <div class="hero-text">
+      <p class="hero-tag" data-i18n="hero.tag">Память для работы с нейросетью</p>
+      <h1 data-i18n="hero.h1" data-i18n-html>Хватит объяснять<br>нейросети<br>всё сначала.</h1>
+      <p class="hero-sub" data-i18n="hero.sub">MaxGraph запоминает твой проект: что решили, что сломали, что пообещали. Агент находит это сам и начинает там, где вы закончили.</p>
+      <div class="hero-cta">
+        <button type="button" class="btn btn-amber" data-copy="hero" data-i18n="hero.cta">Скопировать промпт установки</button>
+        <a class="btn btn-ghost" href="#demo" data-i18n="hero.demo">Сначала посмотреть демо</a>
+      </div>
+      <p class="hero-fact" data-i18n="hero.fact" data-i18n-html>Экономия токенов примерно <b>43&nbsp;%</b> при работе с MaxGraph.</p>
+    </div>
+    <aside class="hero-feed" aria-label="Пример живой памяти" data-i18n-aria="a11y.feed">
+      <div class="feed-head"><span data-i18n="feed.title">Память пишется</span><span class="feed-live"><i></i>LIVE</span></div>
+      <ul class="feed-list">
+        <li style="--fc:#7DA2E8;--fd:.15s"><span class="fd"></span><span><span class="fk" data-i18n="feed.k1">решение</span><span class="fv" data-i18n="feed.v1" data-i18n-html><b>Офлайн-first</b>, синхронизация потом</span></span></li>
+        <li style="--fc:#E15A4F;--fd:.3s"><span class="fd"></span><span><span class="fk" data-i18n="feed.k2">баг закрыт</span><span class="fv" data-i18n="feed.v2">Краш на Xiaomi при свайпе</span></span></li>
+        <li style="--fc:#E8B93E;--fd:.45s"><span class="fd"></span><span><span class="fk" data-i18n="feed.k3">задача</span><span class="fv" data-i18n="feed.v3">Экран статистики, ждёт иконки</span></span></li>
+        <li style="--fc:#5FB87A;--fd:.6s"><span class="fd"></span><span><span class="fk" data-i18n="feed.k4">сессия</span><span class="fv" data-i18n="feed.v4">12 окт, утро: 3 записи</span></span></li>
+        <li style="--fc:#B07DE0;--fd:.75s"><span class="fd"></span><span><span class="fk" data-i18n="feed.k5">событие</span><span class="fv" data-i18n="feed.v5">Билд 0.9 ушёл в TestFlight</span></span></li>
+        <li style="--fc:#B07DE0;--fd:.9s"><span class="fd"></span><span><span class="fk" data-i18n="feed.k6">запрос</span><span class="fv" data-i18n="feed.v6">Даша просит шаблоны привычек</span></span></li>
+      </ul>
+    </aside>
+  </div>
+</header>
+
+<!-- ═══ Лента совместимости ═══ -->
+<div class="strip">
+  <div class="container strip-in">
+    <span class="strip-label" data-i18n="strip.label">Работает с твоим агентом</span>
+    <div class="strip-agents">
+      <span class="agent-chip">ChatGPT</span>
+      <span class="agent-chip">Claude</span>
+      <span class="agent-chip">Gemini</span>
+      <span class="agent-chip">Copilot</span>
+      <span class="agent-chip">Cursor</span>
+      <span class="agent-chip">Kimi</span>
+      <span class="agent-chip">DeepSeek Harness</span>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ 2. Как работает ═══ -->
+<section class="section" id="how">
+  <div class="container">
+    <div class="sec-head reveal">
+      <p class="sec-tag" data-i18n="how.tag">Как работает</p>
+      <h2 data-i18n="how.h2">Ничего нового учить не придётся</h2>
+      <p class="sec-sub" data-i18n="how.sub">Ты работаешь с агентом как обычно. Память появляется сама, в фоне.</p>
+    </div>
+    <ol class="steps">
+      <li><span class="stepnum mono">01</span><div>
+        <h3 data-i18n="how.s1t">Работаешь как обычно</h3>
+        <p data-i18n="how.s1">Ничего в привычках менять не нужно. Агент сам запоминает важное из вашей работы: решения, баги, договорённости.</p>
+      </div></li>
+      <li><span class="stepnum mono">02</span><div>
+        <h3 data-i18n="how.s2t">Память на твоём ПК</h3>
+        <p data-i18n="how.s2">Вся память лежит на твоём ПК. Открой дашборд и проверь любой факт глазами.</p>
+      </div></li>
+      <li><span class="stepnum mono">03</span><div>
+        <h3 data-i18n="how.s3t">Начал новую сессию</h3>
+        <p data-i18n="how.s3">Агент уже помнит проект. Он сам находит нужное и не делает одну и ту же работу дважды.</p>
+      </div></li>
+    </ol>
+  </div>
+</section>
+
+<!-- ═══ 3. Преимущества MaxGraph ═══ -->
+<section class="section" id="memory">
+  <div class="container">
+    <div class="sec-head reveal">
+      <p class="sec-tag" data-i18n="mem.tag">Память</p>
+      <h2 data-i18n="mem.h2">Преимущества MaxGraph</h2>
+    </div>
+    <ul class="facts reveal" style="--rd:.1s">
+      <li style="--fc:#7DA2E8"><span class="fdot" aria-hidden="true"></span><div>
+        <h3 data-i18n="mem.f1t">Записи живут отдельно от чата</h3>
+        <p data-i18n="mem.f1">Чат можно закрыть, сжать или удалить. Записи это не заденет: они лежат отдельно от диалога, на твоей машине, и переживут сколько угодно сжатий и новых сессий.</p>
+      </div></li>
+      <li style="--fc:#E15A4F"><span class="fdot" aria-hidden="true"></span><div>
+        <h3 data-i18n="mem.f2t">Записывает в момент, когда факт прозвучал</h3>
+        <p data-i18n="mem.f2">Факт попадает в память сразу, как прозвучал. Оборвись диалог хоть через минуту, записанное уже на месте.</p>
+      </div></li>
+      <li style="--fc:#E8B93E"><span class="fdot" aria-hidden="true"></span><div>
+        <h3 data-i18n="mem.f3t">Свежая выжимка в начале каждой сессии</h3>
+        <p data-i18n="mem.f3">Выжимка собирается заново из записей при каждом старте: твои решения дословно, открытые баги, итоги прошлых сессий. Формулировки не плывут, потому что их никто не пересказывает, и наверху всегда то, что актуально именно сейчас.</p>
+      </div></li>
+      <li style="--fc:#5FB87A"><span class="fdot" aria-hidden="true"></span><div>
+        <h3 data-i18n="mem.f4t">Незаконченные дела всплывают сами</h3>
+        <p data-i18n="mem.f4">Открытая задача сама всплывёт в начале следующей сессии. Напоминать о ней специально не нужно.</p>
+      </div></li>
+      <li style="--fc:#B07DE0"><span class="fdot" aria-hidden="true"></span><div>
+        <h3 data-i18n="mem.f5t">Всегда видно, что происходило</h3>
+        <p data-i18n="mem.f5">Все записи идут в общий журнал с датами. Диалог может быть сжат до неузнаваемости, по журналу ты всё равно восстановишь ход работы.</p>
+      </div></li>
+      <li style="--fc:#D98E32"><span class="fdot" aria-hidden="true"></span><div>
+        <h3 data-i18n="mem.f6t">Чат заполняется медленнее</h3>
+        <p data-i18n="mem.f6">Историю проекта больше не таскают за собой в каждом сообщении, поэтому окно дольше остаётся чистым и сжатие наступает позже. Экономия токенов примерно 43&nbsp;% при работе с MaxGraph.</p>
+      </div></li>
+    </ul>
+  </div>
+</section>
+
+<!-- ═══ 4. Демо ═══ -->
+<section class="section" id="demo">
+  <div class="container">
+    <div class="sec-head reveal">
+      <p class="sec-tag" data-i18n="demo.tag">Демо</p>
+      <h2 data-i18n="demo.h2">Понятный и удобный интерфейс</h2>
+    </div>
+    <div class="demo-wrap">
+      <div class="demo-frame">
+        <div class="shot-wrap">
+          <img src="/static/demo-dashboard-dark.png" width="1428" height="900"
+               alt="Живой дашборд MaxGraph: карта памяти проекта Ритм, свежие воспоминания и лента памяти"
+               data-i18n-alt="demo.alt">
+          <div class="shot-cover" aria-hidden="true"></div>
+          <svg class="shot-graph" viewBox="0 0 1305 522" preserveAspectRatio="none" aria-hidden="true">
+            <g>
+              <path class="mg-edge" pathLength="100" style="--t:.32s" d="M652 201 L440 72"/>
+              <path class="mg-edge" pathLength="100" style="--t:.5s" d="M652 201 L858 68"/>
+              <path class="mg-edge" pathLength="100" style="--t:.68s" d="M652 201 L390 194"/>
+              <path class="mg-edge" pathLength="100" style="--t:.86s" d="M652 201 L915 192"/>
+              <path class="mg-edge" pathLength="100" style="--t:1.04s" d="M652 201 L455 332"/>
+              <path class="mg-edge" pathLength="100" style="--t:1.22s" d="M652 201 L832 336"/>
+              <path class="mg-edge" pathLength="100" style="--t:1.4s" d="M652 201 L648 388"/>
+              <path class="mg-edge" pathLength="100" style="--t:.76s" d="M440 72 L390 194"/>
+              <path class="mg-edge" pathLength="100" style="--t:1.12s" d="M390 194 L455 332"/>
+              <path class="mg-edge" pathLength="100" style="--t:.94s" d="M858 68 L915 192"/>
+              <path class="mg-edge" pathLength="100" style="--t:1.3s" d="M915 192 L832 336"/>
+              <path class="mg-edge" pathLength="100" style="--t:1.48s" d="M455 332 L648 388"/>
+            </g>
+            <g id="mgRip"></g>
+            <g transform="translate(652 201)"><g class="mg-node" style="--t:0s"><circle r="13" fill="#D98E32"/></g></g>
+            <g transform="translate(440 72)"><g class="mg-node" style="--t:.2s"><circle r="8" fill="#7DA2E8"/></g></g>
+            <g transform="translate(858 68)"><g class="mg-node" style="--t:.38s"><circle r="8" fill="#E8B93E"/></g></g>
+            <g transform="translate(390 194)"><g class="mg-node" style="--t:.56s"><circle r="8" fill="#B07DE0"/></g></g>
+            <g transform="translate(915 192)"><g class="mg-node" style="--t:.74s"><circle r="8" fill="#5FB87A"/></g></g>
+            <g transform="translate(455 332)"><g class="mg-node" style="--t:.92s"><circle r="8" fill="#E15A4F"/></g></g>
+            <g transform="translate(832 336)"><g class="mg-node" style="--t:1.1s"><circle r="8" fill="#E8B93E"/><path d="M-3.4 .2 L-1.1 2.6 L3.6 -2.6" fill="none" stroke="#191613" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></g></g>
+            <g transform="translate(648 388)"><g class="mg-node" style="--t:1.28s"><circle r="8" fill="#B07DE0"/></g></g>
+          </svg>
+          <div class="shot-labels" aria-hidden="true">
+            <span class="mg-lab s hub" style="--t:.05s;left:53.5714%;top:37.4444%" data-i18n="demo.n1">Ритм</span>
+            <span class="mg-lab e" style="--t:.2s;left:36.2048%;top:23.1111%" data-i18n="demo.n2">Офлайн-first</span>
+            <span class="mg-lab s" style="--t:.38s;left:67.8571%;top:22.6667%" data-i18n="demo.n3">Экран статистики</span>
+            <span class="mg-lab e" style="--t:.56s;left:32.7031%;top:36.6667%" data-i18n="demo.n4">Билд 0.9 в TestFlight</span>
+            <span class="mg-lab s" style="--t:.74s;left:71.8487%;top:36.4444%" data-i18n="demo.n5">12 окт, утро</span>
+            <span class="mg-lab e" style="--t:.92s;left:37.2549%;top:52%" data-i18n="demo.n6">Краш на Xiaomi</span>
+            <span class="mg-lab s" style="--t:1.1s;left:66.0364%;top:52.4444%" data-i18n="demo.n7">Иконка приложения</span>
+            <span class="mg-lab c" style="--t:1.28s;left:51.8908%;top:59.1111%" data-i18n="demo.n8">Шаблоны привычек</span>
+          </div>
+          <div class="shot-live" aria-hidden="true"><i></i>LIVE</div>
+          <div class="kpi" style="left:7.9132%;top:63.8889%;width:7.423%;height:6.5556%" aria-hidden="true"><span class="kpi-num" data-n="8">8</span><span class="kpi-lab" data-i18n="demo.kpi1">воспоминаний</span></div>
+          <div class="kpi" style="left:16.1064%;top:63.8889%;width:6.6527%;height:6.5556%" aria-hidden="true"><span class="kpi-num" data-n="12">12</span><span class="kpi-lab" data-i18n="demo.kpi2">связей</span></div>
+          <div class="kpi" style="left:23.5294%;top:63.8889%;width:6.6527%;height:6.5556%" aria-hidden="true"><span class="kpi-num" data-n="10">10</span><span class="kpi-lab" data-i18n="demo.kpi3">фактов</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 5. Установка ═══ -->
+<section class="section" id="install">
+  <div class="container">
+    <div class="sec-head reveal">
+      <p class="sec-tag" data-i18n="install.tag">Установка</p>
+      <h2 data-i18n="install.h2">Просто попроси своего агента установить MaxGraph</h2>
+    </div>
+    <div class="install-box reveal" style="--rd:.1s">
+      <p class="install-sub" data-i18n="install.sub">Скопируй текст, вставь своему агенту, и он всё поставит и настроит сам.</p>
+      <div class="prompt-label" data-i18n="install.label">Промпт для агента</div>
+      <div class="prompt" id="promptText" data-i18n="install.prompt">Установи MaxGraph — память для нашей работы: https://github.com/RuMemory/maxgraph — добавь MCP-сервер, запусти дашборд и скажи, когда всё будет готово.</div>
+      <div class="install-actions">
+        <button type="button" class="btn btn-amber" data-copy="install" data-i18n="install.copy">Скопировать промпт</button>
+        <span class="install-hint" data-i18n="install.hint">Понадобится Docker. Триал на 7 дней включится сам при первом запуске, карта не нужна.</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 6. Цены ═══ -->
+<section class="section" id="pricing">
+  <div class="container">
+    <div class="sec-head reveal">
+      <p class="sec-tag" data-i18n="pr.tag">Цены</p>
+      <h2 data-i18n="pr.h2">Один тариф, всё включено</h2>
+      <p class="sec-sub trial" data-i18n="pr.trial" data-i18n-html><b>7 дней бесплатно, без карты.</b> Триал встроен и включается сам при первом запуске.</p>
+    </div>
+    <div class="plan-card reveal" style="--rd:.1s">
+      <div class="plan-left">
+        <div class="plan-name">MaxGraph Pro</div>
+        <div class="plan-sub" data-i18n="pr.sub">Разовый платёж за срок. Без автосписаний.</div>
+        <ul class="flist">
+          <li><span class="fnum">01</span><span><span class="fname" data-i18n="pr.f1t">Дашборд.</span> <span class="fdesc" data-i18n="pr.f1">Вся память перед глазами: карта, лента, поиск.</span></span></li>
+          <li><span class="fnum">02</span><span><span class="fname" data-i18n="pr.f2t">Память.</span> <span class="fdesc" data-i18n="pr.f2">Агент сам запоминает решения, баги, задачи и договорённости.</span></span></li>
+          <li><span class="fnum">03</span><span><span class="fname" data-i18n="pr.f3t">Поиск.</span> <span class="fdesc" data-i18n="pr.f3">Находит нужное за секунды, даже то, о чём говорили неделю назад.</span></span></li>
+          <li><span class="fnum">04</span><span><span class="fname" data-i18n="pr.f4t">Экспорт.</span> <span class="fdesc" data-i18n="pr.f4">Все данные в NDJSON в одну кнопку, ничто не заперто.</span></span></li>
+          <li><span class="fnum">05</span><span><span class="fname" data-i18n="pr.f5t">Воспоминания.</span> <span class="fdesc" data-i18n="pr.f5">Лента записей: что и когда запомнено, всегда можно заглянуть.</span></span></li>
+        </ul>
+      </div>
+      <div class="plan-terms">
+        <div class="terms-label" data-i18n="pr.termlabel">Срок</div>
+        <div class="terms-list" role="group" aria-label="Срок подписки" data-i18n-aria="pr.termgroup">
+          <button type="button" class="term" data-term="m1" aria-pressed="false">
+            <span data-i18n="pr.t1">1 месяц</span>
+            <span class="tprice"><span class="tp" data-i18n="pr.p1">149&nbsp;₽</span></span>
+          </button>
+          <button type="button" class="term" data-term="m3" aria-pressed="false">
+            <span data-i18n="pr.t3">3 месяца</span>
+            <span class="tprice"><span class="tp" data-i18n="pr.p3">399&nbsp;₽</span><span class="tper" data-i18n="pr.per3">≈ 133 ₽/мес</span></span>
+          </button>
+          <button type="button" class="term" data-term="m6" aria-pressed="false">
+            <span data-i18n="pr.t6">6 месяцев</span>
+            <span class="tprice"><span class="tp" data-i18n="pr.p6">749&nbsp;₽</span><span class="tper" data-i18n="pr.per6">≈ 125 ₽/мес</span></span>
+          </button>
+          <button type="button" class="term is-selected" data-term="m12" aria-pressed="true">
+            <span data-i18n="pr.t12">12 месяцев</span>
+            <span class="tprice"><span class="tp" data-i18n="pr.p12">1&nbsp;299&nbsp;₽</span><span class="tper" data-i18n="pr.per12">≈ 108 ₽/мес</span></span>
+          </button>
+        </div>
+        <button type="button" class="btn btn-amber buy" id="buyBtn">Оплатить 1&nbsp;299&nbsp;₽</button>
+        <div class="buy-row" id="buyRow" hidden>
+          <input type="email" id="emailInp" autocomplete="email" placeholder="твой@email"
+                 aria-label="Email для чека и ключа"
+                 data-i18n-attr="placeholder:buy.emailph,aria-label:buy.aria">
+          <button type="button" class="btn btn-ghost" id="buyGo" data-i18n="buy.go">Перейти к оплате</button>
+        </div>
+        <p class="form-err" id="buyErr" role="alert"></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 7. Активация резервного кода ═══ -->
+<section class="section" id="redeem">
+  <div class="container">
+    <div class="redeem-card reveal">
+      <p class="sec-tag" data-i18n="redeem.tag">Есть код?</p>
+      <p class="redeem-title" data-i18n="redeem.title">Получи ключ активации</p>
+      <p class="redeem-sub" data-i18n="redeem.sub">Введи резервный код из письма об оплате и email активации.</p>
+      <div id="redeemForm">
+        <div class="redeem-fields">
+          <input type="text" id="redeemCode" class="rcode" autocapitalize="characters" spellcheck="false" autocomplete="off"
+                 placeholder="MG-XXXX-XXXX-XXXX" aria-label="Резервный код"
+                 data-i18n-attr="placeholder:redeem.codeph,aria-label:redeem.codelabel">
+          <input type="email" id="redeemEmail" autocomplete="email"
+                 placeholder="твой@email" aria-label="Email активации"
+                 data-i18n-attr="placeholder:redeem.emailph,aria-label:redeem.emaillabel">
+        </div>
+        <button type="button" class="btn btn-amber redeem-go" id="redeemGo" data-i18n="redeem.go">Получить ключ</button>
+        <p class="form-err" id="redeemErr" role="alert"></p>
+      </div>
+      <p class="redeem-selfhost" id="redeemSelfhost" hidden><a href="https://rezon-ai.ru/#redeem" data-i18n="redeem.selfhost">Активировать код на rezon-ai.ru</a></p>
+      <div class="redeem-ok" id="redeemOk" hidden>
+        <p class="redeem-keylabel" data-i18n="redeem.keylabel">Ключ активации</p>
+        <div class="redeem-keyrow">
+          <code id="redeemKey"></code>
+          <button type="button" class="btn btn-ghost redeem-copy" id="redeemCopy" data-i18n="redeem.copy">Копировать</button>
+        </div>
+        <p class="redeem-where" data-i18n="redeem.where">Вставь ключ в дашборде MaxGraph: шестерёнка «Система», «Лицензия», «Активировать».</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 8. FAQ ═══ -->
+<section class="section" id="faq">
+  <div class="container">
+    <div class="sec-head reveal" style="margin-bottom:8px">
+      <p class="sec-tag" data-i18n="faq.tag">Вопросы</p>
+      <h2 data-i18n="faq.h2">Коротко о важном</h2>
+    </div>
+    <div class="faq reveal" style="--rd:.08s">
+      <div class="faq-item">
+        <button type="button" class="faq-q" aria-expanded="false"><span data-i18n="faq.q1">Что такое MaxGraph?</span><span class="faq-ic" aria-hidden="true">+</span></button>
+        <div class="faq-a"><div class="faq-a-in"><p data-i18n="faq.a1">Память для работы с нейросетью. MaxGraph запоминает, что вы с агентом решали и делали, и находит это в следующих сессиях. Всё живёт на твоей машине, каждую запись видно в дашборде.</p></div></div>
+      </div>
+      <div class="faq-item">
+        <button type="button" class="faq-q" aria-expanded="false"><span data-i18n="faq.q2">С какими агентами работает?</span><span class="faq-ic" aria-hidden="true">+</span></button>
+        <div class="faq-a"><div class="faq-a-in"><p data-i18n="faq.a2">ChatGPT, Claude, Gemini, Copilot, Cursor, Kimi, DeepSeek Harness и любой клиент с поддержкой MCP. Подключение занимает один промпт из блока установки.</p></div></div>
+      </div>
+      <div class="faq-item">
+        <button type="button" class="faq-q" aria-expanded="false"><span data-i18n="faq.q3">Где лежат мои данные?</span><span class="faq-ic" aria-hidden="true">+</span></button>
+        <div class="faq-a"><div class="faq-a-in"><p data-i18n="faq.a3">На твоей машине. Твои записи наружу не уходят. Интернет нужен один раз для активации, дальше всё работает автономно.</p></div></div>
+      </div>
+      <div class="faq-item">
+        <button type="button" class="faq-q" aria-expanded="false"><span data-i18n="faq.q4">Что будет после триала?</span><span class="faq-ic" aria-hidden="true">+</span></button>
+        <div class="faq-a"><div class="faq-a-in"><p data-i18n="faq.a4">Запись новых фактов остановится. Дашборд, поиск и выгрузка останутся доступны без ограничений по сроку: накопленная память остаётся с тобой.</p></div></div>
+      </div>
+      <div class="faq-item">
+        <button type="button" class="faq-q" aria-expanded="false"><span data-i18n="faq.q5">Как забрать данные, если решу уйти?</span><span class="faq-ic" aria-hidden="true">+</span></button>
+        <div class="faq-a"><div class="faq-a-in"><p data-i18n="faq.a5">Выгрузка в NDJSON одной кнопкой из дашборда. Это обычный текстовый формат, он читается хоть блокнотом.</p></div></div>
+      </div>
+      <div class="faq-item">
+        <button type="button" class="faq-q" aria-expanded="false"><span data-i18n="faq.q6">Поиск отправляет мои тексты наружу?</span><span class="faq-ic" aria-hidden="true">+</span></button>
+        <div class="faq-a"><div class="faq-a-in"><p data-i18n="faq.a6">Нет. Смысловой поиск считает твой собственный MaxGraph на твоей машине, тексты никуда не уходят и не сохраняются. Поиск можно отключить совсем.</p></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ Футер ═══ -->
+<footer>
+  <div class="container foot-in">
+    <div class="foot-brand">
+      <a class="brand" href="#top" aria-label="MaxGraph, наверх" data-i18n-aria="a11y.top">
+        <svg class="brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="6.2" cy="6.4" r="2.6" fill="#7DA2E8"/>
+          <circle cx="17.8" cy="6.4" r="2.6" fill="#E15A4F"/>
+          <circle cx="12" cy="17.8" r="2.9" fill="#D98E32"/>
+          <path d="M8.4 7.6 10.8 15.6M15.6 7.6 13.2 15.6M8.8 6.4h6.4" stroke="#3A342C" stroke-width="1.3"/>
+        </svg>
+        <span class="brand-word">MaxGraph</span>
+      </a>
+      <p data-i18n="foot.brand">Память для работы с нейросетью. Живёт на твоей машине.</p>
+    </div>
+    <div class="foot-links">
+      <a href="#memory" data-i18n="nav.memory">Память</a>
+      <a href="#demo" data-i18n="nav.demo">Демо</a>
+      <a href="#install" data-i18n="nav.install">Установка</a>
+      <a href="#pricing" data-i18n="nav.pricing">Цены</a>
+      <a href="#faq" data-i18n="nav.faq">Вопросы</a>
+    </div>
+    <div class="foot-note">© 2026 MaxGraph<br><span data-i18n="foot.note">Почта:</span> help@rezon-ai.ru</div>
+  </div>
+  <div class="container">
+    <div class="foot-legal">
+      <a href="/offer" data-i18n="foot.offer">Оферта</a>
+      <a href="/privacy" data-i18n="foot.privacy">Политика конфиденциальности</a>
+      <a href="mailto:help@rezon-ai.ru">help@rezon-ai.ru</a>
+      <a href="https://github.com/RuMemory/maxgraph" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+var RM = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* ═══ RU/EN словари ═══ */
+var I18N = {
+ru:{
+  'meta.title':'MaxGraph: хватит объяснять нейросети всё сначала',
+  'meta.desc':'MaxGraph: память для работы с нейросетью. Агент помнит проект между сессиями, данные лежат на твоей машине, триал 7 дней без карты.',
+  'nav.how':'Как работает','nav.memory':'Память','nav.demo':'Демо','nav.install':'Установка','nav.pricing':'Цены','nav.faq':'Вопросы',
+  'nav.copy':'Скопировать промпт','nav.short':'Промпт',
+  'hero.tag':'Память для работы с нейросетью',
+  'hero.h1':'Хватит объяснять<br>нейросети<br>всё сначала.',
+  'hero.sub':'MaxGraph запоминает твой проект: что решили, что сломали, что пообещали. Агент находит это сам и начинает там, где вы закончили.',
+  'hero.cta':'Скопировать промпт установки','hero.demo':'Сначала посмотреть демо',
+  'hero.fact':'Экономия токенов примерно <b>43&nbsp;%</b> при работе с MaxGraph.',
+  'feed.title':'Память пишется',
+  'feed.k1':'решение','feed.v1':'<b>Офлайн-first</b>, синхронизация потом',
+  'feed.k2':'баг закрыт','feed.v2':'Краш на Xiaomi при свайпе',
+  'feed.k3':'задача','feed.v3':'Экран статистики, ждёт иконки',
+  'feed.k4':'сессия','feed.v4':'12 окт, утро: 3 записи',
+  'feed.k5':'событие','feed.v5':'Билд 0.9 ушёл в TestFlight',
+  'feed.k6':'запрос','feed.v6':'Даша просит шаблоны привычек',
+  'strip.label':'Работает с твоим агентом',
+  'how.tag':'Как работает','how.h2':'Ничего нового учить не придётся',
+  'how.sub':'Ты работаешь с агентом как обычно. Память появляется сама, в фоне.',
+  'how.s1t':'Работаешь как обычно',
+  'how.s1':'Ничего в привычках менять не нужно. Агент сам запоминает важное из вашей работы: решения, баги, договорённости.',
+  'how.s2t':'Память на твоём ПК',
+  'how.s2':'Вся память лежит на твоём ПК. Открой дашборд и проверь любой факт глазами.',
+  'how.s3t':'Начал новую сессию',
+  'how.s3':'Агент уже помнит проект. Он сам находит нужное и не делает одну и ту же работу дважды.',
+  'mem.tag':'Память','mem.h2':'Преимущества MaxGraph',
+  'mem.f1t':'Записи живут отдельно от чата',
+  'mem.f1':'Чат можно закрыть, сжать или удалить. Записи это не заденет: они лежат отдельно от диалога, на твоей машине, и переживут сколько угодно сжатий и новых сессий.',
+  'mem.f2t':'Записывает в момент, когда факт прозвучал',
+  'mem.f2':'Факт попадает в память сразу, как прозвучал. Оборвись диалог хоть через минуту, записанное уже на месте.',
+  'mem.f3t':'Свежая выжимка в начале каждой сессии',
+  'mem.f3':'Выжимка собирается заново из записей при каждом старте: твои решения дословно, открытые баги, итоги прошлых сессий. Формулировки не плывут, потому что их никто не пересказывает, и наверху всегда то, что актуально именно сейчас.',
+  'mem.f4t':'Незаконченные дела всплывают сами',
+  'mem.f4':'Открытая задача сама всплывёт в начале следующей сессии. Напоминать о ней специально не нужно.',
+  'mem.f5t':'Всегда видно, что происходило',
+  'mem.f5':'Все записи идут в общий журнал с датами. Диалог может быть сжат до неузнаваемости, по журналу ты всё равно восстановишь ход работы.',
+  'mem.f6t':'Чат заполняется медленнее',
+  'mem.f6':'Историю проекта больше не таскают за собой в каждом сообщении, поэтому окно дольше остаётся чистым и сжатие наступает позже. Экономия токенов примерно 43&nbsp;% при работе с MaxGraph.',
+  'demo.tag':'Демо','demo.h2':'Понятный и удобный интерфейс',
+  'demo.alt':'Живой дашборд MaxGraph: карта памяти проекта Ритм, свежие воспоминания и лента памяти',
+  'demo.n1':'Ритм','demo.n2':'Офлайн-first','demo.n3':'Экран статистики','demo.n4':'Билд 0.9 в TestFlight',
+  'demo.n5':'12 окт, утро','demo.n6':'Краш на Xiaomi','demo.n7':'Иконка приложения','demo.n8':'Шаблоны привычек',
+  'demo.kpi1':'воспоминаний','demo.kpi2':'связей','demo.kpi3':'фактов',
+  'a11y.nav':'Основная','a11y.top':'MaxGraph, наверх','a11y.lang':'Язык','a11y.feed':'Пример живой памяти',
+  'install.tag':'Установка','install.h2':'Просто попроси своего агента установить MaxGraph',
+  'install.sub':'Скопируй текст, вставь своему агенту, и он всё поставит и настроит сам.',
+  'install.label':'Промпт для агента','install.copy':'Скопировать промпт',
+  'install.prompt':'Установи MaxGraph — память для нашей работы: https://github.com/RuMemory/maxgraph — добавь MCP-сервер, запусти дашборд и скажи, когда всё будет готово.',
+  'install.hint':'Понадобится Docker. Триал на 7 дней включится сам при первом запуске, карта не нужна.',
+  'copied':'Скопировано',
+  'pr.tag':'Цены','pr.h2':'Один тариф, всё включено',
+  'pr.trial':'<b>7 дней бесплатно, без карты.</b> Триал встроен и включается сам при первом запуске.',
+  'pr.sub':'Разовый платёж за срок. Без автосписаний.',
+  'pr.f1t':'Дашборд.','pr.f1':'Вся память перед глазами: карта, лента, поиск.',
+  'pr.f2t':'Память.','pr.f2':'Агент сам запоминает решения, баги, задачи и договорённости.',
+  'pr.f3t':'Поиск.','pr.f3':'Находит нужное за секунды, даже то, о чём говорили неделю назад.',
+  'pr.f4t':'Экспорт.','pr.f4':'Все данные в NDJSON в одну кнопку, ничто не заперто.',
+  'pr.f5t':'Воспоминания.','pr.f5':'Лента записей: что и когда запомнено, всегда можно заглянуть.',
+  'pr.termlabel':'Срок','pr.termgroup':'Срок подписки',
+  'pr.t1':'1 месяц','pr.t3':'3 месяца','pr.t6':'6 месяцев','pr.t12':'12 месяцев',
+  'buy.emailph':'твой@email','buy.aria':'Email для чека и ключа',
+  'buy.go':'Перейти к оплате','buy.wait':'Создаю платёж…',
+  'buy.err.email':'Введи корректный email','buy.err.net':'Ошибка сети, попробуй ещё раз',
+  'buy.err.url':'Платёжная ссылка не прошла проверку, попробуй позже',
+  'redeem.tag':'Есть код?','redeem.title':'Получи ключ активации',
+  'redeem.sub':'Введи резервный код из письма об оплате и email активации.',
+  'redeem.codeph':'MG-XXXX-XXXX-XXXX','redeem.emailph':'твой@email',
+  'redeem.codelabel':'Резервный код','redeem.emaillabel':'Email активации',
+  'redeem.go':'Получить ключ','redeem.wait':'Проверяю…',
+  'redeem.keylabel':'Ключ активации','redeem.copy':'Копировать','redeem.copied':'Скопировано',
+  'redeem.where':'Вставь ключ в дашборде MaxGraph: шестерёнка «Система», «Лицензия», «Активировать».',
+  'redeem.sent':'Код уже активирован, новый ключ отправлен на email',
+  'redeem.err.code':'Формат кода: MG-XXXX-XXXX-XXXX','redeem.err.email':'Введи корректный email',
+  'redeem.err.net':'Ошибка сети, попробуй ещё раз',
+  'redeem.selfhost':'Активировать код на rezon-ai.ru',
+  'faq.tag':'Вопросы','faq.h2':'Коротко о важном',
+  'faq.q1':'Что такое MaxGraph?',
+  'faq.a1':'Память для работы с нейросетью. MaxGraph запоминает, что вы с агентом решали и делали, и находит это в следующих сессиях. Всё живёт на твоей машине, каждую запись видно в дашборде.',
+  'faq.q2':'С какими агентами работает?',
+  'faq.a2':'ChatGPT, Claude, Gemini, Copilot, Cursor, Kimi, DeepSeek Harness и любой клиент с поддержкой MCP. Подключение занимает один промпт из блока установки.',
+  'faq.q3':'Где лежат мои данные?',
+  'faq.a3':'На твоей машине. Твои записи наружу не уходят. Интернет нужен один раз для активации, дальше всё работает автономно.',
+  'faq.q4':'Что будет после триала?',
+  'faq.a4':'Запись новых фактов остановится. Дашборд, поиск и выгрузка останутся доступны без ограничений по сроку: накопленная память остаётся с тобой.',
+  'faq.q5':'Как забрать данные, если решу уйти?',
+  'faq.a5':'Выгрузка в NDJSON одной кнопкой из дашборда. Это обычный текстовый формат, он читается хоть блокнотом.',
+  'faq.q6':'Поиск отправляет мои тексты наружу?',
+  'faq.a6':'Нет. Смысловой поиск считает твой собственный MaxGraph на твоей машине, тексты никуда не уходят и не сохраняются. Поиск можно отключить совсем.',
+  'foot.brand':'Память для работы с нейросетью. Живёт на твоей машине.',
+  'foot.note':'Почта:',
+  'foot.offer':'Оферта','foot.privacy':'Политика конфиденциальности'
+},
+en:{
+  'meta.title':'MaxGraph: stop explaining everything to the AI from scratch',
+  'meta.desc':'MaxGraph: memory for working with AI. The agent remembers the project between sessions, data stays on your machine, 7-day trial without a card.',
+  'nav.how':'How it works','nav.memory':'Memory','nav.demo':'Demo','nav.install':'Install','nav.pricing':'Pricing','nav.faq':'FAQ',
+  'nav.copy':'Copy prompt','nav.short':'Prompt',
+  'hero.tag':'Memory for working with AI',
+  'hero.h1':'Stop explaining<br>everything to the AI<br>from scratch.',
+  'hero.sub':'MaxGraph remembers your project: what you decided, what broke, what was promised. The agent finds it on its own and picks up where you left off.',
+  'hero.cta':'Copy the install prompt','hero.demo':'Watch the demo first',
+  'hero.fact':'Working with MaxGraph saves about <b>43%</b> of tokens.',
+  'feed.title':'Memory is being written',
+  'feed.k1':'decision','feed.v1':'<b>Offline-first</b>, sync later',
+  'feed.k2':'bug closed','feed.v2':'Crash on Xiaomi when swiping',
+  'feed.k3':'task','feed.v3':'Statistics screen, waiting for icons',
+  'feed.k4':'session','feed.v4':'Oct 12, morning: 3 records',
+  'feed.k5':'event','feed.v5':'Build 0.9 went to TestFlight',
+  'feed.k6':'request','feed.v6':'Dasha asks for habit templates',
+  'strip.label':'Works with your agent',
+  'how.tag':'How it works','how.h2':'Nothing new to learn',
+  'how.sub':'You work with your agent as usual. Memory appears on its own, in the background.',
+  'how.s1t':'Work as usual',
+  'how.s1':'No habits need to change. The agent remembers the important parts of your work on its own: decisions, bugs, agreements.',
+  'how.s2t':'Memory stays on your PC',
+  'how.s2':'All memory lives on your PC. Open the dashboard and check any fact with your own eyes.',
+  'how.s3t':'Start a new session',
+  'how.s3':'The agent already remembers the project. It finds what it needs on its own and never does the same work twice.',
+  'mem.tag':'Memory','mem.h2':'MaxGraph advantages',
+  'mem.f1t':'Records live apart from the chat',
+  'mem.f1':'You can close, compress, or delete the chat. The records stay untouched: they live apart from the conversation, on your machine, and survive any number of compressions and new sessions.',
+  'mem.f2t':'Writes facts down the moment they are said',
+  'mem.f2':'A fact lands in memory the moment it is said. Even if the conversation breaks a minute later, what was recorded is already in place.',
+  'mem.f3t':'A fresh digest at the start of every session',
+  'mem.f3':'The digest is rebuilt from records at every start: your decisions verbatim, open bugs, outcomes of past sessions. Wording does not drift, because nobody retells it, and the top always holds what matters right now.',
+  'mem.f4t':'Unfinished work floats up on its own',
+  'mem.f4':'An open task surfaces by itself at the start of the next session. No special reminders needed.',
+  'mem.f5t':'You can always see what happened',
+  'mem.f5':'Every record goes into a shared journal with dates. The conversation may be compressed beyond recognition, yet the journal still lets you retrace the work.',
+  'mem.f6t':'The chat fills up more slowly',
+  'mem.f6':'Project history no longer rides along in every message, so the window stays clean longer and compression comes later. Working with MaxGraph saves about 43% of tokens.',
+  'demo.tag':'Demo','demo.h2':'A clear and convenient interface',
+  'demo.alt':'Live MaxGraph dashboard: memory map of the Ritm project, recent memories and the memory feed',
+  'demo.n1':'Rhythm','demo.n2':'Offline-first','demo.n3':'Stats screen','demo.n4':'Build 0.9 in TestFlight',
+  'demo.n5':'Oct 12, morning','demo.n6':'Crash on Xiaomi','demo.n7':'App icon','demo.n8':'Habit templates',
+  'demo.kpi1':'memories','demo.kpi2':'links','demo.kpi3':'facts',
+  'a11y.nav':'Primary','a11y.top':'MaxGraph, back to top','a11y.lang':'Language','a11y.feed':'Live memory example',
+  'install.tag':'Install','install.h2':'Just ask your agent to install MaxGraph',
+  'install.sub':'Copy the text, paste it to your agent, and it will install and set up everything itself.',
+  'install.label':'Prompt for your agent','install.copy':'Copy prompt',
+  'install.prompt':'Install MaxGraph — memory for our work together: https://github.com/RuMemory/maxgraph — add the MCP server, start the dashboard, and tell me when everything is ready.',
+  'install.hint':'Docker is required. The 7-day trial turns on by itself on first launch, no card needed.',
+  'copied':'Copied',
+  'pr.tag':'Pricing','pr.h2':'One plan, everything included',
+  'pr.trial':'<b>7 days free, no card.</b> The trial is built in and turns on by itself on first launch.',
+  'pr.sub':'One-time payment per term. No auto-renewal.',
+  'pr.f1t':'Dashboard.','pr.f1':'All memory in front of you: map, feed, search.',
+  'pr.f2t':'Memory.','pr.f2':'The agent remembers decisions, bugs, tasks, and agreements on its own.',
+  'pr.f3t':'Search.','pr.f3':'Finds what you need in seconds, even what was discussed a week ago.',
+  'pr.f4t':'Export.','pr.f4':'All data in NDJSON in one click, nothing is locked in.',
+  'pr.f5t':'Memories.','pr.f5':'A feed of records: what was remembered and when, always open to look inside.',
+  'pr.termlabel':'Term','pr.termgroup':'License term',
+  'pr.t1':'1 month','pr.t3':'3 months','pr.t6':'6 months','pr.t12':'12 months',
+  'buy.emailph':'your@email','buy.aria':'Email for the receipt and key',
+  'buy.go':'Go to payment','buy.wait':'Creating payment…',
+  'buy.err.email':'Enter a valid email','buy.err.net':'Network error, please try again',
+  'buy.err.url':'Payment link failed verification, please try later',
+  'redeem.tag':'Got a code?','redeem.title':'Get your activation key',
+  'redeem.sub':'Enter the backup code from the payment email and the activation email.',
+  'redeem.codeph':'MG-XXXX-XXXX-XXXX','redeem.emailph':'your@email',
+  'redeem.codelabel':'Backup code','redeem.emaillabel':'Activation email',
+  'redeem.go':'Get key','redeem.wait':'Checking…',
+  'redeem.keylabel':'Activation key','redeem.copy':'Copy','redeem.copied':'Copied',
+  'redeem.where':'Paste the key in your MaxGraph dashboard: the “System” gear icon, “License”, “Activate”.',
+  'redeem.sent':'The code is already activated, a new key has been sent to the activation email',
+  'redeem.err.code':'Code format: MG-XXXX-XXXX-XXXX','redeem.err.email':'Enter a valid email',
+  'redeem.err.net':'Network error, please try again',
+  'redeem.selfhost':'Activate your code at rezon-ai.ru',
+  'faq.tag':'FAQ','faq.h2':'The essentials, briefly',
+  'faq.q1':'What is MaxGraph?',
+  'faq.a1':'Memory for working with AI. MaxGraph remembers what you and your agent decided and did, and finds it in later sessions. Everything lives on your machine, and every record is visible in the dashboard.',
+  'faq.q2':'Which agents does it work with?',
+  'faq.a2':'ChatGPT, Claude, Gemini, Copilot, Cursor, Kimi, DeepSeek Harness, and any client with MCP support. Connecting takes one prompt from the install block.',
+  'faq.q3':'Where is my data stored?',
+  'faq.a3':'On your machine. Your records never leave it. Internet is needed once for activation; after that everything works offline.',
+  'faq.q4':'What happens after the trial?',
+  'faq.a4':'Recording new facts will stop. The dashboard, search, and export stay available with no time limit: the memory you accumulated stays with you.',
+  'faq.q5':'How do I take my data if I leave?',
+  'faq.a5':'Export to NDJSON with one button in the dashboard. It is a plain text format that opens in any notepad.',
+  'faq.q6':'Does search send my texts outside?',
+  'faq.a6':'No. Semantic search runs inside your own MaxGraph on your machine; texts never leave it and are not stored. Search can be turned off completely.',
+  'foot.brand':'Memory for working with AI. Lives on your machine.',
+  'foot.note':'Email:',
+  'foot.offer':'Terms','foot.privacy':'Privacy'
+}};
+
+/* Цены по срокам и языкам; tper: тихие помесячные пометки */
+var PRICES = {
+  ru:{m1:'149&nbsp;₽', m3:'399&nbsp;₽', m6:'749&nbsp;₽', m12:'1&nbsp;299&nbsp;₽',
+      per3:'≈ 133 ₽/мес', per6:'≈ 125 ₽/мес', per12:'≈ 108 ₽/мес', buy:'Оплатить '},
+  en:{m1:'$1.99', m3:'$4.99', m6:'$9.99', m12:'$14.99',
+      per3:'≈ $1.66/mo', per6:'≈ $1.67/mo', per12:'≈ $1.25/mo', buy:'Pay '}
+};
+
+/* ═══ Режим инстанса: флаг внедряет сервер перед </head> ═══ */
+var MG_STORE = !(window.__MG_STORE__ && window.__MG_STORE__.store === false);
+var MG_STORE_URL = (window.__MG_STORE__ && window.__MG_STORE__.storeUrl) || 'https://rezon-ai.ru';
+var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+var TERM_PLAN = { m1:'pro1', m3:'pro3', m6:'pro6', m12:'pro12' };
+
+var curLang = 'ru';
+try{ curLang = (localStorage.getItem('mg_lang') === 'en') ? 'en' : 'ru'; }catch(e){}
+var selectedTerm = 'm12';
+var buyBtn = document.getElementById('buyBtn');
+
+function updateBuy(){
+  if(!buyBtn) return;
+  buyBtn.innerHTML = PRICES[curLang].buy + PRICES[curLang][selectedTerm];
+}
+
+function applyLang(lang){
+  var d = I18N[lang]; if(!d) return;
+  curLang = lang;
+  document.documentElement.lang = lang;
+  document.title = d['meta.title'];
+  var md = document.querySelector('meta[name="description"]');
+  if(md) md.setAttribute('content', d['meta.desc']);
+  [].slice.call(document.querySelectorAll('[data-i18n]')).forEach(function(el){
+    var k = el.getAttribute('data-i18n');
+    if(d[k] == null) return;
+    if(el.hasAttribute('data-i18n-html')) el.innerHTML = d[k];  /* opt-in: только размеченные ключи */
+    else el.textContent = d[k];
+  });
+  [].slice.call(document.querySelectorAll('[data-i18n-attr]')).forEach(function(el){
+    el.getAttribute('data-i18n-attr').split(',').forEach(function(pair){
+      var p = pair.split(':');
+      if(p.length === 2 && d[p[1].trim()] != null) el.setAttribute(p[0].trim(), d[p[1].trim()]);
+    });
+  });
+  [].slice.call(document.querySelectorAll('[data-i18n-alt]')).forEach(function(el){
+    var k = el.getAttribute('data-i18n-alt');
+    if(d[k] != null) el.setAttribute('alt', d[k]);
+  });
+  [].slice.call(document.querySelectorAll('[data-i18n-aria]')).forEach(function(el){
+    var k = el.getAttribute('data-i18n-aria');
+    if(d[k] != null) el.setAttribute('aria-label', d[k]);
+  });
+  /* цены и помесячные пометки живут в PRICES, не в общем словаре */
+  [].slice.call(document.querySelectorAll('.term')).forEach(function(b){
+    var t = b.getAttribute('data-term');
+    var tp = b.querySelector('.tp'); if(tp) tp.innerHTML = PRICES[lang][t];
+    var per = b.querySelector('.tper');
+    if(per) per.innerHTML = PRICES[lang]['per' + t.slice(1)];
+  });
+  updateBuy();
+  var nc = document.querySelector('.nav-copy');
+  if(nc) nc.setAttribute('data-short', d['nav.short']);
+  [].slice.call(document.querySelectorAll('.langseg button')).forEach(function(x){
+    var on = x.getAttribute('data-lang') === lang;
+    x.classList.toggle('on', on);
+    x.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  try{ localStorage.setItem('mg_lang', lang); }catch(e){}
+}
+
+/* ── Переключатель RU/EN ── */
+[].slice.call(document.querySelectorAll('.langseg')).forEach(function(seg){
+  seg.addEventListener('click', function(e){
+    var b = e.target.closest('button'); if(!b) return;
+    var lang = b.getAttribute('data-lang');
+    if(lang && lang !== curLang) applyLang(lang);
+  });
+});
+
+/* ── Копирование промпта: буфер, фолбэк execCommand ── */
+function currentPrompt(){ return I18N[curLang]['install.prompt']; }
+function doCopy(){
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    return navigator.clipboard.writeText(currentPrompt()).catch(function(){ fallbackCopy(); });
+  }
+  fallbackCopy();
+  return Promise.resolve();
+}
+function fallbackCopy(){
+  var ta = document.createElement('textarea');
+  ta.value = currentPrompt();
+  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+  document.body.appendChild(ta);
+  ta.focus(); ta.select();
+  try{ document.execCommand('copy'); }catch(e){}
+  document.body.removeChild(ta);
+}
+[].slice.call(document.querySelectorAll('[data-copy]')).forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var label = btn.querySelector('.nav-cta-label') || btn;
+    var orig = label.textContent;
+    doCopy();
+    label.textContent = I18N[curLang]['copied'];
+    setTimeout(function(){ label.textContent = orig; }, 1600);
+  });
+});
+
+/* ── Reveal: IntersectionObserver, каждый блок один раз ── */
+var revealEls = [].slice.call(document.querySelectorAll('.reveal'));
+if(RM || !('IntersectionObserver' in window)){
+  revealEls.forEach(function(el){ el.classList.add('on'); });
+}else{
+  var io = new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      if(e.isIntersecting){ e.target.classList.add('on'); io.unobserve(e.target); }
+    });
+  }, { rootMargin:'0px 0px -14% 0px' });
+  revealEls.forEach(function(el){ io.observe(el); });
+}
+
+/* ── Демо: пробуждение рамки + заполнение графа памяти ── */
+var demoFrame = document.querySelector('.demo-frame');
+var shotWrap = document.querySelector('.shot-wrap');
+var T = null; /* отладочный стоп-кадр: ?t=0 до заполнения, ?t=2.5 после */
+try{ var tq = new URLSearchParams(location.search).get('t'); if(tq !== null) T = parseFloat(tq); }catch(e){}
+var kpiNums = shotWrap ? [].slice.call(shotWrap.querySelectorAll('.kpi-num')) : [];
+var RIP_NODES = [[652,201,'#D98E32'],[440,72,'#7DA2E8'],[858,68,'#E8B93E'],[390,194,'#B07DE0'],
+  [915,192,'#5FB87A'],[455,332,'#E15A4F'],[832,336,'#E8B93E'],[648,388,'#B07DE0']];
+function setKpis(v){ kpiNums.forEach(function(el){ el.textContent = v == null ? el.getAttribute('data-n') : v; }); }
+function countUps(){
+  if(RM){ setKpis(null); return; }
+  kpiNums.forEach(function(el, i){
+    var n = +el.getAttribute('data-n');
+    setTimeout(function(){
+      var t0 = null;
+      function step(ts){
+        if(!t0) t0 = ts;
+        var p = Math.min(1, (ts - t0) / 800);
+        var e = 1 - Math.pow(1 - p, 2);
+        el.textContent = Math.round(n * e);
+        if(p < 1) requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }, 500 + i * 90);
+  });
+}
+function armRipples(){
+  if(RM || T !== null || !shotWrap) return;
+  var layer = document.getElementById('mgRip');
+  if(!layer) return;
+  setTimeout(function(){
+    var tick = function(){
+      var nd = RIP_NODES[Math.floor(Math.random() * RIP_NODES.length)];
+      var c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('class', 'mg-rip');
+      c.setAttribute('cx', nd[0]); c.setAttribute('cy', nd[1]); c.setAttribute('r', 10);
+      c.style.stroke = nd[2];
+      layer.appendChild(c);
+      setTimeout(function(){ if(c.parentNode) c.parentNode.removeChild(c); }, 1800);
+    };
+    tick();
+    setInterval(tick, 4000);
+  }, 2400);
+}
+function wakeDemo(){
+  if(demoFrame) demoFrame.classList.add('awake');
+  if(!shotWrap || shotWrap.classList.contains('play')) return;
+  if(T !== null && T <= 0){ setKpis(0); return; }   /* ?t=0: кадр «до» */
+  if(T !== null) shotWrap.style.setProperty('--jump', '-' + T + 's');
+  shotWrap.classList.add('play');
+  if(T !== null){ setKpis(null); } else { countUps(); armRipples(); }
+}
+if(shotWrap && !RM && T === null) setKpis(0);
+if(T !== null){
+  /* стоп-кадр для скриншотов: вся страница видима сразу */
+  revealEls.forEach(function(el){ el.classList.add('on'); });
+  wakeDemo();
+}
+else if(!demoFrame){ /* нет демо */ }
+else if(RM || !('IntersectionObserver' in window)){ wakeDemo(); }
+else{
+  var io2 = new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      if(e.isIntersecting){ wakeDemo(); io2.disconnect(); }
+    });
+  }, { threshold: 0.25 });
+  io2.observe(demoFrame);
+}
+
+/* ── Лента памяти в хиро: каскад + тихий цикл «пишется память» ── */
+var heroFeed = document.querySelector('.hero-feed');
+if(heroFeed && !RM){
+  setTimeout(function(){ heroFeed.classList.add('go'); }, 350);
+  var feedList = heroFeed.querySelector('.feed-list');
+  setInterval(function(){
+    var first = feedList.firstElementChild;
+    if(!first) return;
+    var clone = first.cloneNode(true);
+    clone.classList.add('fresh');
+    clone.style.setProperty('--fd','0s');
+    feedList.appendChild(clone);
+    requestAnimationFrame(function(){ requestAnimationFrame(function(){ clone.classList.add('in'); }); });
+    feedList.removeChild(first);
+  }, 5200);
+}else if(heroFeed){ heroFeed.classList.add('go'); }
+
+/* ── Прогресс скролла + рельса «Как работает» ── */
+var bar = document.getElementById('progress'), ticking = false;
+var stepsEl = document.querySelector('.steps');
+function updBar(){
+  var h = document.documentElement;
+  var max = h.scrollHeight - h.clientHeight;
+  bar.style.transform = 'scaleX(' + (max > 0 ? Math.min(1, h.scrollTop / max) : 0) + ')';
+  if(stepsEl && !RM){
+    var r = stepsEl.getBoundingClientRect();
+    var probe = window.innerHeight * 0.55;
+    var p = Math.max(0, Math.min(1, (probe - r.top) / r.height));
+    stepsEl.style.setProperty('--railp', p.toFixed(3));
+  }
+  ticking = false;
+}
+addEventListener('scroll', function(){
+  if(!ticking){ ticking = true; requestAnimationFrame(updBar); }
+}, { passive:true });
+addEventListener('resize', updBar);
+updBar();
+
+/* ── Шаги «Как работает» активируются у центра вьюпорта ── */
+var stepLis = stepsEl ? [].slice.call(stepsEl.querySelectorAll('li')) : [];
+if(RM || !('IntersectionObserver' in window)){
+  if(stepsEl) stepsEl.style.setProperty('--railp', '1');
+  stepLis.forEach(function(el){ el.classList.add('on'); });
+}else{
+  var sio = new IntersectionObserver(function(es){
+    es.forEach(function(e){ e.target.classList.toggle('on', e.isIntersecting); });
+  }, { rootMargin:'-42% 0px -42% 0px', threshold:0 });
+  stepLis.forEach(function(el){ sio.observe(el); });
+}
+
+/* ── Сроки: чипы с выбором, кнопка покупки следует за ценой ── */
+[].slice.call(document.querySelectorAll('.term')).forEach(function(b){
+  b.addEventListener('click', function(){
+    [].slice.call(document.querySelectorAll('.term')).forEach(function(x){
+      x.classList.remove('is-selected');
+      x.setAttribute('aria-pressed','false');
+    });
+    b.classList.add('is-selected');
+    b.setAttribute('aria-pressed','true');
+    selectedTerm = b.getAttribute('data-term');
+    updateBuy();
+  });
+});
+
+/* ── FAQ: grid-rows 0fr в 1fr ── */
+[].slice.call(document.querySelectorAll('.faq-q')).forEach(function(q){
+  q.addEventListener('click', function(){
+    var item = q.parentElement;
+    var open = item.classList.toggle('open');
+    q.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+});
+
+/* ═══ Покупка: POST /billing/create {plan, email}, ответ {payment_url} ═══ */
+(function buy(){
+  var row = document.getElementById('buyRow');
+  var inp = document.getElementById('emailInp');
+  var go = document.getElementById('buyGo');
+  var err = document.getElementById('buyErr');
+  if(!buyBtn || !row || !inp || !go || !err) return;
+  var lastMsg = null; /* {key}: наши строки (переводим при смене языка), {text}: серверные */
+  function showErr(key){ err.classList.remove('ok'); err.textContent = I18N[curLang][key]; lastMsg = { key:key }; }
+  function showServerErr(text){ err.classList.remove('ok'); err.textContent = text; lastMsg = { text:text }; }
+  [].slice.call(document.querySelectorAll('.langseg button')).forEach(function(b){
+    b.addEventListener('click', function(){
+      if(lastMsg && lastMsg.key) err.textContent = I18N[curLang][lastMsg.key];
+    });
+  });
+  buyBtn.addEventListener('click', function(){
+    /* self-hosted: email спросит стор, ведём туда без локальной формы */
+    if(!MG_STORE){ window.open(MG_STORE_URL + '/#pricing', '_blank', 'noopener'); return; }
+    var opening = row.hidden;
+    row.hidden = !opening;
+    if(opening){ err.textContent = ''; lastMsg = null; inp.focus(); }
+  });
+  inp.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); go.click(); } });
+  go.addEventListener('click', async function(){
+    if(!MG_STORE){ window.open(MG_STORE_URL + '/#pricing', '_blank', 'noopener'); return; }
+    var email = inp.value.trim();
+    if(!EMAIL_RE.test(email)){ showErr('buy.err.email'); inp.focus(); return; }
+    err.textContent = ''; lastMsg = null;
+    go.disabled = true; go.textContent = I18N[curLang]['buy.wait'];
+    try{
+      var r = await fetch('/billing/create', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ plan: TERM_PLAN[selectedTerm], email: email }) });
+      var j = await r.json();
+      if(r.ok && j.payment_url){
+        /* security: редирект только на хосты платёжного шлюза */
+        var u = null;
+        try{ u = new URL(j.payment_url); }catch(_){}
+        if(u && u.protocol === 'https:' && (u.hostname === 'app.platega.io' || u.hostname === 'pay.platega.io')){ location.href = j.payment_url; return; }
+        showErr('buy.err.url');
+      } else if(j.error){
+        showServerErr(j.error);
+      } else {
+        showErr('buy.err.net');
+      }
+    }catch(_){ showErr('buy.err.net'); }
+    go.disabled = false; go.textContent = I18N[curLang]['buy.go'];
+  });
+})();
+
+/* ═══ Redeem резервного кода: POST /api/codes/redeem {code, email} ═══ */
+(function redeem(){
+  var form = document.getElementById('redeemForm');
+  if(!form) return;
+  var code = document.getElementById('redeemCode');
+  var email = document.getElementById('redeemEmail');
+  var go = document.getElementById('redeemGo');
+  var err = document.getElementById('redeemErr');
+  var okBox = document.getElementById('redeemOk');
+  var keyEl = document.getElementById('redeemKey');
+  var copyBtn = document.getElementById('redeemCopy');
+  if(!MG_STORE){
+    /* self-hosted лендинг: redeem живёт на сторе, отдаём ссылку */
+    form.hidden = true;
+    var sh = document.getElementById('redeemSelfhost');
+    var shA = sh.querySelector('a');
+    shA.setAttribute('href', MG_STORE_URL + '/#redeem');
+    shA.setAttribute('target', '_blank');
+    shA.setAttribute('rel', 'noopener');
+    sh.hidden = false;
+    return;
+  }
+  var CODE_RE = /^MG-[A-HJ-KM-NP-Z2-9]{4}-[A-HJ-KM-NP-Z2-9]{4}-[A-HJ-KM-NP-Z2-9]{4}$/; /* алфавит без 0/O, 1/I/L, как на бэкенде */
+  var lastMsg = null;
+  function showErr(key){ err.classList.remove('ok'); err.textContent = I18N[curLang][key]; lastMsg = { key:key }; }
+  function showServerErr(text){ err.classList.remove('ok'); err.textContent = text; lastMsg = { text:text }; }
+  function showOk(key){ err.classList.add('ok'); err.textContent = I18N[curLang][key]; lastMsg = { key:key }; }
+  [].slice.call(document.querySelectorAll('.langseg button')).forEach(function(b){
+    b.addEventListener('click', function(){
+      if(lastMsg && lastMsg.key) err.textContent = I18N[curLang][lastMsg.key];
+    });
+  });
+  async function submit(){
+    okBox.hidden = true;
+    var c = code.value.trim().toUpperCase();
+    var e = email.value.trim();
+    if(!CODE_RE.test(c)){ showErr('redeem.err.code'); code.focus(); return; }
+    if(!EMAIL_RE.test(e)){ showErr('redeem.err.email'); email.focus(); return; }
+    err.textContent = ''; lastMsg = null;
+    go.disabled = true; go.textContent = I18N[curLang]['redeem.wait'];
+    try{
+      var r = await fetch('/api/codes/redeem', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ code:c, email:e }) });
+      var j = await r.json();
+      if(r.ok && j.licenseKey){
+        keyEl.textContent = j.licenseKey;
+        okBox.hidden = false;
+        copyBtn.textContent = I18N[curLang]['redeem.copy'];
+        okBox.scrollIntoView({ block:'nearest', behavior: RM ? 'auto' : 'smooth' });
+      } else if(r.ok && (j.sent === true || j.sent === 'email')){
+        showOk('redeem.sent');
+      } else if(j.error){
+        showServerErr(j.error);
+      } else {
+        showErr('redeem.err.net');
+      }
+    }catch(_){ showErr('redeem.err.net'); }
+    go.disabled = false; go.textContent = I18N[curLang]['redeem.go'];
+  }
+  go.addEventListener('click', submit);
+  [code, email].forEach(function(el){ el.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); submit(); } }); });
+  copyBtn.addEventListener('click', async function(){
+    try{ await navigator.clipboard.writeText(keyEl.textContent); copyBtn.textContent = I18N[curLang]['redeem.copied']; }
+    catch(_){ /* user-select:all у ключа: ручное копирование как фолбэк */ }
+  });
+})();
+
+/* восстановить сохранённый язык после построения DOM */
+if(curLang !== 'ru') applyLang(curLang);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,5 @@
+# CRLF в шелл-скриптах ломает shebang (/bin/sh\r → bad interpreter) и ломает
+# bash в контейнерах. Все скрипты — всегда LF, на любой платформе.
+*.sh text eol=lf
+Dockerfile text eol=lf
+services/**/Dockerfile text eol=lf

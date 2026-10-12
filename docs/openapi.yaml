@@ -1,0 +1,582 @@
+openapi: 3.0.3
+info:
+  title: Maxgraph Memory API
+  version: 0.15.0
+  description: |
+    Персональная память полного сохранения контекста (граф знаний + журнал событий).
+    Все эндпоинты требуют заголовок `Authorization: Bearer <MEMORY_TOKEN>`.
+    Для ChatGPT GPTs Actions: сервер должен быть доступен по публичному HTTPS
+    (например, через Tailscale Funnel или обратный прокси) — подробнее в docs/GPTS.md.
+servers:
+  - url: https://memory.example.com
+    description: Твой инстанс Maxgraph (замени на свой HTTPS-URL)
+  - url: http://localhost:8787
+    description: Локальный инстанс (для тестов вне GPTs)
+tags:
+  - name: memory-read
+    description: Чтение графа и журнала
+  - name: memory-write
+    description: Запись в граф
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [memory-read]
+      summary: Проверка живости сервера (без авторизации)
+      security: []
+      responses:
+        '200':
+          description: Сервер жив
+          content:
+            text/plain:
+              schema: { type: string, example: ok }
+  /api/graph:
+    get:
+      operationId: readGraph
+      tags: [memory-read]
+      summary: Прочитать весь граф знаний
+      responses:
+        '200':
+          description: Все сущности и связи
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Graph' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/search:
+    get:
+      operationId: searchMemory
+      tags: [memory-read]
+      summary: Ранжированный поиск (Ф6) по имени, заголовку, типу, тегам и фактам
+      description: |
+        Непустой `q` — FTS-lite: BM25-подобный скоринг (name ×3 / title ×2 /
+        tags ×1.5 / observations ×1) + фразовый бонус + recency, топ-`limit`,
+        сортировка score desc → updatedAt desc → name. У сущностей ответа +
+        `score`, `snippet`, `highlights` (позиции [[start,end],…] внутри snippet).
+        Пустой `q` — все сущности с фильтрами, без FTS-полей.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string }
+          description: Поисковый запрос (FTS-lite; пустой — все сущности)
+        - name: type
+          in: query
+          schema: { type: string, example: bug }
+          description: Фильтр по типу после нормализации (bugfix/«баг» → bug)
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 500 }
+          description: Топ-N при непустом q
+      responses:
+        '200':
+          description: Найденные сущности (с score/snippet/highlights при непустом q) и связи между ними
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Graph' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/timeline:
+    get:
+      operationId: listTimeline
+      tags: [memory-read]
+      summary: Последние события журнала (новые первыми)
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 500 }
+      responses:
+        '200':
+          description: События журнала
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items: { $ref: '#/components/schemas/Event' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/stats:
+    get:
+      operationId: getStats
+      tags: [memory-read]
+      summary: Счётчики графа, версия, аптайм, статус лицензии
+      responses:
+        '200':
+          description: Статистика сервера
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Stats' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/entities:
+    post:
+      operationId: createEntities
+      tags: [memory-write]
+      summary: Создать сущности (уже существующие пропускаются)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entities]
+              properties:
+                entities:
+                  type: array
+                  items: { $ref: '#/components/schemas/EntityIn' }
+      responses:
+        '200':
+          description: Созданные сущности
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreatedEntities' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/WriteBlocked' }
+  /api/entity/update:
+    post:
+      operationId: updateEntity
+      tags: [memory-write]
+      summary: Обновить title/entityType/tags существующей сущности
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, description: kebab-case id сущности }
+                title: { type: string }
+                entityType: { type: string }
+                tags: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: Обновлённая сущность или ошибка
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated: { $ref: '#/components/schemas/Entity' }
+                  error: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/WriteBlocked' }
+  /api/task/add:
+    post:
+      operationId: taskAdd
+      tags: [memory-write]
+      summary: Добавить открытое дело (work_state, В2.1) → task-сущность task-<slug(title)>
+      description: |
+        Создаёт сущность `entityType: task` со `status: open` (default); имя —
+        `task-<slug(title)>` (kebab, транслит RU), при коллизии — суффикс `-2`.
+        Открытые задачи попадают в секцию «Открытые задачи» `session_start`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: { type: string, description: Текст задачи (≤200 символов) }
+                note: { type: string, description: Первый факт-контекст (опционально) }
+                project: { type: string, description: kebab-slug проекта (изоляция Ф1) }
+      responses:
+        '200':
+          description: Созданная задача или ошибка (пустой title)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: { $ref: '#/components/schemas/Entity' }
+                  error: { type: string }
+        '400': { description: Невалидный project slug }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/WriteBlocked' }
+        '403': { description: READONLY-зеркало (readonly_mirror) }
+  /api/task/done:
+    post:
+      operationId: taskDone
+      tags: [memory-write]
+      summary: Закрыть задачу (В2.1) — status=done + событие task_done в пульс
+      description: |
+        Только `entityType: task` своего проекта (чужая/отсутствующая — not found,
+        не-task — error). Уже закрытая — идемпотентно `{"updated": …, "already": true}`
+        без повторного события.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, description: Имя задачи (task-<slug>) }
+                project: { type: string, description: kebab-slug проекта }
+      responses:
+        '200':
+          description: Закрытая задача или ошибка
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  updated: { $ref: '#/components/schemas/Entity' }
+                  already: { type: boolean, description: Уже была закрыта }
+                  error: { type: string }
+        '400': { description: Невалидный project slug }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/WriteBlocked' }
+        '403': { description: READONLY-зеркало (readonly_mirror) }
+  /api/tasks:
+    get:
+      operationId: taskList
+      tags: [memory-read]
+      summary: Открытые задачи (status≠done), recency-first (В2.1)
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+          description: kebab-slug проекта; без него — все открытые задачи графа
+      responses:
+        '200':
+          description: Открытые задачи и их число
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items: { $ref: '#/components/schemas/Entity' }
+                  total: { type: integer }
+        '400': { description: Невалидный project slug }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/observations:
+    post:
+      operationId: addObservations
+      tags: [memory-write]
+      summary: Добавить факты к сущностям (дубликаты пропускаются)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [observations]
+              properties:
+                observations:
+                  type: array
+                  items:
+                    type: object
+                    required: [entityName, contents]
+                    properties:
+                      entityName: { type: string }
+                      contents: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: Результат по каждой сущности
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results: { type: array, items: { type: object } }
+                  errors: { type: array, items: { type: string } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/WriteBlocked' }
+  /api/relations:
+    post:
+      operationId: createRelations
+      tags: [memory-write]
+      summary: Создать связи между сущностями (дубликаты пропускаются)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [relations]
+              properties:
+                relations:
+                  type: array
+                  items: { $ref: '#/components/schemas/RelationIn' }
+      responses:
+        '200':
+          description: Созданные связи
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created:
+                    type: array
+                    items: { $ref: '#/components/schemas/Relation' }
+                  skipped: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/WriteBlocked' }
+  /api/delete/entities:
+    post:
+      operationId: deleteEntities
+      tags: [memory-write]
+      summary: Удалить сущности и все их связи
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entityNames]
+              properties:
+                entityNames: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: Имена удалённых сущностей
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: array, items: { type: string } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/WriteBlocked' }
+  /api/delete/observations:
+    post:
+      operationId: deleteObservations
+      tags: [memory-write]
+      summary: Удалить конкретные факты у сущностей
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deletions]
+              properties:
+                deletions:
+                  type: array
+                  items:
+                    type: object
+                    required: [entityName, observations]
+                    properties:
+                      entityName: { type: string }
+                      observations: { type: array, items: { type: string } }
+      responses:
+        '200': { description: Результат удаления, content: { application/json: { schema: { type: object } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/WriteBlocked' }
+  /api/delete/relations:
+    post:
+      operationId: deleteRelations
+      tags: [memory-write]
+      summary: Удалить связи (точное совпадение from/to/relationType)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [relations]
+              properties:
+                relations:
+                  type: array
+                  items: { $ref: '#/components/schemas/RelationIn' }
+      responses:
+        '200': { description: Результат удаления, content: { application/json: { schema: { type: object } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/WriteBlocked' }
+  /api/ingest:
+    post:
+      operationId: ingestHookEvents
+      tags: [memory-write]
+      summary: Приёмник захват-хуков (Ф5) — батч событий Claude Code/DSH
+      description: |
+        Принимает батч событий от `hooks/maxgraph_hook.py` (локальный spool →
+        доставка). Идемпотентно: content-hash (SHA256 `{hook,project,ts,data}`) —
+        повторная доставка засчитывается в `dedup` без дублей в пульсе.
+        Каждое событие → дайджест ≤200 символов в пульс (`hook_*`, source="hook");
+        `SessionEnd` дополнительно создаёт сущность сессии дня (1 раз на проект).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [events]
+              properties:
+                events:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [hook, ts, data]
+                    properties:
+                      hook:
+                        type: string
+                        enum: [SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd]
+                      project:
+                        type: string
+                        description: kebab-slug проекта (каскад git remote → git root → cwd); пусто — плоский граф
+                        example: maxgraph
+                      ts: { type: string, description: ISO-время события от клиента (идёт только в content-hash) }
+                      data:
+                        type: object
+                        description: Поля события (prompt/tool/input/response/...); на сервере живёт только в content-hash, в пульс — дайджест ≤200 символов
+      responses:
+        '200':
+          description: Батч принят (повторы засчитаны в dedup)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  accepted: { type: integer, description: новых событий записано }
+                  dedup: { type: integer, description: повторных (по content-hash) пропущено }
+        '400':
+          description: Битый JSON / не тот формат / неизвестный hook / невалидный slug / батч >100 событий (ничего не записано)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/WriteBlocked' }
+        '403':
+          description: READONLY-зеркало — приём запрещён
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: false }
+                  error: { type: string, example: readonly_mirror }
+        '413':
+          description: Тело больше 1MB (по Content-Length до чтения и по факту после)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+        '429':
+          description: Per-IP rate-limit 60 запросов/мин (Ф8); повторить после Retry-After
+          headers:
+            Retry-After:
+              schema: { type: integer, example: 60 }
+              description: секунд до конца окна лимита
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string, example: too_many_requests }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: MEMORY_TOKEN из .env твоего инстанса
+  schemas:
+    Entity:
+      type: object
+      properties:
+        name: { type: string, description: kebab-case id, неизменен }
+        title: { type: string }
+        entityType: { type: string, example: project }
+        tags: { type: array, items: { type: string } }
+        observations: { type: array, items: { type: string } }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        score: { type: number, description: 'только в ответах поиска (Ф6): BM25-подобный скор, >0' }
+        snippet: { type: string, description: 'только в ответах поиска: лучший фрагмент observation (≤160 символов)' }
+        highlights:
+          type: array
+          description: 'только в ответах поиска: позиции совпадений [start, end] внутри snippet (без HTML)'
+          items:
+            type: array
+            items: { type: integer }
+            minItems: 2
+            maxItems: 2
+    EntityIn:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, description: kebab-case id навсегда }
+        title: { type: string, description: человеческое имя }
+        entityType: { type: string, default: general }
+        tags: { type: array, items: { type: string } }
+        observations: { type: array, items: { type: string } }
+    Relation:
+      type: object
+      properties:
+        from: { type: string }
+        to: { type: string }
+        relationType: { type: string, description: активный залог — "uses", "depends on" }
+        createdAt: { type: string, format: date-time }
+    RelationIn:
+      type: object
+      required: [from, to, relationType]
+      properties:
+        from: { type: string }
+        to: { type: string }
+        relationType: { type: string, description: активный залог — "uses", "depends on" }
+    Graph:
+      type: object
+      properties:
+        entities:
+          type: array
+          items: { $ref: '#/components/schemas/Entity' }
+        relations:
+          type: array
+          items: { $ref: '#/components/schemas/Relation' }
+    Event:
+      type: object
+      properties:
+        ts: { type: string, format: date-time }
+        kind: { type: string, example: create_entity }
+        name: { type: string }
+        detail: { type: string }
+    Stats:
+      type: object
+      properties:
+        version: { type: string }
+        name: { type: string }
+        entities: { type: integer }
+        relations: { type: integer }
+        observations: { type: integer }
+        uptimeSec: { type: integer }
+        fileBytes: { type: integer }
+        license:
+          type: object
+          properties:
+            state: { type: string, example: licensed }
+            daysLeft: { type: integer, nullable: true }
+    CreatedEntities:
+      type: object
+      properties:
+        created:
+          type: array
+          items: { $ref: '#/components/schemas/Entity' }
+        skipped: { type: integer, description: сколько пропущено как дубликаты }
+  responses:
+    Unauthorized:
+      description: Нет или неверный Bearer-токен
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              detail: { type: string }
+    WriteBlocked:
+      description: Запись заблокирована (триал истёк, лицензия не активирована)
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+              state: { type: string }
+security:
+  - bearerAuth: []
