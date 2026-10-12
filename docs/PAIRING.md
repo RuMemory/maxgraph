@@ -216,7 +216,7 @@ title = человеческое имя); зависимости — create_rela
 
 1. На старой машине: кнопка **⬇ export** в дашборде (или `curl … /api/export > backup.json`).
 2. На новой: подними свежую установку (шаг 3), останови контейнер.
-3. Из бэкапа распакуй: `memory_ndjson` → `data/memory.json`, `events_jsonl` → `data/events.jsonl`.
+3. Из бэкапа распакуй: `memory_ndjson` → `data/memory.json`, `events_jsonl` → `data/events.jsonl`. С v0.34.0 (шарды): если `data/projects/` существует — удали его до запуска (миграция сама разложит монолит по шардам).
 4. Запусти контейнер. Тот же license key вводишь в `/app` новой установки — привязка по email, а не по железу.
 
 ---

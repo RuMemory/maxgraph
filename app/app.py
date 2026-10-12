@@ -130,6 +130,7 @@ def _require_store_token():
 VERSION = _find_version()
 DATA_DIR = Path(os.environ.get("MEMORY_DIR", "/data"))
 MEMORY_FILE = DATA_DIR / "memory.json"
+PROJECTS_DIR = DATA_DIR / "projects"  # v0.34.0: шарды графа по проектам (суд 20261013-000330)
 EVENTS_FILE = DATA_DIR / "events.jsonl"
 INSTALLS_FILE = DATA_DIR / "installs.json"  # --- v0.14: install-ping учёт ---
 LEARN_EVENTS_FILE = DATA_DIR / "learn_events.jsonl"  # --- W2 v0.26.0: learn-events ---
@@ -204,10 +205,20 @@ def now_iso() -> str:
 # ---------------------------------------------------------------- storage ---
 
 def _load():
-    """Load graph from NDJSON -> (entities dict, relations list)."""
+    """Load graph from NDJSON -> (entities dict, relations list).
+
+    Шарды (v0.34.0): memory.json (плоское) + projects/<slug>.json — читаются в те же
+    структуры; read-путь дальше не знает про шарды. Связи с отсутствующим концом
+    отбрасываются (суд 20261013-000330, У2: удалённый шард проекта не оставляет
+    висячих связей)."""
     entities, relations = {}, []
+    files = []
     if MEMORY_FILE.exists():
-        for line in MEMORY_FILE.read_text(encoding="utf-8").splitlines():
+        files.append(MEMORY_FILE)
+    if PROJECTS_DIR.is_dir():
+        files.extend(sorted(PROJECTS_DIR.glob("*.json")))
+    for path in files:
+        for line in path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -237,18 +248,134 @@ def _load():
                     "relationType": rec.get("relationType", ""),
                     "createdAt": rec.get("createdAt", ""),
                 })
+    dropped = len(relations)
+    relations = [r for r in relations if r["from"] in entities and r["to"] in entities]
+    if len(relations) != dropped:
+        log.info("load: отброшено связей с отсутствующим концом: %d", dropped - len(relations))
+    # дедуп по тройке (security-ревью v0.34.0, MEDIUM-1): restore монолита поверх шардов
+    # иначе дублирует связи (монолит-union + старый шард читаются вместе)
+    seen = set()
+    relations = [r for r in relations
+                 if (r["from"], r["to"], r["relationType"]) not in seen
+                 and not seen.add((r["from"], r["to"], r["relationType"]))]
     return entities, relations
 
 
+_shard_written = {}  # path -> sha256 последнего записанного содержимого
+
+
+# Windows-reserved имена файлов (security-ревью v0.34.0, LOW): slug «con»/«nul»/…
+# проходит regex, но open() на Windows-хосте падает — валим на обеих границах.
+_RESERVED_SLUGS = frozenset({"con", "prn", "aux", "nul"}
+                            | {f"com{i}" for i in range(1, 10)}
+                            | {f"lpt{i}" for i in range(1, 10)})
+
+
+def _shard_of_entity(e: dict) -> str:
+    """Шард сущности = её project; мусорный slug из файла → плоский шард
+    (сам файл — тоже граница доверия: projects/<slug>.json собирается из записи)."""
+    p = e.get("project") or ""
+    return p if len(p) <= 64 and _PROJECT_RE.fullmatch(p) and p not in _RESERVED_SLUGS else ""
+
+
+def _partition_shards(entities: dict, relations: list) -> dict:
+    """→ {slug: текст шарда}; "" = плоский memory.json (пишется всегда — иначе
+    опустевший граф не очистил бы файл). Связь — в шард проекта, только если ОБА
+    конца в нём; иначе плоская (правило «по концам», гриллинг владельца)."""
+    buckets = {"": []}
+    for e in entities.values():
+        buckets.setdefault(_shard_of_entity(e), []).append({"type": "entity", **e})
+    for r in relations:
+        pa = _shard_of_entity(entities.get(r["from"], {}))
+        pb = _shard_of_entity(entities.get(r["to"], {}))
+        buckets.setdefault(pa if pa == pb else "", []).append({"type": "relation", **r})
+    return {slug: "".join(json.dumps(rec, ensure_ascii=False) + "\n" for rec in recs)
+            for slug, recs in buckets.items()}
+
+
 def _save(entities, relations):
+    """Шард-запись, двухфазно (суд У1): сначала ВСЕ .tmp, потом ВСЕ replace — окно
+    рассинхрона = rename-only последовательность. Неизменённый шард не трогаем
+    (кэш sha256; валиден, пока файлы пишет только этот процесс — READONLY-зеркало
+    не пишет). Файл опустевшего проекта удаляется (иначе _load воскресит удалённое)."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = MEMORY_FILE.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        for e in entities.values():
-            f.write(json.dumps({"type": "entity", **e}, ensure_ascii=False) + "\n")
-        for r in relations:
-            f.write(json.dumps({"type": "relation", **r}, ensure_ascii=False) + "\n")
-    tmp.replace(MEMORY_FILE)
+    shards = _partition_shards(entities, relations)
+    if PROJECTS_DIR.is_dir():  # опустевшие проекты: шард должен исчезнуть
+        for f in PROJECTS_DIR.glob("*.json"):
+            if f.name[:-5] not in shards:
+                _shard_written.pop(f, None)
+                try:
+                    f.unlink()
+                except OSError:
+                    log.error("save: не смог удалить пустой шард %s — проект воскреснет при чтении; "
+                              "удалите файл вручную и перезапустите", f)
+    pending = []
+    for slug, text in shards.items():
+        path = MEMORY_FILE if not slug else PROJECTS_DIR / f"{slug}.json"
+        h = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if _shard_written.get(path) == h and path.exists():
+            continue
+        pending.append((path, h, text))
+    if not pending:
+        return
+    tmps = []
+    try:
+        for path, h, text in pending:  # фаза 1: все tmp
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(text)
+            tmps.append((tmp, path, h))
+        for tmp, path, h in tmps:  # фаза 2: все replace
+            tmp.replace(path)
+            _shard_written[path] = h
+    finally:
+        for tmp, _, _ in tmps:  # сбой любой фазы — tmp не мусорят
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
+
+def _migrate_to_shards():
+    """Одноразовая миграция на шарды (v0.34.0): монолитный memory.json →
+    projects/<slug>.json по полю project. Триггер: memory.json есть, сентинела
+    projects/.sharded нет (сентинел — ПОСЛЕ записи: kill -9 посреди replace-фазы
+    не пометит миграцию выполненной). Полный слепок до разрезки —
+    memory.json.pre-shards-backup (не удалять и не затирать повторно; откат
+    на старую версию = скопировать его обратно). READONLY: миграции нет — записи
+    запрещены, зеркало хранит объединение плоско (см. resync)."""
+    sentinel = PROJECTS_DIR / ".sharded"
+    if READONLY or not MEMORY_FILE.exists() or sentinel.exists():
+        return
+    backup = DATA_DIR / "memory.json.pre-shards-backup"
+    if not backup.exists():  # повторный прогон (ручное удаление projects/) не затирает слепок
+        backup.write_bytes(MEMORY_FILE.read_bytes())
+    ents, rels = _load()
+    _save(ents, rels)
+    sentinel.write_text("ok\n", encoding="ascii")  # маркер «миграция была»
+    log.info("шардинг: memory.json разрезан (%d сущностей, %d связей), слепок → %s",
+             len(ents), len(rels), backup.name)
+
+
+def _graph_file_bytes() -> int:
+    """Размер хранилища графа для дашборда: memory.json + все шарды."""
+    total = MEMORY_FILE.stat().st_size if MEMORY_FILE.exists() else 0
+    if PROJECTS_DIR.is_dir():
+        total += sum(f.stat().st_size for f in PROJECTS_DIR.glob("*.json"))
+    return total
+
+
+def _test_purge_graph_files():
+    """Тест-хелпер: полный сброс файлов графа (memory.json + projects/ + кэш шардов).
+    Тесты чистят MEMORY_FILE руками — с шардами этого мало (утечка между тестами)."""
+    if MEMORY_FILE.exists():
+        MEMORY_FILE.unlink()
+    if PROJECTS_DIR.is_dir():
+        for f in PROJECTS_DIR.glob("*.json"):
+            f.unlink()
+    _shard_written.clear()
 
 
 def _event(action: str, entity: str = "", detail: str = "", project: str = "",
@@ -321,7 +448,7 @@ def _check_project(value) -> tuple[str, str]:
     slug = str(value or "").strip().lower()
     if not slug:
         return "", ""
-    if len(slug) > 64 or not _PROJECT_RE.fullmatch(slug):
+    if len(slug) > 64 or not _PROJECT_RE.fullmatch(slug) or slug in _RESERVED_SLUGS:
         return "", f"invalid project slug {value!r}: kebab-case [a-z0-9-], ≤64 chars"
     return slug, ""
 
@@ -2392,14 +2519,13 @@ async def api_export(request: Request):
     if err:
         return JSONResponse({"error": err}, status_code=400)
     with _lock:
-        memory_raw = MEMORY_FILE.read_text(encoding="utf-8") if MEMORY_FILE.exists() else ""
+        ents, rels = _load()  # объединение шардов (v0.34.0: файл на диске уже не полная картина)
         events_raw = EVENTS_FILE.read_text(encoding="utf-8") if EVENTS_FILE.exists() else ""
+    es, rs = (ents, rels) if not slug else _filter_graph(ents, rels, slug, False)
+    memory_raw = "".join(json.dumps({"type": "entity", **e}, ensure_ascii=False) + "\n"
+                         for e in (es.values() if isinstance(es, dict) else es))
+    memory_raw += "".join(json.dumps({"type": "relation", **r}, ensure_ascii=False) + "\n" for r in rs)
     if slug:
-        with _lock:
-            ents, rels = _load()
-        es, rs = _filter_graph(ents, rels, slug, False)
-        memory_raw = "".join(json.dumps({"type": "entity", **e}, ensure_ascii=False) + "\n" for e in es)
-        memory_raw += "".join(json.dumps({"type": "relation", **r}, ensure_ascii=False) + "\n" for r in rs)
         lines = []
         for line in events_raw.splitlines():
             try:
@@ -2464,7 +2590,7 @@ async def api_stats(request: Request):
         "relations": len(g["relations"]),
         "observations": obs,
         "uptimeSec": int(time.time() - STARTED),
-        "fileBytes": MEMORY_FILE.stat().st_size if MEMORY_FILE.exists() else 0,
+        "fileBytes": _graph_file_bytes(),  # v0.34.0: memory.json + шарды projects/
         "license": {"state": lic.get("state"), "daysLeft": lic.get("days_left")},
         "embed": EMBED_ON,
     }
@@ -5630,6 +5756,7 @@ class TokenAuth:
 
 def main():
     _require_store_token()  # HIGH-3: магазин без явного MEMORY_TOKEN → fail-fast, не ротация
+    _migrate_to_shards()  # v0.34.0: одноразовая разрезка memory.json → projects/ (с бэкапом)
     st = _license_status()  # при старте: создаёт license.json на первом запуске, ловит fail-closed
     log.info("license: %s (days_left=%s)%s", st.get("state"), st.get("days_left"),
              "" if licensing.allows_write(st) else " — МУТАЦИИ ЗАБЛОКИРОВАНЫ, activate: /#activate")

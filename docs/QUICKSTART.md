@@ -95,7 +95,7 @@ title = человеческое имя); зависимости — create_rela
 
 Кнопка **⬇ export** в дашборде или `curl -H "Authorization: Bearer $T" http://localhost:8787/api/export > backup.json`.
 
-Восстановление: останови контейнер, распакуй `memory_ndjson` в `data/memory.json`, `events_jsonl` в `data/events.jsonl`, запусти.
+Восстановление: останови контейнер, распакуй `memory_ndjson` в `data/memory.json`, `events_jsonl` в `data/events.jsonl`, запусти. С v0.34.0 (шарды `data/projects/`): если каталог `data/projects/` уже существует, удали его перед восстановлением — миграция разложит монолит по шардам при старте (дедуп связей при загрузке подстраховывает, но чистый старт надёжнее).
 
 ## Что дальше
 
