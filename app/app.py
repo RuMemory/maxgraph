@@ -153,6 +153,11 @@ RELEASES_DIR = os.environ.get("RELEASES_DIR") or str(DATA_DIR / "releases")
 _PLAN_DAYS = {"pro1": 31, "pro3": 93, "pro6": 186, "pro12": 372}
 PLANS = {pid: {**billing.PRICES[pid], "days": _PLAN_DAYS[pid], "label": billing.LABELS[pid]}
          for pid in _PLAN_DAYS}
+# v0.33.2: донаты — чистая поддержка проекта: days=0, без кода/ключа/лицензии,
+# thank-you письмо вместо выдачи. В /api/plans и лицензии не попадают.
+_DONATE = ("donate99", "donate249", "donate499")
+PLANS.update({pid: {**billing.PRICES[pid], "days": 0, "label": billing.LABELS[pid],
+                    "donation": True} for pid in _DONATE})
 PLAN_ALIASES = {"pro": "pro1", "team": "pro1"}  # легаси-вызовы (старые платежи хранят tier="pro"/"team"; team был месячным → pro1)
 
 
@@ -2907,6 +2912,8 @@ def _plan_for(amount: float, currency: str) -> str:
     cur = currency.upper() if currency else "RUB"
     best = "pro1"
     for pid in sorted(PLANS, key=lambda p: PLANS[p].get(cur, PLANS[p]["RUB"])):
+        if PLANS[pid].get("donation"):
+            continue  # v0.33.2 (security HIGH-1): донат никогда не конвертируется в лицензию
         if amount >= PLANS[pid].get(cur, PLANS[pid]["RUB"]):
             best = pid
     return best
@@ -5035,7 +5042,7 @@ async def billing_create(request: Request):
     plan_id = _plan_key(str(body.get("plan") or body.get("tier") or "")[:16])
     email = _valid_email(body.get("email")) or ""
     if not plan_id:
-        return JSONResponse({"error": "plan must be pro1|pro3|pro6|pro12"}, status_code=400)
+        return JSONResponse({"error": "plan must be pro1|pro3|pro6|pro12|donate99|donate249|donate499"}, status_code=400)
     # опциональная привязка к кабинету: key = токен кабинета (mg_…) → платёж за тенантом
     tenant = None
     key = str(body.get("key") or "")[:128]
@@ -5060,7 +5067,8 @@ async def billing_create(request: Request):
         data = _load_codes()
         # email храним у себя: callback Platega его не несёт (docs.platega.io CallbackPayload)
         rec = {"id": ref, "ref": ref, "platega_id": pay["payment_id"],
-               "plan": plan_id, "tier": "pro", "email": email, "status": "created",
+               "plan": plan_id, "tier": "donation" if PLANS[plan_id].get("donation") else "pro",
+               "email": email, "status": "created",
                "at": now_iso(), "payUrl": pay["payment_url"]}
         if tenant:
             rec["tenant"] = tenant["id"]
@@ -5083,7 +5091,15 @@ def _success_page(pid: str) -> str:
                   if pid in (x.get("id"), x.get("ref"))), None)
     paid = bool(p and p.get("status") in _PAID_STATUSES and p.get("code"))
     esc = _html.escape
-    if paid:
+    if paid and p.get("donation"):
+        # v0.33.2: донат — без кода и ключа, просто спасибо
+        body = """
+<h1>💛 Спасибо за поддержку</h1>
+<p class="dim">Платёж дошёл. Это чистая поддержка проекта — без ключа и подписки, просто спасибо.
+Такие переводы платят за серверы и время на разработку.<br>
+Если это была ошибка — напиши на help@rezon-ai.ru, вернём.</p>"""
+        refresh = ""
+    elif paid:
         code = esc(str(p["code"]))
         lic = esc(str(p.get("licenseKey") or ""))
         tier = esc(str(p.get("tier") or ""))
@@ -5161,6 +5177,7 @@ async def billing_webhook_platega(request: Request):
     if not isinstance(body, dict):  # LOW-3: JSON-массив и т.п. → пусто
         body = {}
     delivery = None  # (code, lic_key, tier, email) — доставим после снятия лока
+    donation_delivery = None  # v0.33.2: (email, label) — thank-you письмо донатеру
     with _codes_lock:
         data = _load_codes()
         pid = str(body.get("id") or body.get("payment_id") or body.get("order_id") or "")[:128]
@@ -5190,47 +5207,69 @@ async def billing_webhook_platega(request: Request):
             currency = str(body.get("currency") or body.get("currency_code") or "")
             plan_id = _plan_key(str(payment.get("plan") or "")) or _plan_key(str(payment.get("tier") or "")) \
                 or _plan_for(amount, currency)
-            days = PLANS[plan_id]["days"]
-            # v0.18.0: продление — дни плана поверх max(старый exp, сейчас), остаток не сгорает
-            ext = str(payment.get("extend") or "")[:600].strip()
-            if ext:
-                p2, err2 = licensing.verify_key(LICENSE_SECRET, ext)
-                if not err2 and not _is_revoked(data, ext):
-                    old_exp = int(p2.get("exp") or 0)
-                    if old_exp > time.time():
-                        days += (old_exp - time.time()) / 86400
-            code = _new_code()
-            existing = {c["code"] for c in data["codes"]}
-            while code in existing:
+            if PLANS[plan_id].get("donation"):
+                # v0.33.2: донат — чистая поддержка: без кода/ключа/лицензии.
+                # code="DONATION" — маркер обработанности для дедупа повторных callback.
+                payment["plan"] = plan_id
+                payment["tier"] = "donation"
+                payment["donation"] = True
+                payment["code"] = "DONATION"
+                email = (payment.get("email") or _valid_email(body.get("email"))) or None
+                if email:
+                    payment["email"] = email
+                donation_delivery = (email, PLANS[plan_id]["label"])
+                _event("donation", pid, f"{PLANS[plan_id]['label']} · {amount}{currency} · {email or 'без почты'}")
+                result["donation"] = True
+            else:
+                days = PLANS[plan_id]["days"]
+                # v0.18.0: продление — дни плана поверх max(старый exp, сейчас), остаток не сгорает
+                ext = str(payment.get("extend") or "")[:600].strip()
+                if ext:
+                    p2, err2 = licensing.verify_key(LICENSE_SECRET, ext)
+                    if not err2 and not _is_revoked(data, ext):
+                        old_exp = int(p2.get("exp") or 0)
+                        if old_exp > time.time():
+                            days += (old_exp - time.time()) / 86400
                 code = _new_code()
-            data["codes"].append(_code_rec(code, "pro", "sold", f"platega:{pid}"))
-            payment["code"] = code
-            payment["plan"] = plan_id
-            payment["tier"] = "pro"
-            # license key: tier всегда pro (v0.13.0), срок = длительность плана со дня оплаты
-            email = (payment.get("email") or _valid_email(body.get("email"))) or None
-            lic_key = licensing.generate_key(LICENSE_SECRET, email or "buyer@unknown", "pro", days)
-            payment["licenseKey"] = lic_key
-            if email:
-                payment["email"] = email
-            # покупка из кабинета (платёж привязан к тенанту) → код сразу активирован,
-            # license key закреплён за кабинетом (виден в /api/cabinet)
-            tenant_id = payment.get("tenant")
-            if tenant_id:
-                t = next((x for x in data["tenants"] if x.get("id") == tenant_id), None)
-                if t:
-                    rec = data["codes"][-1]
-                    rec["status"] = "activated"
-                    rec["activatedAt"] = now_iso()
-                    rec["tenant"] = tenant_id
-                    t["tier"] = "pro"
-                    t["licenseKey"] = lic_key
-                    t["paidAt"] = now_iso()
-                    _event("cabinet_paid", tenant_id, f"{plan_id} · {code}")
-            delivery = (code, lic_key, "pro", email, payment.get("ref") or pid)
-            _event("payment", pid, f"{plan_id} · {amount}{currency} · код {code}")
-            result["code"] = code
+                existing = {c["code"] for c in data["codes"]}
+                while code in existing:
+                    code = _new_code()
+                data["codes"].append(_code_rec(code, "pro", "sold", f"platega:{pid}"))
+                payment["code"] = code
+                payment["plan"] = plan_id
+                payment["tier"] = "pro"
+                # license key: tier всегда pro (v0.13.0), срок = длительность плана со дня оплаты
+                email = (payment.get("email") or _valid_email(body.get("email"))) or None
+                lic_key = licensing.generate_key(LICENSE_SECRET, email or "buyer@unknown", "pro", days)
+                payment["licenseKey"] = lic_key
+                if email:
+                    payment["email"] = email
+                # покупка из кабинета (платёж привязан к тенанту) → код сразу активирован,
+                # license key закреплён за кабинетом (виден в /api/cabinet)
+                tenant_id = payment.get("tenant")
+                if tenant_id:
+                    t = next((x for x in data["tenants"] if x.get("id") == tenant_id), None)
+                    if t:
+                        rec = data["codes"][-1]
+                        rec["status"] = "activated"
+                        rec["activatedAt"] = now_iso()
+                        rec["tenant"] = tenant_id
+                        t["tier"] = "pro"
+                        t["licenseKey"] = lic_key
+                        t["paidAt"] = now_iso()
+                        _event("cabinet_paid", tenant_id, f"{plan_id} · {code}")
+                delivery = (code, lic_key, "pro", email, payment.get("ref") or pid)
+                _event("payment", pid, f"{plan_id} · {amount}{currency} · код {code}")
+                result["code"] = code
         _save_codes(data)
+    if donation_delivery:  # v0.33.2: thank-you донатеру — сеть строго вне лока, best-effort
+        import asyncio
+        d_email, d_label = donation_delivery
+        try:
+            res = await asyncio.to_thread(billing.deliver_donation, label=d_label, email=d_email)
+            log.info("deliver_donation: %s", res)
+        except Exception as e:  # deliver_donation сам не бросает; страховка
+            log.error("deliver_donation упал целиком (%s)", e)
     if delivery:  # сеть — строго после _save_codes и вне лока; best-effort по каналам
         import asyncio
         code, lic_key, tier, email, success_pid = delivery
@@ -5450,6 +5489,8 @@ def _tg_on_start(chat_id: str, payload: str) -> str:
     p = next((x for x in data["payments"] if ref in (x.get("id"), x.get("ref"))), None)
     if not p or p.get("status") not in _PAID_STATUSES or not p.get("code"):
         return "⏳ Платёж ещё обрабатывается — вернись по той же ссылке через минуту."
+    if p.get("donation"):
+        return "💛 Спасибо за поддержку MaxGraph! Это была чистая поддержка — без ключа и подписки."
     return billing.delivery_text(p["code"], p.get("licenseKey") or "", p.get("tier") or "pro")
 
 

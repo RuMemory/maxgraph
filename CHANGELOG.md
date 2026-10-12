@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.33.2 — 2026-10-13 «Поддержать проект»
+
+- 💛 **Донаты на лендинге** — блок «Поддержка» перед футером: чипы 99/249/499 ₽ (EN: $0.99/2.49/4.99) → Platega. Чистая поддержка: без кода, ключа и лицензии; success-страница «Спасибо за поддержку», thank-you письмо (billing.donation_html/deliver_donation, на каркасе v0.32.0). Вебхук Platega: donate-план → payment с `donation: true`, `code="DONATION"` (дедуп повторных callback), событие `donation` в журнале; лицензия не выпускается
+- 🔧 **Бэкенд**: `_DONATE`-планы в PLANS (days=0, donation=True), `_plan_key` принимает их, `/billing/create` — та же валидация email; в `/api/plans` и `/billing/status` донаты не попадают
+- 🖼 **Лендинг**: `applyLang` пропускает `.term` без `data-term` (донат-чипы — не тарифы, цены из словаря `don.p*`); self-hosted лендинг ведёт на `/#donate` стора
+- 🧪 +13 тестов (app/test_donation.py): donate-планы, вебхук (донат без кода/ключа, дедуп, pro-поток не задет, плохие креды 403), success-страница оба варианта, эскейп в HTML-письме, deliver_donation не бросает
+
 ## 0.33.1 — 2026-10-12
 
 - 🐛 **GITHUB_HOOK_SECRET проброшен в docker-compose** — без записи в environment контейнер видел пустой секрет, и вебхук отвечал 404 (деплой-смоук 0.33.0 это поймал: no-signature ждал 403, получил 404)

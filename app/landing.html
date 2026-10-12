@@ -400,6 +400,7 @@ html.js:not(.rm) .shot-wrap:not(.play) .mg-lab{opacity:0}
 .term:last-child{margin-bottom:0}
 .term:hover{background:var(--panel-2)}
 .term.is-selected{background:#2E2820;border-color:var(--amber)}
+.term.don-chip{width:auto;min-width:110px;justify-content:center;margin-bottom:0}
 .tprice{font-family:var(--mono);font-size:15.5px;font-weight:500;white-space:nowrap;
   padding-left:16px;text-align:right}
 .tper{display:block;margin-top:2px;font-size:11.5px;color:var(--dim);letter-spacing:.04em}
@@ -889,6 +890,30 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
   </div>
 </section>
 
+<!-- ═══ 9. Поддержать проект ═══ -->
+<section class="section" id="donate">
+  <div class="container">
+    <div class="redeem-card reveal">
+      <p class="sec-tag" data-i18n="don.tag">Поддержка</p>
+      <p class="redeem-title" data-i18n="don.title">MaxGraph живёт на поддержку пользователей</p>
+      <p class="redeem-sub" data-i18n="don.sub">Если проект оказался полезным — можно просто сказать спасибо. Разовый перевод, без подписки и автосписаний.</p>
+      <div class="terms-list" role="group" aria-label="Сумма поддержки" data-i18n-aria="don.group"
+           style="display:flex;flex-direction:row;gap:10px;justify-content:center;flex-wrap:wrap;margin:18px 0 4px">
+        <button type="button" class="term don-chip" data-donate="donate99"><span class="tprice"><span class="tp" data-i18n="don.p1">99&nbsp;₽</span></span></button>
+        <button type="button" class="term don-chip" data-donate="donate249"><span class="tprice"><span class="tp" data-i18n="don.p2">249&nbsp;₽</span></span></button>
+        <button type="button" class="term don-chip" data-donate="donate499"><span class="tprice"><span class="tp" data-i18n="don.p3">499&nbsp;₽</span></span></button>
+      </div>
+      <div class="buy-row" id="donRow" hidden>
+        <input type="email" id="donEmail" autocomplete="email" placeholder="твой@email"
+               aria-label="Email для чека"
+               data-i18n-attr="placeholder:don.emailph,aria-label:don.aria">
+        <button type="button" class="btn btn-ghost" id="donGo" data-i18n="don.go">Поддержать</button>
+      </div>
+      <p class="form-err" id="donErr" role="alert"></p>
+    </div>
+  </div>
+</section>
+
 <!-- ═══ Футер ═══ -->
 <footer>
   <div class="container foot-in">
@@ -1005,6 +1030,13 @@ ru:{
   'redeem.err.code':'Формат кода: MG-XXXX-XXXX-XXXX','redeem.err.email':'Введи корректный email',
   'redeem.err.net':'Ошибка сети, попробуй ещё раз',
   'redeem.selfhost':'Активировать код на rezon-ai.ru',
+  'don.tag':'Поддержка','don.title':'MaxGraph живёт на поддержку пользователей',
+  'don.sub':'Если проект оказался полезным — можно просто сказать спасибо. Разовый перевод, без подписки и автосписаний.',
+  'don.group':'Сумма поддержки',
+  'don.p1':'99 ₽','don.p2':'249 ₽','don.p3':'499 ₽',
+  'don.emailph':'твой@email','don.aria':'Email для чека',
+  'don.go':'Поддержать','don.wait':'Создаю платёж…',
+  'don.pick':'Сначала выбери сумму',
   'faq.tag':'Вопросы','faq.h2':'Коротко о важном',
   'faq.q1':'Что такое MaxGraph?',
   'faq.a1':'Память для работы с нейросетью. MaxGraph запоминает, что вы с агентом решали и делали, и находит это в следующих сессиях. Всё живёт на твоей машине, каждую запись видно в дашборде.',
@@ -1098,6 +1130,13 @@ en:{
   'redeem.err.code':'Code format: MG-XXXX-XXXX-XXXX','redeem.err.email':'Enter a valid email',
   'redeem.err.net':'Network error, please try again',
   'redeem.selfhost':'Activate your code at rezon-ai.ru',
+  'don.tag':'Support','don.title':'MaxGraph runs on user support',
+  'don.sub':'If the project has been useful, you can simply say thanks. One-time payment, no subscription, no auto-renewal.',
+  'don.group':'Support amount',
+  'don.p1':'$0.99','don.p2':'$2.49','don.p3':'$4.99',
+  'don.emailph':'your@email','don.aria':'Email for the receipt',
+  'don.go':'Support','don.wait':'Creating payment…',
+  'don.pick':'Pick an amount first',
   'faq.tag':'FAQ','faq.h2':'The essentials, briefly',
   'faq.q1':'What is MaxGraph?',
   'faq.a1':'Memory for working with AI. MaxGraph remembers what you and your agent decided and did, and finds it in later sessions. Everything lives on your machine, and every record is visible in the dashboard.',
@@ -1170,6 +1209,7 @@ function applyLang(lang){
   /* цены и помесячные пометки живут в PRICES, не в общем словаре */
   [].slice.call(document.querySelectorAll('.term')).forEach(function(b){
     var t = b.getAttribute('data-term');
+    if(!t) return;  /* донат-чипы (donate): цена из словаря don.p*, не из PRICES */
     var tp = b.querySelector('.tp'); if(tp) tp.innerHTML = PRICES[lang][t];
     var per = b.querySelector('.tper');
     if(per) per.innerHTML = PRICES[lang]['per' + t.slice(1)];
@@ -1422,6 +1462,53 @@ if(RM || !('IntersectionObserver' in window)){
       }
     }catch(_){ showErr('buy.err.net'); }
     go.disabled = false; go.textContent = I18N[curLang]['buy.go'];
+  });
+})();
+
+/* ═══ Поддержка проекта: POST /billing/create {plan: donateN, email} ═══ */
+(function donate(){
+  var row = document.getElementById('donRow');
+  var inp = document.getElementById('donEmail');
+  var go = document.getElementById('donGo');
+  var err = document.getElementById('donErr');
+  if(!row || !inp || !go || !err) return;
+  var plan = null;
+  var chips = [].slice.call(document.querySelectorAll('[data-donate]'));
+  chips.forEach(function(b){
+    b.addEventListener('click', function(){
+      /* self-hosted: платежи на сторе, ведём туда в блок #donate */
+      if(!MG_STORE){ window.open(MG_STORE_URL + '/#donate', '_blank', 'noopener'); return; }
+      plan = b.getAttribute('data-donate');
+      chips.forEach(function(x){ x.classList.remove('is-selected'); });
+      b.classList.add('is-selected');
+      err.textContent = '';
+      if(row.hidden){ row.hidden = false; inp.focus(); }
+    });
+  });
+  inp.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); go.click(); } });
+  go.addEventListener('click', async function(){
+    if(!MG_STORE){ window.open(MG_STORE_URL + '/#donate', '_blank', 'noopener'); return; }
+    if(!plan){ err.textContent = I18N[curLang]['don.pick']; return; }
+    var email = inp.value.trim();
+    if(!EMAIL_RE.test(email)){ err.textContent = I18N[curLang]['buy.err.email']; inp.focus(); return; }
+    err.textContent = '';
+    go.disabled = true; go.textContent = I18N[curLang]['don.wait'];
+    try{
+      var r = await fetch('/billing/create', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ plan: plan, email: email }) });
+      var j = await r.json();
+      if(r.ok && j.payment_url){
+        /* security: редирект только на хосты платёжного шлюза */
+        var u = null;
+        try{ u = new URL(j.payment_url); }catch(_){}
+        if(u && u.protocol === 'https:' && (u.hostname === 'app.platega.io' || u.hostname === 'pay.platega.io')){ location.href = j.payment_url; return; }
+        err.textContent = I18N[curLang]['buy.err.url'];
+      } else if(j.error){
+        err.textContent = j.error;
+      } else {
+        err.textContent = I18N[curLang]['buy.err.net'];
+      }
+    }catch(_){ err.textContent = I18N[curLang]['buy.err.net']; }
+    go.disabled = false; go.textContent = I18N[curLang]['don.go'];
   });
 })();
 

@@ -41,9 +41,14 @@ log = logging.getLogger("maxgraph.billing")
 DEFAULT_API_BASE = "https://app.platega.io"
 # v0.23.0: один тариф Pro, лесенка длительности (скидки от базы 149₽/мес: −11/−16/−27%)
 PRICES = {"pro1": {"RUB": 149, "USD": 1.99}, "pro3": {"RUB": 399, "USD": 4.99},
-          "pro6": {"RUB": 749, "USD": 9.99}, "pro12": {"RUB": 1299, "USD": 14.99}}
+          "pro6": {"RUB": 749, "USD": 9.99}, "pro12": {"RUB": 1299, "USD": 14.99},
+          "donate99": {"RUB": 99, "USD": 0.99}, "donate249": {"RUB": 249, "USD": 2.49},
+          "donate499": {"RUB": 499, "USD": 4.99}}
 LABELS = {"pro1": "Maxgraph Pro — 1 месяц", "pro3": "Maxgraph Pro — 3 месяца",
-          "pro6": "Maxgraph Pro — 6 месяцев", "pro12": "Maxgraph Pro — 12 месяцев"}
+          "pro6": "Maxgraph Pro — 6 месяцев", "pro12": "Maxgraph Pro — 12 месяцев",
+          "donate99": "MaxGraph — поддержка проекта (99 ₽)",
+          "donate249": "MaxGraph — поддержка проекта (249 ₽)",
+          "donate499": "MaxGraph — поддержка проекта (499 ₽)"}
 
 
 class BillingError(Exception):
@@ -331,4 +336,57 @@ def deliver_code(*, code: str, license_key: str, tier: str, email: str | None = 
     if all(v != "sent" for v in out.values()):
         logger.warning("deliver_code: ни один канал не доставил (code=%s); "
                        "код доступен на success-странице и в codes.json", code)
+    return out
+
+
+# ------------------------------------------------------ донаты (v0.33.2) ---
+# Чистая поддержка проекта: без кода, ключа и лицензии. Только thank-you письмо.
+
+def donation_text(label: str) -> str:
+    """Plain-версия письма донатеру (text/plain часть и фолбэк)."""
+    return (
+        f"Спасибо за поддержку MaxGraph ✨\n\n"
+        f"Твой платёж «{label}» дошёл. Это чистая поддержка проекта — "
+        f"без ключа и подписки, просто спасибо. Такие переводы платят за серверы "
+        f"и время на разработку.\n\n"
+        f"Если это была ошибка — напиши на help@rezon-ai.ru, вернём."
+    )
+
+
+def donation_html(label: str) -> str:
+    """HTML thank-you письмо донатеру (каркас _email_frame, v0.32.0)."""
+    card_inner = f"""        <tr><td style="font:700 24px/1.3 Arial,Helvetica,sans-serif;color:#191613;padding:0 0 8px">
+          Спасибо за поддержку&nbsp;💛
+        </td></tr>
+        <tr><td style="font:400 15px/1.6 Arial,Helvetica,sans-serif;color:#3D362E;padding:0 0 24px">
+          Твой платёж «{_esc(label)}» дошёл. Это чистая поддержка проекта — без ключа и подписки, просто спасибо. Такие переводы платят за серверы и время на разработку.
+        </td></tr>
+        <tr><td style="border-top:1px solid #F0E9DC;padding-top:20px;font:400 13px/1.55 Arial,Helvetica,sans-serif;color:#7A6F60">
+          Если это была ошибка — напиши нам, вернём: <a href="mailto:help@rezon-ai.ru" style="color:#7A6F60;text-decoration:underline">help@rezon-ai.ru</a>
+        </td></tr>"""
+    return _email_frame(preheader="Спасибо за поддержку MaxGraph",
+                        card_inner=card_inner,
+                        footer_note="Письмо отправлено автоматически — отвечать на него не нужно.")
+
+
+def deliver_donation(*, label: str, email: str | None = None,
+                     env=None, smtp_factory=None, logger=None) -> dict:
+    """Thank-you письмо донатеру. НИКОГДА не бросает. → {"email": "sent|skipped|error"}"""
+    env = os.environ if env is None else env
+    logger = logger or log
+    out = {}
+    if email and env.get("SMTP_HOST"):
+        try:
+            send_email_smtp(email, "MaxGraph: спасибо за поддержку", donation_text(label), {
+                "host": env.get("SMTP_HOST"), "port": env.get("SMTP_PORT"),
+                "user": env.get("SMTP_USER"), "password": env.get("SMTP_PASS"),
+                "sender": env.get("SMTP_FROM") or env.get("SMTP_USER"),
+                "starttls": env.get("SMTP_STARTTLS"),
+            }, smtp_factory=smtp_factory, html=donation_html(label))
+            out["email"] = "sent"
+        except Exception as e:
+            logger.error("deliver_donation email → %s: %s", email, e)
+            out["email"] = f"error: {e}"
+    else:
+        out["email"] = "skipped"
     return out
