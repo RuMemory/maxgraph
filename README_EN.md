@@ -72,6 +72,10 @@ When the trial ends, only writing new facts stops. The dashboard, search and exp
 
 Buy & activate: [rezon-ai.ru](https://rezon-ai.ru)
 
+## 💛 Support
+
+MaxGraph runs on user support. If the project has been useful, you can simply say thanks: [rezon-ai.ru#donate](https://rezon-ai.ru/#donate). One-time payment, no subscription.
+
 ## Privacy
 
 All records are stored only on your computer. They are plain text files in the `data/` folder: you can open, read and copy them at any time.
