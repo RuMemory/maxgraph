@@ -3,7 +3,8 @@ FROM python:3.12-slim
 # Связка GHCR-пакета с публичной витриной (пакет виден на странице RuMemory/maxgraph)
 LABEL org.opencontainers.image.source="https://github.com/RuMemory/maxgraph" \
       org.opencontainers.image.description="MaxGraph — persistent memory for AI agents (MCP server, self-hosted)" \
-      org.opencontainers.image.licenses="BUSL-1.1"
+      org.opencontainers.image.licenses="BUSL-1.1" \
+      io.modelcontextprotocol.server.name="io.github.RuMemory/maxgraph"
 
 WORKDIR /app
 
@@ -13,6 +14,7 @@ COPY app/ /app/
 COPY VERSION /app/VERSION
 
 ENV MEMORY_TOKEN="" \
+    HOST_FP="" \
     MEMORY_DIR=/data \
     PORT=8787
 

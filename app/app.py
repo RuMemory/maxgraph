@@ -3072,6 +3072,10 @@ def _save_codes(data: dict):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         tmp = CODES_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        try:
+            os.chmod(tmp, 0o600)  # LOW-2: ДО replace — без микроокна umask-пермишений
+        except OSError:
+            pass  # Windows/экзотика — best-effort
         tmp.replace(CODES_FILE)
         try:
             os.chmod(CODES_FILE, 0o600)  # license keys открытым текстом (tenant-токены — только sha256, №6) — только owner
@@ -3156,6 +3160,93 @@ def _save_installs(data: dict):
     tmp = INSTALLS_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     tmp.replace(INSTALLS_FILE)
+
+
+# --- host-fp: реестр привязок license key → machine fingerprints (2 слота) ----
+# Платный ключ живёт максимум на 2 машинах (решение владельца, переноса нет —
+# отвязка только владельцем через /admin). Ключи храним как sha256 (как
+# revoke-реестр), fp — sha256-хеши машин (сырое железо никогда не уходит).
+
+MACHINES_FILE = DATA_DIR / "machines.json"
+_machines_lock = threading.Lock()
+_MACHINES_MAX_FP = 1      # 1 ключ = 1 машина (решение владельца 2026-10-13, заменило «2 машины»)
+_MACHINES_CAP = 10000     # потолок ключей в реестре; вытеснение самых старых по updated
+
+
+_machines_reset_notified = False  # _event о реинициализации — один раз, не флудим пульс
+
+
+def _load_machines() -> dict:
+    """Нет файла → свежий каркас. Битый файл — fail-closed, как codes.json:
+    бэкап + raise (хендлер ответит 500, чужие привязки молча не затираем).
+    LOW-1: после corrupt-бэкапа файл отсутствует → реестр стартует ПУСТЫМ —
+    не молчим: log.critical + событие в пульс (привязки потеряны до ручного
+    восстановления из machines.corrupt-*.json)."""
+    if not MACHINES_FILE.exists():
+        global _machines_reset_notified
+        if not _machines_reset_notified and list(DATA_DIR.glob("machines.corrupt-*.json")):
+            _machines_reset_notified = True
+            log.critical("machines.json отсутствует, но есть corrupt-бэкап — реестр "
+                         "реинициализирован ПУСТЫМ; привязки потеряны до ручного восстановления")
+            _event("machines_registry_reset", "", "старт с пустого после corrupt-бэкапа")
+        return {"machines": {}}
+    try:
+        data = json.loads(MACHINES_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("machines", {})
+            return data
+        raise ValueError("machines.json не dict")
+    except Exception as e:
+        backup = MACHINES_FILE.with_name(f"machines.corrupt-{int(time.time())}.json")
+        try:
+            MACHINES_FILE.replace(backup)
+        except OSError:
+            pass
+        log.error("machines.json повреждён → сохранён как %s (%s); ОТКАЗЫВАЮСЬ работать с пустым",
+                  backup, e)
+        raise
+
+
+def _save_machines(data: dict):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = MACHINES_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)  # LOW-2: ДО replace — без микроокна umask-пермишений
+    except OSError:
+        pass  # Windows — best-effort
+    tmp.replace(MACHINES_FILE)
+    try:
+        os.chmod(MACHINES_FILE, 0o600)  # привязки — не публичные данные
+    except OSError:
+        pass  # Windows — best-effort
+
+
+def _machine_bind(data: dict, key: str, fp: str, now: float) -> str:
+    """Привязать fp к ключу (зовётся под _machines_lock) → "known"|"bound"|"limit".
+    known — fp уже привязан; bound — свободный слот был, привязали; limit — слоты заняты.
+    Legacy (ключ без единой привязки) принимает первый fp — решение владельца №5."""
+    h = _key_hash(key)
+    rec = data["machines"].get(h)
+    if rec and fp in (rec.get("fps") or []):
+        rec["updated"] = now  # свежесть = защита от вытеснения по капу
+        return "known"
+    if rec is None:
+        rec = data["machines"][h] = {"fps": [], "first_seen": now}
+    fps = rec.setdefault("fps", [])
+    if len(fps) >= _MACHINES_MAX_FP:
+        return "limit"
+    fps.append(fp)
+    rec["updated"] = now
+    if len(data["machines"]) > _MACHINES_CAP:  # вытеснение самых старых по updated
+        stale = sorted(data["machines"], key=lambda k: data["machines"][k].get("updated", 0))
+        for k in stale[: len(data["machines"]) - _MACHINES_CAP]:
+            del data["machines"][k]
+    return "bound"
+
+
+_MACHINE_LIMIT_MSG = ("Ключ уже привязан к другому компьютеру. Отвязка — только через "
+                      "владельца магазина: help@rezon-ai.ru")
 
 
 def _install_id(data_dir=None) -> str:
@@ -3319,7 +3410,14 @@ def _watchdog_iteration(env, telemetry):
         pass  # fail-open: апдейт-чип не критичен, лицензию проверяем ниже
     key = licensing.current_key(DATA_DIR, LICENSE_SECRET)
     if key:
-        resp = _post_json(PUBLIC_BASE_URL + "/api/license/validate", {"key": key}, timeout=8)
+        payload = {"key": key}
+        fp = licensing.machine_fingerprint()
+        if fp:
+            payload["fp"] = fp  # host-fp: магазин учитывает машину ключа (2 слота)
+        try:
+            resp = _post_json(PUBLIC_BASE_URL + "/api/license/validate", payload, timeout=8)
+        except Exception as e:
+            resp = _http_error_json(e)  # 403 machine_limit — штатный отказ с телом
         if isinstance(resp, dict):
             if resp.get("revoked"):
                 if licensing.set_revoked(DATA_DIR, LICENSE_SECRET, resp.get("revoked_at") or time.time()):
@@ -3329,6 +3427,10 @@ def _watchdog_iteration(env, telemetry):
                 if licensing.set_revoked(DATA_DIR, LICENSE_SECRET, None):
                     _event("license_unrevoked", "", "магазин снял отзыв")
                 _relay_config_pull(env)  # v0.19.0: свежий relay-токен раз в сутки
+            elif resp.get("error") == "machine_limit":
+                # host-fp, решение №6: machine_limit ≠ «ключ невалиден» — локальный
+                # state НЕ затираем (fail-open), лицензия продолжает работать
+                log.warning("watchdog: магазин ответил machine_limit — лицензия сохранена")
 
 
 def _license_watchdog(env=None):
@@ -4441,7 +4543,9 @@ async def api_billing_pay(request: Request):
     """Кнопка «Купить» (лендинг/дашборд v0.18.0) → ссылка на оплату Platega.
 
     Опциональный extend=<текущий license key>: продление — вебхук прибавит дни
-    плана к max(старый exp, сейчас), остаток не сгорает. Ключ проверяется сразу."""
+    плана к max(старый exp, сейчас), остаток не сгорает. Ключ проверяется сразу.
+    Опциональный email (чек + recovery вебхуком): из тела (новая покупка) ИЛИ из
+    подписанного payload extend-ключа (продление — источник доверенный)."""
     import asyncio
     import secrets
     ip = _client_ip(request)
@@ -4464,6 +4568,7 @@ async def api_billing_pay(request: Request):
     if extend and PLANS[plan_id].get("donation"):
         return JSONResponse({"error": "extend: продление неприменимо к донатам"}, status_code=400,
                             headers=_CORS)
+    extend_email = ""
     if extend:
         if not extend.startswith("mg_"):
             return JSONResponse({"error": "extend: ожидается license key mg_…"}, status_code=400,
@@ -4473,6 +4578,14 @@ async def api_billing_pay(request: Request):
             return JSONResponse({"error": f"extend: {err}"}, status_code=400, headers=_CORS)
         if _is_revoked(_load_codes(), extend):
             return JSONResponse({"error": "extend: ключ отозван"}, status_code=400, headers=_CORS)
+        extend_email = _valid_email(payload.get("email")) or ""  # подписанный, доверенный
+    # email ОПЦИОНАЛЕН (совместимость со старыми дашбордами флота): из тела
+    # (новая покупка) или из подписанного payload extend-ключа. Передан, но
+    # мусорный → 400 (защита от опечаток); не передан → платёж без email
+    # (ключ доедет поллингом /api/billing/status, но recovery по почте не сможет).
+    if body.get("email") is not None and not _valid_email(body.get("email")):
+        return JSONResponse({"error": "valid email required"}, status_code=400, headers=_CORS)
+    email = extend_email or (_valid_email(body.get("email")) or "")
     # продление — скидка −10%, считается ТОЛЬКО серверно (клиент цену не подсовывает)
     amount = int(round(PLANS[plan_id]["RUB"] * EXTEND_DISCOUNT)) if extend else None
     ref = "r-" + secrets.token_hex(8)
@@ -4492,6 +4605,8 @@ async def api_billing_pay(request: Request):
         rec = {"id": ref, "ref": ref, "platega_id": platega_id, "plan": plan_id,
                "tier": "pro", "status": "created", "at": now_iso(), "payUrl": pay_url,
                "amount": amount if amount is not None else PLANS[plan_id]["RUB"]}
+        if email:
+            rec["email"] = email  # только когда известен — не засоряем запись пустотой
         if extend:
             rec["extend"] = extend
         data["payments"].append(rec)
@@ -4672,7 +4787,10 @@ async def api_license_activate(request: Request):
         return JSONResponse({"ok": False, "error": f"activate failed: {e}"}, status_code=500)
     if not res.get("ok"):
         log.warning("license activate rejected от %s: %s", ip, res.get("error"))
-        return JSONResponse({"ok": False, "error": res["error"]}, headers=_NOCACHE)
+        out = {"ok": False, "error": res["error"]}
+        if res.get("machine_limit"):  # host-fp: лимит машин — отдельный сценарий, не «invalid»
+            out["machine_limit"] = True
+        return JSONResponse(out, headers=_NOCACHE)
     _event("license_activated", res.get("email") or "", res.get("tier", ""))
     log.info("license activated: %s · %s", res.get("tier"), res.get("email"))
     try:
@@ -4688,33 +4806,60 @@ def _activate_key(key: str) -> dict:
     Ключи магазина подписаны серверным LICENSE_HMAC_SECRET — self-hosted установка
     локально их не проверит (свой секрет). Тогда: POST {PUBLIC_BASE_URL}/api/license/validate
     → сервер подтверждает → локальный grant. Блокирующий сетевой вызов — вызывать в thread.
+
+    host-fp: с ключом передаём fp машины (магазин: 2 слота на ключ). Ответ
+    403 machine_limit — НЕ «ключ невалиден» (решение владельца №6): локальный
+    state не трогаем, наружу отдаём machine_limit=True + понятный message.
     """
     res = licensing.activate(DATA_DIR, LICENSE_SECRET, key)
     if res.get("ok") or "signature" not in str(res.get("error", "")):
         return res
     if not PUBLIC_BASE_URL:
         return res
+    payload = {"key": key}
+    fp = licensing.machine_fingerprint()
+    if fp:
+        payload["fp"] = fp
     try:
-        import urllib.request
-        req = urllib.request.Request(
-            f"{PUBLIC_BASE_URL}/api/license/validate",
-            data=json.dumps({"key": key}).encode("utf-8"),
-            headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            j = json.loads(resp.read().decode("utf-8"))
+        j = _post_json(f"{PUBLIC_BASE_URL}/api/license/validate", payload, timeout=6)
     except Exception as e:
-        return {"ok": False, "error": f"ключ магазина требует онлайн-активации, сервер недоступен: {e}"}
+        j = _http_error_json(e)  # штатный отказ с телом (403 machine_limit)
+        if j is None:
+            return {"ok": False, "error": f"ключ магазина требует онлайн-активации, сервер недоступен: {e}"}
+    if not isinstance(j, dict):
+        return {"ok": False, "error": "сервер магазина ответил не-JSON — активация отклонена"}
     if not j.get("ok"):
+        if j.get("error") == "machine_limit":
+            return {"ok": False, "error": j.get("message") or _MACHINE_LIMIT_MSG,
+                    "machine_limit": True}
         return {"ok": False, "error": j.get("error") or "сервер магазина отклонил ключ"}
     return licensing.grant(DATA_DIR, LICENSE_SECRET, j, key=key)
+
+
+def _http_error_json(e: Exception):
+    """HTTPError с JSON-телом → dict (штатные отказы магазина с телом: 403 machine_limit
+    и т.п.); сетевая ошибка/не-JSON → None. urllib бросает HTTPError на любой не-2xx."""
+    import urllib.error
+    if not isinstance(e, urllib.error.HTTPError):
+        return None
+    try:
+        j = json.loads(e.read(65536).decode("utf-8"))  # кап, как у _post_json
+    except Exception:
+        return None
+    return j if isinstance(j, dict) else None
 
 
 @mcp.custom_route("/api/license/validate", methods=["POST"])
 async def api_license_validate(request: Request):
     """Сервер магазина: проверка ключа self-hosted установками покупателей.
 
-    {key} → {ok:true,email,tier,exp} | {ok:false,error}. Только валидация подписи
-    магазина — без выдачи новых ключей. Публичный, rate-limit.
+    {key, fp?} → {ok:true,email,tier,exp} | {ok:false,error}. Только валидация
+    подписи магазина — без выдачи новых ключей. Публичный, rate-limit.
+
+    host-fp: клиент передаёт fp (sha256-хеш машины). fp известен → ok; fp новый
+    и свободный слот (≤2 на ключ) → привязка + ok; слоты заняты → 403
+    machine_limit (состояние ключа у клиента НЕ затирается — отдельный сценарий
+    с понятным текстом). Без fp — legacy fail-open: ok, привязок не создаём.
     """
     ip = _client_ip(request)
     if _rate_limited(ip, "license_validate", 20, 60):
@@ -4737,6 +4882,28 @@ async def api_license_validate(request: Request):
         _event("license_validate_revoked", payload.get("email") or "", payload.get("tier", ""))
         return JSONResponse({"ok": False, "revoked": True, "error": "license revoked",
                              "revoked_at": rec.get("ts") or 0}, headers=_NOCACHE)
+    fp = str(body.get("fp") or "")[:128].strip().lower()
+    if fp:
+        if not _FP_RE.match(fp):
+            return JSONResponse({"ok": False, "error": "bad fp"}, status_code=400)
+        try:
+            with _machines_lock:
+                mdata = _load_machines()
+                verdict = _machine_bind(mdata, key, fp, time.time())
+                if verdict != "limit":
+                    _save_machines(mdata)
+        except Exception:  # битый machines.json → fail-closed (500), привязки целы
+            log.error("validate: machines.json не читается — отказ (fail-closed)")
+            return JSONResponse({"ok": False, "error": "store registry error"}, status_code=500)
+        if verdict == "limit":
+            _event("license_machine_limit", payload.get("email") or "", fp[:12])
+            log.info("validate: machine_limit для %s (fp=%s…)",
+                     payload.get("email") or "?", fp[:8])
+            return JSONResponse({"ok": False, "error": "machine_limit",
+                                 "message": _MACHINE_LIMIT_MSG},
+                                status_code=403, headers=_NOCACHE)
+        if verdict == "bound":
+            _event("license_machine_bound", payload.get("email") or "", fp[:12])
     _event("license_validated", payload.get("email") or "", payload.get("tier", ""))
     return JSONResponse({"ok": True, "email": payload.get("email"),
                          "tier": payload.get("tier"), "exp": payload.get("exp") or 0},
@@ -4890,6 +5057,7 @@ _ADMIN_PBKDF2_ROUNDS = 200_000
 _ADMIN_COOKIE_PATHS = {"/api/payments", "/api/tenants", "/api/codes", "/api/codes/generate",
                        "/api/codes/export", "/api/installs", "/api/admin/revoke",
                        "/api/admin/logout", "/api/admin/password",
+                       "/api/admin/machines", "/api/admin/machines/unbind",  # host-fp
                        "/api/admin/synonyms", "/api/admin/synonyms/veto"}  # W3 (v0.27.0)
 
 
@@ -5176,6 +5344,87 @@ async def api_admin_revoke(request: Request):
     _event("license_unrevoked" if unrevoke else "license_revoked",
            payload.get("email") or "", key[:10] + "…")
     return JSONResponse({"ok": True, "revoked": not unrevoke, "changed": changed},
+                        headers=_NOCACHE)
+
+
+@mcp.custom_route("/api/admin/machines", methods=["POST"])
+async def api_admin_machines(request: Request):
+    """Привязки машин ключа (host-fp): {key} → {fps, first_seen, updated, limit}.
+    Для админки /admin (владелец магазина). Неизвестный ключ → пустой список.
+    POST, а не GET: license key не должен оседать в access-логах uvicorn/nginx
+    (тот же мотив, по которому revoke берёт ключ из тела)."""
+    g = _store_gate()
+    if g:
+        return g
+    if not _admin_auth(request):
+        return _admin_401()
+    body, err = await _read_capped(request, 16384)
+    if err is not None:
+        return err
+    try:
+        body = json.loads(body)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
+    key = str(body.get("key") or "")[:600].strip()
+    if not key.startswith("mg_"):
+        return JSONResponse({"ok": False, "error": "key must start with mg_"}, status_code=400)
+    try:
+        data = _load_machines()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "machines registry corrupted"}, status_code=500)
+    rec = (data.get("machines") or {}).get(_key_hash(key)) or {}
+    return JSONResponse({"ok": True, "fps": list(rec.get("fps") or []),
+                         "first_seen": rec.get("first_seen"), "updated": rec.get("updated"),
+                         "limit": _MACHINES_MAX_FP}, headers=_NOCACHE)
+
+
+@mcp.custom_route("/api/admin/machines/unbind", methods=["POST"])
+async def api_admin_machines_unbind(request: Request):
+    """Отвязка машины от ключа — ТОЛЬКО владельцем (переноса самообслуживанием нет,
+    решение владельца №4). {key, fp} → удалить fp из привязок ключа. Мутация
+    только POST (SameSite=Lax кука на кросс-сайт POST fetch не едет — CSRF-паттерн
+    как у /api/codes/export mark=1). Подпись ключа проверяем, как в revoke."""
+    g = _store_gate()
+    if g:
+        return g
+    if not _admin_auth(request):
+        return _admin_401()
+    body, err = await _read_capped(request, 16384)
+    if err is not None:
+        return err
+    try:
+        body = json.loads(body)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
+    key = str(body.get("key") or "")[:600].strip()
+    fp = str(body.get("fp") or "")[:128].strip().lower()
+    if not key.startswith("mg_"):
+        return JSONResponse({"ok": False, "error": "key must start with mg_"}, status_code=400)
+    if not _FP_RE.match(fp):
+        return JSONResponse({"ok": False, "error": "bad fp"}, status_code=400)
+    payload, kerr = licensing.verify_key(LICENSE_SECRET, key, now=0)  # как revoke: now=0
+    if kerr:
+        return JSONResponse({"ok": False, "error": kerr}, status_code=400)
+    try:
+        with _machines_lock:
+            data = _load_machines()
+            rec = (data.get("machines") or {}).get(_key_hash(key))
+            fps = (rec or {}).get("fps") or []
+            changed = fp in fps
+            if changed:
+                rec["fps"] = [x for x in fps if x != fp]
+                rec["updated"] = time.time()
+                _save_machines(data)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "machines registry corrupted"}, status_code=500)
+    if changed:
+        _event("license_machine_unbound", payload.get("email") or "", fp[:12])
+        log.info("admin: отвязана машина fp=%s… от ключа %s", fp[:8], payload.get("email") or "?")
+    return JSONResponse({"ok": True, "changed": changed, "fps": (rec or {}).get("fps") or []},
                         headers=_NOCACHE)
 
 

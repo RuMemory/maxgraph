@@ -38,6 +38,8 @@ Env:
   TRIAL_DAYS          — длина триала (default 7)
   LICENSE_HMAC_SECRET — ключ подписи; если не задан — генерируется при первом
                         запуске и сохраняется в DATA_DIR/.hmac_key (chmod 600)
+  HOST_FP             — sha256-хеш железа хоста (64 hex), ставит установщик;
+                        приоритетный источник machine_fingerprint()
 """
 
 import base64
@@ -46,6 +48,7 @@ import hmac
 import json
 import os
 import platform
+import re
 import secrets
 import time
 import uuid
@@ -457,18 +460,32 @@ FP_FILES = (
     "/var/lib/dbus/machine-id",
 )
 
+_HOST_FP_RE = re.compile(r"^[0-9a-f]{64}$")
 
-def machine_fingerprint() -> str | None:
+
+def machine_fingerprint(env=None) -> str | None:
     """Стабильный хеш машины для серверного якоря триала (v0.16.3).
 
-    sha256 от конкатенации доступных источников (порядок фиксирован): DMI
-    product_uuid, /etc/machine-id, /var/lib/dbus/machine-id, реальный MAC,
-    hostname. Наружу уходит только хеш, не сами значения. Доступно хотя бы одно
-    → хеш; недоступно ничего → None (ping идёт без fp).
+    Приоритет — env HOST_FP (host-fp): sha256-хеш железа ХОСТА, вычисленный
+    установщиком ДО docker compose up (Windows: MachineGuid реестра, macOS:
+    IOPlatformUUID, Linux: /etc/machine-id хоста) и проброшенный в контейнер.
+    Контейнерный fingerprint при пересоздании контейнера плывёт, HOST_FP — нет.
+    Валиден строго ^[0-9a-f]{64}$ (пробелы/регистр нормализуются); мусорный env
+    молча игнорируется → fallback на контейнерные источники (fail-open, поведение
+    ≤v0.36 сохранено).
+
+    Legacy (без HOST_FP): sha256 от конкатенации доступных источников (порядок
+    фиксирован): DMI product_uuid, /etc/machine-id, /var/lib/dbus/machine-id,
+    реальный MAC, hostname. Наружу уходит только хеш, не сами значения.
+    Доступно хотя бы одно → хеш; недоступно ничего → None (ping идёт без fp).
     NB: Docker на Windows видит VM Docker Desktop — fp стабилен внутри неё;
     hostname/MAC контейнера могут меняться при пересоздании → якорь молча не
     сработает (fail-open, хуже не становится).
     """
+    env = os.environ if env is None else env
+    host_fp = (env.get("HOST_FP") or "").strip().lower()
+    if host_fp and _HOST_FP_RE.fullmatch(host_fp):
+        return host_fp
     parts = []
     for p in FP_FILES:
         try:

@@ -12,6 +12,7 @@ services:
     environment:
       MEMORY_TOKEN: ${MEMORY_TOKEN:-}  # пусто → автогенерация mg_local_* в data/local_token.txt (v0.14)
       TELEMETRY: ${TELEMETRY:-}  # 0 — отключить анонимный install-ping (v0.14) и learn-events (v0.26.0)
+      HOST_FP: ${HOST_FP:-}  # sha256 железа хоста (ставит установщик; стабильный fingerprint машины)
       STORE_MODE: ${STORE_MODE:-}
       TRUST_PROXY: ${TRUST_PROXY:-}
       PLATEGA_MERCHANT_ID: ${PLATEGA_MERCHANT_ID:-}

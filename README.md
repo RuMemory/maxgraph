@@ -55,6 +55,25 @@ docker compose logs maxgraph | grep "автогенерация"   # или: cat
 
 Готовые примеры настройки под каждый клиент: [docs/PROVIDERS.md](docs/PROVIDERS.md)
 
+### Подключение в один шаг
+
+Сервер уже запущен (шаг «Установка» выше)? Дальше — одна команда или одна ссылка:
+
+- **Claude Code** — плагин из нашего маркетплейса (токен спросит при установке):
+  ```
+  claude plugin marketplace add RuMemory/maxgraph
+  claude plugin install maxgraph@maxgraph
+  ```
+- **Cursor** — вставь в адресную строку браузера (после установки замени `PASTE_TOKEN_HERE` на свой токен в Settings → MCP):
+  ```
+  cursor://anysphere.cursor-deeplink/mcp/install?name=maxgraph&config=eyJ1cmwiOiJodHRwOi8vbG9jYWxob3N0Ojg3ODcvbWNwIiwiaGVhZGVycyI6eyJBdXRob3JpemF0aW9uIjoiQmVhcmVyIFBBU1RFX1RPS0VOX0hFUkUifX0=
+  ```
+- **VS Code** — вставь в адресную строку браузера (токен подставляется в settings):
+  ```
+  vscode:mcp/install?%7B%22name%22%3A%22maxgraph%22%2C%22type%22%3A%22http%22%2C%22url%22%3A%22http%3A%2F%2Flocalhost%3A8787%2Fmcp%22%2C%22headers%22%3A%7B%22Authorization%22%3A%22Bearer%20PASTE_TOKEN_HERE%22%7D%7D
+  ```
+- **Cline и другие агенты** — дай агенту файл [llms-install.md](llms-install.md), он поставит и подключит сам.
+
 ## Цены
 
 **7 дней бесплатно, без карты** — триал начинается с первого запуска, включать ничего не нужно. Дальше один тариф со всем включённым, разовый платёж без автосписаний:

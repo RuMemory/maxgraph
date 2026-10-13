@@ -55,6 +55,25 @@ Updates install themselves, once a day. Don't want them — disable with `AUTO_U
 
 Ready-made setup examples for each client: [docs/PROVIDERS.md](docs/PROVIDERS.md)
 
+### Connect in one step
+
+Server already running (see «Install» above)? Then it's one command or one link:
+
+- **Claude Code** — plugin from our marketplace (asks for the token during install):
+  ```
+  claude plugin marketplace add RuMemory/maxgraph
+  claude plugin install maxgraph@maxgraph
+  ```
+- **Cursor** — paste into your browser's address bar (after installing, replace `PASTE_TOKEN_HERE` with your token in Settings → MCP):
+  ```
+  cursor://anysphere.cursor-deeplink/mcp/install?name=maxgraph&config=eyJ1cmwiOiJodHRwOi8vbG9jYWxob3N0Ojg3ODcvbWNwIiwiaGVhZGVycyI6eyJBdXRob3JpemF0aW9uIjoiQmVhcmVyIFBBU1RFX1RPS0VOX0hFUkUifX0=
+  ```
+- **VS Code** — paste into your browser's address bar (token goes into settings):
+  ```
+  vscode:mcp/install?%7B%22name%22%3A%22maxgraph%22%2C%22type%22%3A%22http%22%2C%22url%22%3A%22http%3A%2F%2Flocalhost%3A8787%2Fmcp%22%2C%22headers%22%3A%7B%22Authorization%22%3A%22Bearer%20PASTE_TOKEN_HERE%22%7D%7D
+  ```
+- **Cline and other agents** — hand the agent [llms-install.md](llms-install.md); it installs and connects everything itself.
+
 ## Pricing
 
 **7 days free, no card** — the trial starts on first launch, nothing to enable. After that, one all-inclusive plan, one-time payment, no auto-renewal:

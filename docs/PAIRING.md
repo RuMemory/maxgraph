@@ -50,6 +50,24 @@ openssl rand -hex 24
 -join ((1..48)|%{ '{0:x}' -f (Get-Random -Max 16) })
 ```
 
+И сразу — `HOST_FP`: «отпечаток» твоего компьютера (хеш железа, само железо никуда не отправляется). Он делает триал и лицензию стабильными при пересоздании контейнера. Одна команда — и впиши результат (64 символа) строкой `HOST_FP=…` в `.env`:
+
+```bash
+# Linux
+tr -d '[:space:]' < /etc/machine-id | sha256sum | awk '{print $1}'
+
+# macOS
+printf %s "$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/{print $4}')" | shasum -a 256 | awk '{print $1}'
+```
+
+```powershell
+# Windows (PowerShell)
+$guid=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography').MachineGuid
+[BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("$guid"))).Replace('-','').ToLower()
+```
+
+При переустановке на том же компьютере `HOST_FP` не меняется — если строка уже есть в `.env`, оставляй её как есть.
+
 Запуск:
 
 ```bash
@@ -172,6 +190,10 @@ curl -H "Authorization: Bearer $T" http://localhost:8787/api/export > backup.jso
 3. Ключ привязан к email покупки и тарифу — чужой или старый ключ не сработает.
 4. Всё равно не катит → поддержка через магазин, приложи email покупки. Разберёмся.
 
+### «Лимит: ключ уже привязан к другому компьютеру»
+
+Один license key = одна машина. Новый компьютер или пересборка — напиши на help@rezon-ai.ru с email покупки: отвяжем старую машину, ключ активируется.
+
 ### «Дашборд пуст»
 
 Это нормально: память появляется, когда агент **подключён и пишет**. Пустой космос — это будущий граф. Сделай два шага:
@@ -196,7 +218,7 @@ title = человеческое имя); зависимости — create_rela
 1. На старой машине: кнопка **⬇ export** в дашборде (или `curl … /api/export > backup.json`).
 2. На новой: подними свежую установку (шаг 2), останови контейнер.
 3. Из бэкапа распакуй: `memory_ndjson` → `data/memory.json`, `events_jsonl` → `data/events.jsonl`. С v0.34.0 (шарды): если `data/projects/` существует — удали его до запуска (миграция сама разложит монолит по шардам).
-4. Запусти контейнер. Тот же license key вводишь в `/app` новой установки — привязка по email, а не по железу.
+4. Запусти контейнер. Тот же license key вводишь в `/app` новой установки. Один ключ живёт на двух машинах одновременно; для третьей напиши на help@rezon-ai.ru с email покупки — отвяжем лишнюю.
 
 ---
 

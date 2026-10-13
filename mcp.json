@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "maxgraph": {
+      "url": "http://localhost:8787/mcp",
+      "headers": { "Authorization": "Bearer ${MAXGRAPH_TOKEN}" }
+    }
+  }
+}

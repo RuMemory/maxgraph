@@ -196,11 +196,12 @@ a:hover{text-decoration:underline}
 .sr-obs{font-size:12px;color:var(--ink-3);margin-top:3px}
 .form-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-m);padding:20px 22px;margin-bottom:16px}
 .form-card h3{font-size:14px;font-weight:600;margin-bottom:14px;letter-spacing:-.01em}
-.f-label{font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:5px}
+.f-label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-bottom:5px}
 .f-row{margin-bottom:12px}
 .inp{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:9px;padding:9px 12px;outline:none;transition:border-color var(--t-fast)}
 .inp::placeholder{color:var(--ink-4)}
 .inp:focus{border-color:var(--accent)}
+.inp.err{border-color:var(--bad)}
 textarea.inp{resize:vertical;min-height:72px}
 select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23A79C8B' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px;width:auto}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:var(--accent);color:var(--on-accent);font-size:12.5px;font-weight:500;border-radius:9px;padding:9px 18px;transition:background var(--t-fast)}
@@ -557,7 +558,12 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
       <div class="sub" data-i18n="buy.sub">Выбери срок — нажми «Оплатить». Ключ активируется сам, как только платёж пройдёт.</div>
       <div id="buyPlans" role="radiogroup" aria-label="Pro"></div>
       <label class="f-label" for="buyExtend" data-i18n="buy.extend">Текущий ключ (продление −10% — дни суммируются)</label>
-      <input class="inp mono" id="buyExtend" placeholder="mg_…" autocomplete="off" style="margin:2px 0 10px;font-size:10.5px">
+      <input class="inp mono" id="buyExtend" placeholder="mg_…" autocomplete="off" style="margin:2px 0 10px">
+      <div id="buyEmailBox">
+        <label class="f-label" for="buyEmail" data-i18n="buy.email">Email — чек и ключ активации</label>
+        <input class="inp" id="buyEmail" type="email" data-i18n-ph="buy.emailph" placeholder="you@example.com" autocomplete="email" style="margin:2px 0 10px">
+      </div>
+      <div class="sub" id="buyEmailHint" style="display:none;margin:2px 0 10px" data-i18n="buy.emailfromkey">Email возьмём из ключа продления</div>
       <button class="btn" id="buyPay" style="width:100%">—</button>
       <div class="gate-links"><a href="#" id="buyManual" data-i18n="buy.manual">Ввести ключ вручную</a></div>
     </div>
@@ -573,7 +579,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
 'use strict';
@@ -599,10 +605,12 @@ ru:{
   'upd.doing':'Обновляюсь…','upd.sub':'Сервер перезапускается — страница перезагрузится сама. Обычно 1–3 минуты.','upd.timeout':'Долго не поднимается. Проверь docker logs maxgraph-updater и обнови страницу.','upd.fail':'Не удалось запустить обновление','upd.none':'Уже актуально','upd.reload':'Перезагрузить','upd.slow':'Не поднялся вовремя',
  'lic.sub':'Запись в память приостановлена. Данные в сохранности — чтение и экспорт работают всегда. Введи ключ активации (mg_…) — он на странице оплаты и в письме. Резервный код MG-… активируется в кабинете: rezon-ai.ru/cabinet',
  'lic.btn':'Активировать','lic.buy':'Купить','lic.export':'Скачать экспорт данных','lic.ph':'mg_…','lic.copy':'Копировать','lic.renew':'Продлить −10%',
- 'lic.ok':'активировано: ','lic.bad':'не подошёл','lic.net':'ошибка сети','lic.trial':'TRIAL · ','lic.days':'дн','lic.expired':'истекла','lic.pro':'PRO',
+ 'lic.ok':'активировано: ','lic.bad':'не подошёл','lic.limit':'лимит: ключ уже привязан к другому компьютеру — отвязка: help@rezon-ai.ru','lic.net':'ошибка сети','lic.trial':'TRIAL · ','lic.days':'дн','lic.expired':'истекла','lic.pro':'PRO',
  'buy.title':'Оплата Pro','buy.sub':'Выбери срок — нажми «Оплатить». Ключ активируется сам, как только платёж пройдёт.',
  'buy.p1':'1 месяц','buy.p3':'3 месяца','buy.p6':'6 месяцев','buy.p12':'12 месяцев','buy.permo':'₽/мес',
  'buy.pay':'Оплатить','buy.extend':'Текущий ключ (продление −10% — дни суммируются)',
+ 'buy.email':'Email — чек и ключ активации','buy.emailph':'you@example.com',
+ 'buy.emailfromkey':'Email возьмём из ключа продления','buy.emailbad':'Проверь email: нужен @ и без пробелов',
  'buy.waiting':'Оплата открыта в новой вкладке. Жду подтверждение…','buy.reopen':'открыть оплату снова','buy.cancel':'отмена',
  'buy.done':'Готово! Pro активирован. Сохрани ключ на всякий случай:','buy.copy':'Скопировать ключ',
  'buy.manual':'Ввести ключ вручную','buy.err':'Оплата не прошла. Попробуй ещё раз или напиши: help@rezon-ai.ru',
@@ -640,10 +648,12 @@ en:{
   'upd.doing':'Updating…','upd.sub':'The server is restarting — this page will reload itself. Usually 1–3 minutes.','upd.timeout':'Taking too long. Check docker logs maxgraph-updater and reload the page.','upd.fail':'Failed to start the update','upd.none':'Already up to date','upd.reload':'Reload','upd.slow':'Did not come up in time',
  'lic.sub':'Writing to memory is paused. Your data is safe — reading and export always work. Enter the activation key (mg_…) — it is on the payment page and in the email. Backup codes (MG-…) are redeemed in the cabinet: rezon-ai.ru/cabinet',
  'lic.btn':'Activate','lic.buy':'Buy','lic.export':'Download data export','lic.ph':'mg_…','lic.copy':'Copy','lic.renew':'Renew −10%',
- 'lic.ok':'activated: ','lic.bad':'rejected','lic.net':'network error','lic.trial':'TRIAL · ','lic.days':'d','lic.expired':'expired','lic.pro':'PRO',
+ 'lic.ok':'activated: ','lic.bad':'rejected','lic.limit':'limit: key is already bound to another machine — unbind: help@rezon-ai.ru','lic.net':'network error','lic.trial':'TRIAL · ','lic.days':'d','lic.expired':'expired','lic.pro':'PRO',
  'buy.title':'Pro purchase','buy.sub':'Pick a period and hit "Pay". The key activates itself once the payment clears.',
- 'buy.p1':'1 month','buy.p3':'3 months','buy.p6':'6 months','buy.p12':'12 months','buy.permo':'₽/mo',
+ 'buy.p1':'1 month','buy.p3':'3 months','buy.p6':'6 months','buy.p12':'12 months','buy.permo':'$/mo',
  'buy.pay':'Pay','buy.extend':'Current key (renewal −10% — days add up)',
+ 'buy.email':'Email — receipt and activation key','buy.emailph':'you@example.com',
+ 'buy.emailfromkey':'We\'ll take the email from your renewal key','buy.emailbad':'Check the email: needs @ and no spaces',
  'buy.waiting':'Payment opened in a new tab. Waiting for confirmation…','buy.reopen':'reopen payment','buy.cancel':'cancel',
  'buy.done':'Done! Pro activated. Save the key just in case:','buy.copy':'Copy key',
  'buy.manual':'Enter key manually','buy.err':'Payment failed. Retry or contact: help@rezon-ai.ru',
@@ -752,7 +762,7 @@ async function activateLicense(key){
   key=(key||'').trim();if(!key)return;
   try{const r=await fetch('/api/license/activate',{method:'POST',headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},body:JSON.stringify({key})});const j=await r.json();
   if(j.ok){$('#licGate').classList.remove('on');toast('✦ '+t('lic.ok')+(j.tier||''));checkLicense();}
-  else toast(t('lic.bad'));}catch(e){toast(t('lic.net'));}
+  else toast(j.machine_limit?t('lic.limit'):t('lic.bad'));}catch(e){toast(t('lic.net'));}
 }
 $('#licBtn').onclick=()=>activateLicense($('#licKey').value);
 $('#sysLicBtn').onclick=()=>activateLicense($('#sysLicKey').value);
@@ -762,19 +772,24 @@ $('#licExport').addEventListener('click',e=>{e.preventDefault();doExport();});
 /* ═══ Покупка Pro из дашборда (v0.18.0): магазин → Platega → автоактивация ═══ */
 let licInfo=null,plansCache=null,buySel='pro1',buyRef=null,buyPayUrl=null,buyTimer=null,buyGiveup=0,buyOpener=null;
 const STORE='https://rezon-ai.ru';
-const PLANS_FALLBACK=[{id:'pro1',rub:149,days:31},{id:'pro3',rub:399,days:93},{id:'pro6',rub:749,days:186},{id:'pro12',rub:1299,days:372}];
+const PLANS_FALLBACK=[{id:'pro1',rub:149,usd:1.99,days:31},{id:'pro3',rub:399,usd:4.99,days:93},{id:'pro6',rub:749,usd:9.99,days:186},{id:'pro12',rub:1299,usd:14.99,days:372}];
 async function loadPlans(){if(plansCache)return plansCache;try{const r=await fetch(STORE+'/api/plans');const j=await r.json();plansCache=(j.plans&&j.plans.length)?j.plans:PLANS_FALLBACK;}catch(e){plansCache=PLANS_FALLBACK;}return plansCache;}
-function renderPlans(){const base=PLANS_FALLBACK[0].rub;$('#buyPlans').innerHTML=plansCache.map(p=>{const m=Math.max(1,Math.round(p.days/31));const pm=Math.round(p.rub/m);const sv=Math.round((1-p.rub/(base*m))*100);const rub=Number(p.rub)|0;
-  return '<div class="plan-row'+(p.id===buySel?' sel':'')+'" data-plan="'+esc(p.id)+'" role="radio" tabindex="'+(p.id===buySel?'0':'-1')+'" aria-checked="'+(p.id===buySel)+'"><div><div class="nm">'+esc(t('buy.p'+m))+'</div><div class="pm">≈'+pm+' '+t('buy.permo')+'</div></div>'+(sv>0?'<span class="save">−'+sv+'%</span>':'')+'<span class="pr">'+rub+' ₽</span></div>';}).join('');
+function fmtPlanPrice(p,price){return (LANG==='en'&&p.usd)?('$'+Number(price).toFixed(2)):((Number(price)|0)+' ₽');}
+function renderPlans(){const en=LANG==='en';const b0=(plansCache&&plansCache[0])||PLANS_FALLBACK[0];const base=en?(b0.usd||b0.rub):b0.rub;
+  $('#buyPlans').innerHTML=plansCache.map(p=>{const m=Math.max(1,Math.round(p.days/31));const cur=en?(p.usd||p.rub):p.rub;const pm=en?('$'+(p.usd/m).toFixed(2)):(Math.round(p.rub/m)+'');const sv=Math.round((1-cur/(base*m))*100);
+  return '<div class="plan-row'+(p.id===buySel?' sel':'')+'" data-plan="'+esc(p.id)+'" role="radio" tabindex="'+(p.id===buySel?'0':'-1')+'" aria-checked="'+(p.id===buySel)+'"><div><div class="nm">'+esc(t('buy.p'+m))+'</div><div class="pm">≈'+pm+' '+t('buy.permo')+'</div></div>'+(sv>0?'<span class="save">−'+sv+'%</span>':'')+'<span class="pr">'+fmtPlanPrice(p,cur)+'</span></div>';}).join('');
   $$('#buyPlans .plan-row').forEach(el=>{el.onclick=()=>buySelect(el.dataset.plan);
     el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();buySelect(el.dataset.plan);}
       else if(e.key==='ArrowDown'||e.key==='ArrowRight'){e.preventDefault();buyStep(1);}
       else if(e.key==='ArrowUp'||e.key==='ArrowLeft'){e.preventDefault();buyStep(-1);}};});}
 function buySelect(id){const refocus=document.activeElement&&document.activeElement.closest&&document.activeElement.closest('#buyPlans');buySel=id;renderPlans();updPayBtn();if(refocus){const el=document.querySelector('#buyPlans .plan-row.sel');if(el)el.focus();}}
 function buyStep(d){const ids=(plansCache||PLANS_FALLBACK).map(p=>p.id);const i=ids.indexOf(buySel);buySel=ids[(i+d+ids.length)%ids.length];renderPlans();updPayBtn();const el=document.querySelector('#buyPlans .plan-row.sel');if(el)el.focus();}
-function updPayBtn(){const p=(plansCache||PLANS_FALLBACK).find(x=>x.id===buySel)||PLANS_FALLBACK[0];const ext=$('#buyExtend').value.trim();const rub=(ext.startsWith('mg_')&&ext.length>10)?Math.round(p.rub*0.9):p.rub;$('#buyPay').textContent=t('buy.pay')+' '+rub+' ₽';}
+function updPayBtn(){const p=(plansCache||PLANS_FALLBACK).find(x=>x.id===buySel)||PLANS_FALLBACK[0];const ext=$('#buyExtend').value.trim();const hasExt=ext.startsWith('mg_')&&ext.length>10;
+  const useUsd=LANG==='en'&&p.usd;const price=useUsd?(hasExt?p.usd*0.9:p.usd):(hasExt?Math.round(p.rub*0.9):p.rub);
+  $('#buyPay').textContent=t('buy.pay')+' '+fmtPlanPrice(p,price);
+  $('#buyEmailBox').style.display=hasExt?'none':'';$('#buyEmailHint').style.display=hasExt?'':'none';}
 function buyShow(st){$('#buyChoose').style.display=st==='choose'?'':'none';$('#buyWait').style.display=st==='wait'?'':'none';$('#buyDone').style.display=st==='done'?'':'none';}
-async function buyOpen(){buyOpener=document.activeElement;$('#buyPop').classList.add('on');buyShow('choose');await loadPlans();$('#buyExtend').value=(licInfo&&licInfo.key)||'';renderPlans();updPayBtn();const f=document.querySelector('#buyPlans .plan-row.sel');if(f)f.focus();}
+async function buyOpen(){buyOpener=document.activeElement;$('#buyPop').classList.add('on');buyShow('choose');await loadPlans();$('#buyExtend').value=(licInfo&&licInfo.key)||'';$('#buyEmail').classList.remove('err');$('#buyEmail').removeAttribute('aria-invalid');renderPlans();updPayBtn();const f=document.querySelector('#buyPlans .plan-row.sel');if(f)f.focus();}
 function buyClose(){$('#buyPop').classList.remove('on');if(buyTimer){clearInterval(buyTimer);buyTimer=null;}if(buyOpener&&buyOpener.focus)buyOpener.focus();buyOpener=null;}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#buyPop').classList.contains('on'))buyClose();});
 // Focus trap: aria-modal диалог держит Tab внутри карточки (ревизия P3)
@@ -788,8 +803,10 @@ document.addEventListener('keydown',e=>{
   else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
   else if(!$('#buyPop').contains(document.activeElement)){e.preventDefault();first.focus();}
 });
-async function buyPay(){const ext=$('#buyExtend').value.trim();$('#buyPay').disabled=true;
-  try{const r=await fetch(STORE+'/api/billing/pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ext?{plan:buySel,extend:ext}:{plan:buySel})});
+async function buyPay(){const ext=$('#buyExtend').value.trim();const hasExt=ext.startsWith('mg_')&&ext.length>10;const em=$('#buyEmail').value.trim();
+  if(!ext&&(em.indexOf('@')<0||/\s/.test(em))){$('#buyEmail').classList.add('err');$('#buyEmail').setAttribute('aria-invalid','true');$('#buyEmail').focus();toast(t('buy.emailbad'));return;}
+  $('#buyPay').disabled=true;
+  try{const r=await fetch(STORE+'/api/billing/pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ext?{plan:buySel,extend:ext}:{plan:buySel,email:em})});
     const j=await r.json();if(!j.ok)throw new Error(j.error||'pay');
     buyRef=j.ref;buyPayUrl=j.payUrl;window.open(j.payUrl,'_blank','noopener');
     buyShow('wait');buyGiveup=Date.now()+15*60000;buyTimer=setInterval(buyPoll,5000);
@@ -799,7 +816,7 @@ async function buyPoll(){if(!buyRef)return;if(Date.now()>buyGiveup){buyClose();t
     if(j.licenseKey){clearInterval(buyTimer);buyTimer=null;buyActivate(j.licenseKey);}}catch(e){}}
 async function buyActivate(key){try{const r=await fetch('/api/license/activate',{method:'POST',headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},body:JSON.stringify({key})});const j=await r.json();
     if(j.ok){$('#licGate').classList.remove('on');toast('✦ '+t('lic.ok')+(j.tier||''));checkLicense();}
-    else toast(t('lic.bad'));
+    else toast(j.machine_limit?t('lic.limit'):t('lic.bad'));
   }catch(e){toast(t('lic.net'));}
   $('#buyKeyTxt').textContent=key;buyShow('done');}  // ключ показываем в любом раскладе — ручной ввод как фолбэк
 $('#buyClose').onclick=buyClose;
@@ -814,6 +831,7 @@ $('#sysLicBuy').onclick=()=>{sysOpen(false);buyOpen();};
 $('#sysLicRenew').onclick=()=>{sysOpen(false);buyOpen();};
 $('#sysLicCopy').onclick=()=>{if(licInfo&&licInfo.key)copyText(licInfo.key,'toast.keycopied');};
 $('#buyExtend').addEventListener('input',updPayBtn);
+$('#buyEmail').addEventListener('input',()=>{$('#buyEmail').classList.remove('err');$('#buyEmail').removeAttribute('aria-invalid');});
 function saveToken(){const v=$('#gateToken').value.trim();if(!v)return;TOKEN=v;localStorage.setItem('rm_token',v);$('#gate').classList.remove('on');init();}
 $('#gateBtn').onclick=saveToken;
 $('#gateToken').addEventListener('keydown',e=>{if(e.key==='Enter')saveToken();});
