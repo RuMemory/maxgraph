@@ -56,8 +56,11 @@ a:hover{text-decoration:underline}
 .topbar{position:relative;height:56px;flex-shrink:0;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;padding:0 16px;z-index:20}
 .brand{font-weight:600;font-size:14px;letter-spacing:-.01em;display:flex;align-items:center;gap:8px}
 .brand .ver{font-family:var(--mono);font-size:10px;color:var(--ink-4);font-weight:400}
-.upd-chip{font-family:var(--mono);font-size:10px;font-weight:600;color:#E8A54C;background:rgba(217,142,50,.12);border:1px solid rgba(217,142,50,.35);border-radius:999px;padding:1px 7px;margin-left:6px;text-decoration:none;white-space:nowrap}
+.upd-chip{position:relative;font-family:var(--mono);font-size:10px;font-weight:600;color:#E8A54C;background:rgba(217,142,50,.12);border:1px solid rgba(217,142,50,.35);border-radius:999px;padding:1px 7px;margin-left:6px;text-decoration:none;white-space:nowrap;cursor:pointer}
+.upd-chip::before{content:"";position:absolute;inset:-6px}
 .upd-chip:hover{background:rgba(217,142,50,.22);text-decoration:none}
+.upd-chip:disabled{opacity:.6;cursor:default}
+.upd-chip:focus-visible{outline:2px solid var(--accent-ink);outline-offset:2px}
 .search-wrap{position:relative;flex:1;max-width:560px;margin:0 auto}
 .search-wrap svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--ink-4);pointer-events:none}
 .search-wrap .inp{padding-left:36px;padding-right:64px}
@@ -290,7 +293,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
 /* ═══════════ Гейты ═══════════ */
 .gate{position:fixed;inset:0;background:var(--bg);z-index:100;display:none;align-items:center;justify-content:center}
 .gate.on{display:flex}
-.gate-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:34px 36px;width:380px;box-shadow:0 24px 64px rgba(0,0,0,.5)}
+.gate-card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:34px 36px;width:min(380px,calc(100vw - 32px));box-shadow:0 24px 64px rgba(0,0,0,.5)}
 .gate-logo{width:40px;height:40px;border-radius:11px;background:var(--ink);color:var(--bg);display:flex;align-items:center;justify-content:center;margin-bottom:18px}
 .gate-card h1{font-size:19px;font-weight:600;letter-spacing:-.02em;margin-bottom:6px}
 .gate-card p{font-size:12.5px;color:var(--ink-3);line-height:1.55;margin-bottom:16px}
@@ -332,6 +335,16 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
   </div>
 </div>
 
+<!-- ═══════════ Обновление (v0.35.0): оверлей на время пересоздания контейнера ═══════════ -->
+<div class="gate" id="updOverlay">
+  <div class="gate-card" role="alert" style="text-align:center">
+    <div class="buy-spin" id="updOvSpin" style="margin:0 auto 18px"></div>
+    <h1 data-i18n="upd.doing">Обновляюсь…</h1>
+    <p id="updOvMsg" data-i18n="upd.sub">Сервер перезапускается — страница перезагрузится сама. Обычно 1–3 минуты.</p>
+    <button class="btn" id="updOvReload" style="display:none" data-i18n="upd.reload" onclick="location.reload()">Перезагрузить</button>
+  </div>
+</div>
+
 <div class="app">
   <!-- ═══════════ Рейка ═══════════ -->
   <nav class="rail">
@@ -346,7 +359,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
   <div class="main">
     <!-- ═══════════ Топбар ═══════════ -->
     <header class="topbar">
-      <div class="brand">MaxGraph <span class="ver" id="verBadge"></span><a id="updChip" class="upd-chip" href="https://github.com/RuMemory/maxgraph" target="_blank" rel="noopener" style="display:none"></a></div>
+      <div class="brand">MaxGraph <span class="ver" id="verBadge"></span><button type="button" id="updChip" class="upd-chip" style="display:none"></button></div>
       <div class="search-wrap">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path stroke-linecap="round" d="M21 21l-4.35-4.35"/></svg>
         <input class="inp" id="globalSearch" data-i18n-ph="hdr.search" placeholder="Поиск по памяти, воспоминаниям и связям..." autocomplete="off">
@@ -579,7 +592,8 @@ const I18N={
 ru:{
  'gate.sub':'Твоя память агентов. Введи ключ доступа (хранится только в этом браузере):',
  'gate.ph':'токен...','gate.btn':'Войти',
- 'lic.h2':'Триал закончился','upd.tip':'Доступно обновление — git pull (или docker pull) и перезапуск',
+ 'lic.h2':'Триал закончился','upd.tip':'Доступно обновление — нажми, чтобы установить',
+  'upd.doing':'Обновляюсь…','upd.sub':'Сервер перезапускается — страница перезагрузится сама. Обычно 1–3 минуты.','upd.timeout':'Долго не поднимается. Проверь docker logs maxgraph-updater и обнови страницу.','upd.fail':'Не удалось запустить обновление','upd.none':'Уже актуально','upd.reload':'Перезагрузить','upd.slow':'Не поднялся вовремя',
  'lic.sub':'Запись в память приостановлена. Данные в сохранности — чтение и экспорт работают всегда. Введи ключ активации (mg_…) — он на странице оплаты и в письме. Резервный код MG-… активируется в кабинете: rezon-ai.ru/cabinet',
  'lic.btn':'Активировать','lic.buy':'Купить','lic.export':'Скачать экспорт данных','lic.ph':'mg_…',
  'lic.ok':'активировано: ','lic.bad':'не подошёл','lic.net':'ошибка сети','lic.trial':'TRIAL · ','lic.days':'дн','lic.expired':'истекла','lic.pro':'PRO',
@@ -619,7 +633,8 @@ ru:{
 en:{
  'gate.sub':'Your agents\' memory. Enter the access key (stored only in this browser):',
  'gate.ph':'token...','gate.btn':'Sign in',
- 'lic.h2':'Trial is over','upd.tip':'Update available — git pull (or docker pull) and restart',
+ 'lic.h2':'Trial is over','upd.tip':'Update available — click to install',
+  'upd.doing':'Updating…','upd.sub':'The server is restarting — this page will reload itself. Usually 1–3 minutes.','upd.timeout':'Taking too long. Check docker logs maxgraph-updater and reload the page.','upd.fail':'Failed to start the update','upd.none':'Already up to date','upd.reload':'Reload','upd.slow':'Did not come up in time',
  'lic.sub':'Writing to memory is paused. Your data is safe — reading and export always work. Enter the activation key (mg_…) — it is on the payment page and in the email. Backup codes (MG-…) are redeemed in the cabinet: rezon-ai.ru/cabinet',
  'lic.btn':'Activate','lic.buy':'Buy','lic.export':'Download data export','lic.ph':'mg_…',
  'lic.ok':'activated: ','lic.bad':'rejected','lic.net':'network error','lic.trial':'TRIAL · ','lic.days':'d','lic.expired':'expired','lic.pro':'PRO',
@@ -699,9 +714,31 @@ async function checkLicense(){try{
   else gb.classList.remove('on');
   $('#sysLicState').textContent=s.state||'—';$('#sysLicDays').textContent=dl??'—';
   const uc=$('#updChip');
-  if(s.update_available&&s.latest){uc.textContent='↑ v'+s.latest;uc.title=t('upd.tip');uc.style.display='';}
+  if(s.update_available&&s.latest){uc.textContent='↑ v'+s.latest;uc.title=t('upd.tip');uc.style.display='';bindUpdChip();}
   else uc.style.display='none';
 }catch(e){}}
+/* ═══ Кнопка «обновить сейчас» (v0.35.0): триггер updater'а → оверлей → авто-reload ═══ */
+function bindUpdChip(){const uc=$('#updChip');uc.disabled=false;uc.onclick=()=>triggerUpdate();}
+async function triggerUpdate(){
+  const uc=$('#updChip');uc.disabled=true;
+  try{
+    const r=await fetch('/api/update/trigger',{method:'POST',headers:{'Authorization':'Bearer '+TOKEN}});
+    const j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok){toast(t('upd.fail'));bindUpdChip();return;}
+    if(j.latest&&j.current&&j.latest===j.current){toast(t('upd.none'));bindUpdChip();return;}
+    $('#updOverlay').classList.add('on');
+    let n=0;
+    const tick=async()=>{
+      n++;
+      try{const rv=await fetch('/api/version',{cache:'no-store'});const vj=await rv.json();
+        if(vj.version&&vj.version!==j.current){location.reload();return;}
+      }catch(e){/* контейнер пересоздаётся — ждём */}
+      if(n<90)setTimeout(tick,5000);
+      else{$('#updOvSpin').style.display='none';$('#updOverlay h1').textContent=t('upd.slow');$('#updOvMsg').textContent=t('upd.timeout');$('#updOvReload').style.display='';}
+    };
+    setTimeout(tick,8000);
+  }catch(e){toast(t('upd.fail'));bindUpdChip();}
+}
 function showLicGate(){$('#licGate').classList.add('on');}
 async function activateLicense(key){
   key=(key||'').trim();if(!key)return;

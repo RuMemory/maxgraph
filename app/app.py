@@ -4550,6 +4550,35 @@ async def api_version(request: Request):
     return JSONResponse({"version": VERSION}, headers=_NOCACHE)
 
 
+@mcp.custom_route("/api/update/trigger", methods=["POST"])
+async def api_update_trigger(request: Request):
+    """Кнопка «обновить сейчас» в дашборде (v0.35.0): роняет пустой маркер
+    DATA_DIR/.update-now; updater подхватывает его через docker exec и запускает
+    цикл вне расписания (даже при AUTO_UPDATE=0). Содержимое маркера игнорируется —
+    решение updater принимает сам по свежей подписанной версии магазина."""
+    if not _admin_auth(request):
+        return _admin_401()
+    ip = _client_ip(request)
+    if _rate_limited(ip, "updtrigger", 10, 300):
+        return JSONResponse({"error": "too_many_attempts"}, status_code=429)
+    try:
+        tmp = os.path.join(DATA_DIR, ".update-now.tmp")
+        with open(tmp, "w"):
+            pass
+        os.replace(tmp, os.path.join(DATA_DIR, ".update-now"))
+    except OSError as e:
+        log.error("update trigger: %s", e)
+        return JSONResponse({"ok": False, "error": "trigger unavailable"}, status_code=500)
+    latest = None
+    try:
+        v = _get_json(PUBLIC_BASE_URL + "/api/version", timeout=8)
+        if isinstance(v, dict) and v.get("version"):
+            latest = str(v["version"])
+    except Exception:
+        pass  # fail-open: свежесть определит updater; кнопка не зависит от сети до магазина
+    return JSONResponse({"ok": True, "current": VERSION, "latest": latest}, headers=_NOCACHE)
+
+
 def _release_file(suffix: str) -> Response:
     """Отдать файл релиза текущей VERSION из RELEASES_DIR (магазин, v0.20.0).
     Нет файла → 404 (апдейтер трактует как «релиз ещё не упакован»)."""

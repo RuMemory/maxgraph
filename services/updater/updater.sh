@@ -369,6 +369,19 @@ do_update() {  # $1 = новая версия; зачистка tmp гарант
     ( trap 'rm -rf "$tmp"' EXIT; _do_update "$1" "$tmp" )  # L8
 }
 
+# Триггер из дашборда (v0.35.0): app роняет пустой /data/.update-now в
+# target-контейнере (POST /api/update/trigger). 0 = триггер был (и погашен),
+# 1 = не было. Канал без данных: важно лишь наличие файла, версию updater
+# берёт с магазина сам (подпись/суммы — как обычно).
+take_trigger() {
+    if docker exec "$TARGET_CONTAINER" test -f /data/.update-now 2>/dev/null; then
+        docker exec "$TARGET_CONTAINER" rm -f /data/.update-now 2>/dev/null \
+            || log "WARN: не смог погасить .update-now — будет ретриггер каждые 5с"
+        return 0
+    fi
+    return 1
+}
+
 # CLI-режим: self-update helper зовёт `sh /updater.sh --clone <name> <image> <rb>`.
 # Неизвестный аргумент — ошибка (НЕ падать в основной цикл: иначе helper на
 # старом скрипте дегенерирует в перпетуальный updater — поймано E2E).
@@ -378,6 +391,8 @@ case "${1:-}" in
         clone_recreate "$1" "$2" "$3"
         exit $?
         ;;
+    --take-trigger)  # тестовый шов (v0.35.0): одна проверка триггера и выход
+        take_trigger; exit $? ;;
     --version)
         echo "maxgraph-updater 0.24.1 (watchtower-style)"; exit 0 ;;
     "") ;;  # обычный запуск — основной цикл ниже
@@ -417,6 +432,7 @@ if ! docker inspect "$TARGET_CONTAINER" >/dev/null 2>&1; then
 fi
 
 sleep 45  # дать основному контейнеру подняться
+FORCE=0
 while :; do
     # L7: пред-очистка stale rollback-контейнеров от крашнувшихся прогонов
     # (вне обновления rename fail-closed — один stale блокировал бы все апдейты)
@@ -429,15 +445,30 @@ while :; do
     if [ -z "$latest" ]; then
         log "магазин недоступен — следующая попытка через ${CHECK_INTERVAL}s"
     elif ver_newer "$latest" "$cur"; then
-        if [ "$AUTO_UPDATE" = "1" ]; then
+        if [ "$AUTO_UPDATE" = "1" ] || [ "$FORCE" = "1" ]; then
             do_update "$latest" || true
         else
-            log "доступно обновление $latest (текущая $cur) — AUTO_UPDATE выключен"
+            log "доступно обновление $latest (текущая $cur) — AUTO_UPDATE выключен (кнопка в дашборде ставит сразу)"
             write_state available "$latest" ""
         fi
     else
         log "актуально ($cur)"
     fi
+    FORCE=0
     [ "$RUN_ONCE" = "1" ] && exit 0
-    sleep "$CHECK_INTERVAL"
+    # Прерывистое ожидание (v0.35.0): кнопка в дашборде роняет /data/.update-now
+    # в target-контейнере — будим цикл досрочно. Через docker exec: общего volume
+    # у updater'а с app нет, а exec уже используется для VERSION (канал без данных:
+    # важно лишь наличие файла, версию updater берёт с магазина сам).
+    waited=0
+    while [ "$waited" -lt "$CHECK_INTERVAL" ]; do
+        if take_trigger; then
+            case "$STORE_URL" in  # FORCE не отменяет https-гард (security-ревью 0.35.0)
+                https://*) FORCE=1; log "триггер из дашборда — проверяю сейчас" ;;
+                *) log "триггер из дашборда отклонён: STORE_URL не https" ;;
+            esac
+            break
+        fi
+        sleep 5; waited=$((waited + 5))
+    done
 done
