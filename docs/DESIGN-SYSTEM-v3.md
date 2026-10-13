@@ -60,7 +60,7 @@
 - **Инпуты:** `background:var(--bg-page); border:1px solid var(--border-default); radius:--r-m`; focus: `border-color:var(--blue-text)`, без glow.
 - **Eyebrow/бейджи:** mono, uppercase, letter-spacing .12em, цвет `--lavender` или `--pink-text`, рамка `--border-pink` для «hot».
 - **Код/конфиги:** `background:var(--bg-page); border:1px solid var(--border-subtle); radius:--r-m`; mono-шрифт.
-- **Контейнер:** max-width 1440px (лендинг), 1200px (кабинет); сетка 8pt.
+- **Контейнер:** max-width 1440px (лендинг), 1200px (дашборд); сетка 8pt.
 
 ## Фирменный мотив (единственный «декор»)
 
@@ -78,7 +78,6 @@
 | Страница | Файл | Примечания |
 |---|---|---|
 | Лендинг | `app/landing.html` | Сфера перекрашена; демо-дашборд → плоские карточки; i18n RU/EN сохранить полностью |
-| Кабинет | `app/cabinet.html` | Мастер 3 шага сохранить; мини-сфера → перекрасить или заменить статус-кольцом |
 | Дашборд | `app/dashboard.html` | Граф — фирменный мотив; легенда/панели плоские |
 | Статус оплаты | `app/billing.html` | Минимальная страница: карточка по центру |
 | Success | в `app/app.py` `_success_page` | Тот же токен-блок в её `<style>` |

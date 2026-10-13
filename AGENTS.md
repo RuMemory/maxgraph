@@ -11,9 +11,18 @@
 3. **Возьми токен доступа**: он генерируется сам при первом запуске — в файле `data/local_token.txt` (или в логах: `docker compose logs`).
 4. **Подключи MCP к хосту пользователя**: эндпоинт `http://localhost:8787/mcp`, заголовок `Authorization: Bearer <токен>`. Готовые конфиги под Claude Code, Cursor и другие хосты — в `docs/PAIRING.md`.
 5. **Проверь установку**: сохрани тестовый факт (`create_entities`) и прочитай его обратно (`search_nodes`). Сообщи пользователю, что память работает.
-6. **Читай дальше**: `maxgraph-agent.md` (протокол памяти — вставь в system-prompt) и `docs/PROTOCOL.md`. Дашборд с живым графом: `http://localhost:8787/app`.
+6. **Читай дальше**: `maxgraph-agent.md` (протокол памяти — установи его по шагу 7) и `docs/PROTOCOL.md`. Дашборд с живым графом: `http://localhost:8787/app`.
+7. **Установи правила памяти в проект пользователя** — в КОРЕНЬ текущей рабочей папки проекта (cwd, где запущен ты, агент-установщик; папку проекта пользователь создаёт сам, в произвольном месте):
+   - `./AGENTS.md` уже существует → допиши блок из `maxgraph-agent.md` между маркерами `<!-- maxgraph:start -->` и `<!-- maxgraph:end -->`. Повторная установка заменяет только содержимое между маркерами — остальное содержимое файла не трогай (идемпотентно).
+   - `./AGENTS.md` нет → создай файл с этим блоком между теми же маркерами.
+   - ЗАПРЕЩЕНО класть правила в подпапку установки (`maxgraph/…`) или в папки хоста (IDE/CLI) — агент проекта их там не увидит, и память работать не будет.
+8. **Скажи пользователю явно**: «Перезапусти хост (IDE/CLI полностью, не крестиком в окно) и начни НОВУЮ сессию в папке проекта» — MCP-подключение и правила из `./AGENTS.md` подхватываются только при старте сессии. Без этого шага пользователь продолжит старую сессию и решит, что память не работает.
 
 **EN:** A user asked you to install MaxGraph (memory). Clone the repo → run `docker compose up -d` (or Python 3.12+: `pip install "mcp<2"` then `python app/app.py`) → take the auto-generated token from `data/local_token.txt` → connect `http://localhost:8787/mcp` with `Authorization: Bearer <token>` (host configs in `docs/PAIRING.md`) → verify by saving and reading back a test fact → then read `maxgraph-agent.md` and `docs/PROTOCOL.md`. Dashboard: `http://localhost:8787/app`.
+
+**EN — install destination (mandatory):** Write the memory rules from `maxgraph-agent.md` into `AGENTS.md` in the ROOT of the user's current project directory (your cwd — where you, the installer agent, were launched; the user creates this project folder themselves, anywhere). If `./AGENTS.md` already exists, insert the rules between the markers `<!-- maxgraph:start -->` and `<!-- maxgraph:end -->`; on re-install, replace only the content between the markers and leave the rest of the file untouched (idempotent). If it doesn't exist, create the file with that marked block. NEVER put the rules into the install subfolder (`maxgraph/…`) or into host (IDE/CLI) folders — the project agent won't see them there, and memory will silently not work.
+
+**EN — final step (mandatory):** Tell the user explicitly: "Restart the host (quit the IDE/CLI fully, not just close the window) and start a NEW session in the project folder" — the MCP connection and the `./AGENTS.md` rules are picked up only at session start. Without this the user keeps the old session and concludes memory doesn't work.
 
 ## О продукте
 

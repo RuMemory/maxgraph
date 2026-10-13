@@ -1,60 +1,85 @@
-# 🔌 Providers — Maxgraph работает со всеми
+# 🔌 Провайдеры — MaxGraph работает со всеми
 
-Принцип: **один граф — все провайдеры**. MCP для нативных клиентов, REST для всего остального.
+Один граф памяти — для всех твоих агентов. MCP (streamable HTTP) для клиентов с поддержкой протокола, REST API для всего остального.
 
-## Нативный MCP (streamable-http)
+## MCP — нативно
 
-### Claude Desktop / Claude Code
+Эндпоинт `http://<host>:8787/mcp`, заголовок `Authorization: Bearer <MEMORY_TOKEN>`.
 
-`claude_desktop_config.json`:
+### Claude Code / Claude Desktop
+
 ```json
-{ "mcpServers": { "maxgraph": {
-  "url": "http://<host>:8787/mcp",
-  "headers": { "Authorization": "Bearer <TOKEN>" } } } }
+{
+  "mcpServers": {
+    "maxgraph": {
+      "url": "http://<host>:8787/mcp",
+      "headers": { "Authorization": "Bearer <MEMORY_TOKEN>" }
+    }
+  }
+}
 ```
 
-### Cursor / Cline / Continue
+### Cursor
 
-MCP settings → add server → type `streamable-http` (или `sse`/`http` в зависимости от версии) → URL `/mcp` + header `Authorization: Bearer …`.
+Settings → MCP → новый сервер → тип `streamable-http` → тот же URL и Bearer-заголовок.
 
-### DeepSeek Harness (Cordis)
+### DeepSeek Harness (DSH)
 
 ```yaml
-- id: mcp-remotemem
+- id: mcp-maxgraph
   name: "@deepseek-ai/dsh-mcp-client"
   config:
-    serverName: remotemem
+    serverName: maxgraph
     transport: streamable-http
     url: http://<host>:8787/mcp
     headers:
-      Authorization: Bearer <TOKEN>
+      Authorization: Bearer <MEMORY_TOKEN>
 ```
 
-## REST для всех остальных
+Плюс готовые client-plugin и SessionEnd-хук в `hooks/` — память пишется сама.
 
-Любой агент с HTTP — Hermes, самописные GPT-агенты, Kimi, GLM, Qwen, n8n, Make:
+### Любой другой MCP-клиент
+
+Gemini CLI, Kimi CLI, Windsurf, Cline, Continue — тот же URL и заголовок. Если клиент умеет MCP по HTTP — он совместим.
+
+## REST — для всего остального
+
+Kimi, GLM, Qwen, n8n, Make, самописные агенты — всё, что умеет HTTP:
 
 ```bash
-# прочитать всё
+T=<MEMORY_TOKEN>
+
+# весь граф
 curl -H "Authorization: Bearer $T" http://<host>:8787/api/graph
 
-# найти
+# поиск
 curl -H "Authorization: Bearer $T" "http://<host>:8787/api/search?q=deploy"
 
-# добавить факт
+# записать факт
 curl -X POST -H "Authorization: Bearer $T" -H "Content-Type: application/json" \
   -d '{"observations":[{"entityName":"project-x","contents":["релиз запланирован на пятницу"]}]}' \
   http://<host>:8787/api/observations
+
+# полный экспорт (NDJSON)
+curl -H "Authorization: Bearer $T" http://<host>:8787/api/export > backup.json
 ```
 
-### OpenAI function calling / GPTs Actions
+## ChatGPT / GPTs / OpenAI Actions
 
-REST-эндпоинты Maxgraph мапятся на actions один-в-один: `search` → `GET /api/search`, `remember` → `POST /api/observations`, `recall` → `GET /api/graph`. OpenAPI-схема — в ROADMAP (v0.4).
+Готовая OpenAPI-схема для Actions: [openapi.yaml](openapi.yaml). Пошаговая инструкция: [GPTS.md](GPTS.md).
 
 ## Локальные модели (Ollama, LM Studio, llama.cpp)
 
-Maxgraph не требует интернета: ставится рядом с локальным рантаймом, агент ходит по LAN. См. [DEPLOY-LAN.md](DEPLOY-LAN.md).
+MaxGraph не требует интернета: ставится рядом с локальным рантаймом, агент ходит по LAN. См. [DEPLOY-LAN.md](DEPLOY-LAN.md).
 
-## Контекстные профили провайдеров (Pro)
+## Шпаргалка
 
-У каждого провайдера свой «слой» контекста: Claude помнит архитектурные решения, GPT — черновики текстов, Kimi — состояние DSH-окружения. Профили = namespaces в кабинете: `claude/`, `gpt/`, `kimi/`… с общим ядром `shared/`. Дизайн: [CABINET.md](CABINET.md).
+| Провайдер | Путь подключения |
+|---|---|
+| Claude Code / Claude Desktop | MCP |
+| Cursor / Windsurf / Cline / Continue | MCP |
+| DeepSeek Harness | MCP + client-plugin + hook |
+| Gemini CLI / Kimi CLI | MCP |
+| ChatGPT | OpenAPI Actions (GPTs) |
+| GLM / Qwen / n8n / Make / самописное | REST |
+| Локальные модели | MCP или REST по LAN |

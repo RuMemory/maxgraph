@@ -1,8 +1,0 @@
-{
-  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "maxgraph",
-  "displayName": "MaxGraph Memory",
-  "version": "1.0.0",
-  "description": "Persistent memory for AI agents — self-hosted MCP server: knowledge graph, search, sessions. Your data stays on your machine.",
-  "author": { "name": "MaxGraph", "url": "https://rezon-ai.ru" }
-}

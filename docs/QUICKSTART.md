@@ -101,4 +101,4 @@ title = человеческое имя); зависимости — create_rela
 
 - Несколько провайдеров → [PROVIDERS.md](PROVIDERS.md)
 - Домашний сервер / LAN / офлайн → [DEPLOY-LAN.md](DEPLOY-LAN.md)
-- Облачный кабинет и Pro → [CABINET.md](CABINET.md)
+- Pro: активация ключа и подключение агента → [PAIRING.md](PAIRING.md)

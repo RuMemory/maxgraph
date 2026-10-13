@@ -55,25 +55,6 @@ Updates install themselves, once a day. Don't want them — disable with `AUTO_U
 
 Ready-made setup examples for each client: [docs/PROVIDERS.md](docs/PROVIDERS.md)
 
-### Connect in one step
-
-Server already running (see «Install» above)? Then it's one command or one link:
-
-- **Claude Code** — plugin from our marketplace (asks for the token during install):
-  ```
-  claude plugin marketplace add RuMemory/maxgraph
-  claude plugin install maxgraph@maxgraph
-  ```
-- **Cursor** — paste into your browser's address bar (after installing, replace `PASTE_TOKEN_HERE` with your token in Settings → MCP):
-  ```
-  cursor://anysphere.cursor-deeplink/mcp/install?name=maxgraph&config=eyJ1cmwiOiJodHRwOi8vbG9jYWxob3N0Ojg3ODcvbWNwIiwiaGVhZGVycyI6eyJBdXRob3JpemF0aW9uIjoiQmVhcmVyIFBBU1RFX1RPS0VOX0hFUkUifX0=
-  ```
-- **VS Code** — paste into your browser's address bar (token goes into settings):
-  ```
-  vscode:mcp/install?%7B%22name%22%3A%22maxgraph%22%2C%22type%22%3A%22http%22%2C%22url%22%3A%22http%3A%2F%2Flocalhost%3A8787%2Fmcp%22%2C%22headers%22%3A%7B%22Authorization%22%3A%22Bearer%20PASTE_TOKEN_HERE%22%7D%7D
-  ```
-- **Cline and other agents** — hand the agent [llms-install.md](llms-install.md); it installs and connects everything itself.
-
 ## Pricing
 
 **7 days free, no card** — the trial starts on first launch, nothing to enable. After that, one all-inclusive plan, one-time payment, no auto-renewal:
@@ -101,11 +82,11 @@ All records are stored only on your computer. They are plain text files in the `
 
 ## License
 
-[BSL-1.1](LICENSE) — the source code is available: read it, modify it and self-host it freely; personal and internal use is free. Offering MaxGraph as a service to others requires a commercial license. Every version becomes MIT four years after its release.
+[BSL-1.1](LICENSE): source-available. Personal and internal use is free. Offering MaxGraph as a service requires a commercial license. Every version becomes MIT four years after release.
 
 ## Docs
 
-[QUICKSTART](docs/QUICKSTART.md) · [PROTOCOL](docs/PROTOCOL.md) · [API](docs/API.md) · [GPTs](docs/GPTS.md) · [PROVIDERS](docs/PROVIDERS.md) · [CABINET](docs/CABINET.md) · [DEPLOY-LAN](docs/DEPLOY-LAN.md)
+[QUICKSTART](docs/QUICKSTART.md) · [PROTOCOL](docs/PROTOCOL.md) · [API](docs/API.md) · [GPTs](docs/GPTS.md) · [PROVIDERS](docs/PROVIDERS.md) · [PAIRING](docs/PAIRING.md) · [DEPLOY-LAN](docs/DEPLOY-LAN.md)
 
 ## Keywords
 
