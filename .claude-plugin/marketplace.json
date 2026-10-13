@@ -1,0 +1,15 @@
+{
+  "name": "maxgraph",
+  "owner": { "name": "MaxGraph", "url": "https://rezon-ai.ru" },
+  "metadata": {
+    "description": "Persistent memory for AI agents — self-hosted MCP server",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "maxgraph",
+      "source": "./",
+      "description": "Persistent memory for AI agents: knowledge graph + search, self-hosted. Your agent remembers everything between sessions."
+    }
+  ]
+}
