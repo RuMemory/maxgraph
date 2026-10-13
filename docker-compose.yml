@@ -38,6 +38,7 @@ services:
       DIGISELLER_HOOK_SECRET: ${DIGISELLER_HOOK_SECRET:-}
       TG_NOTIFY_CHAT_ID: ${TG_NOTIFY_CHAT_ID:-}
       GITHUB_HOOK_SECRET: ${GITHUB_HOOK_SECRET:-}  # v0.33.0: вебхук витрины → TG (только магазин)
+      REF_HMAC_SECRET: ${REF_HMAC_SECRET:-}  # v0.38.0: деривация реф-кодов (только магазин; смена = новые коды!)
       READONLY: ${READONLY:-}
       # В2.2: опциональный семантический поиск (без URL/KEY — чистый FTS 0.14.x)
       EMBED_URL: ${EMBED_URL:-}

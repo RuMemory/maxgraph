@@ -71,10 +71,12 @@ def _http_post_json(url: str, headers: dict, payload: dict, timeout: int = 20) -
 def create_platega_payment(merchant_id: str, api_key: str, plan: str, email: str,
                            return_url: str, api_base: str = DEFAULT_API_BASE,
                            currency: str | None = None, failed_url: str | None = None,
-                           payload: str = "", http_post=None) -> dict:
+                           payload: str = "", amount: "int | None" = None,
+                           http_post=None) -> dict:
     """Создать платёж → {"payment_id", "payment_url"}.
 
     plan — id из PRICES ("pro1"|"pro3"|"pro6"|"pro12").
+    amount (v0.37.0) — серверный override цены (реферальная −20%); None → цена PRICES.
     Предположение по схеме ответа: берём transactionId/url, с запасом смотрим
     data.redirect/link/paymentUrl (формат менялся между версиями API).
     """
@@ -83,9 +85,11 @@ def create_platega_payment(merchant_id: str, api_key: str, plan: str, email: str
     if plan not in PRICES:
         raise BillingError(f"plan must be {'|'.join(PRICES)}")
     currency = (currency or os.environ.get("PLATEGA_CURRENCY") or "RUB").upper()
-    amount = PRICES[plan].get(currency)
-    if amount is None:
+    price = PRICES[plan].get(currency)
+    if price is None:
         raise BillingError(f"unsupported currency {currency} (есть: {sorted(PRICES[plan])})")
+    if amount is None:
+        amount = price
     post = http_post or _http_post_json
     body = {
         "paymentDetails": {"amount": amount, "currency": currency},

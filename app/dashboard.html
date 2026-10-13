@@ -254,6 +254,8 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
 .sys-kv:last-child{border-bottom:none}
 .sys-kv .k{color:var(--ink-3)}
 .sys-kv .v{font-family:var(--mono);font-size:11.5px}
+.ref-hint{font-size:11.5px;color:var(--ink-3);line-height:1.45;margin-bottom:10px}
+.ref-code{font-family:var(--mono);font-size:13px;letter-spacing:.06em}
 .sys-actions{display:flex;flex-direction:column;gap:8px}
 /* ═══════════ Связь drag→pop ═══════════ */
 .rel-pop{position:fixed;z-index:70;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.5);padding:12px;width:260px;display:none}
@@ -521,6 +523,15 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
       </div>
       <div class="gate-row" id="sysLicLicensed" style="display:none;margin-top:12px"><button class="btn ghost sm" id="sysLicCopy" data-i18n="lic.copy">Копировать</button><button class="btn sm" id="sysLicRenew" data-i18n="lic.renew">Продлить −10%</button></div>
     </div>
+    <div class="sys-sec" id="sysRefSec" style="display:none">
+      <div class="sec-label"><span data-i18n="ref.h">Пригласи друга</span><span class="line"></span></div>
+      <div class="ref-hint" data-i18n="ref.hint">Друг покупает со скидкой −20%, тебе +10% к скидке на продление за каждого (до −50%).</div>
+      <div class="sys-kv"><span class="k" data-i18n="ref.code">Твой код</span><span class="v ref-code" id="sysRefCode">—</span></div>
+      <div class="sys-kv"><span class="k" data-i18n="ref.clicks">Переходы</span><span class="v" id="sysRefClicks">—</span></div>
+      <div class="sys-kv"><span class="k" data-i18n="ref.buys">Покупки</span><span class="v" id="sysRefBuys">—</span></div>
+      <div class="sys-kv"><span class="k" data-i18n="ref.disc">Скидка на продление</span><span class="v" id="sysRefDisc">—</span></div>
+      <div class="gate-row" style="margin-top:10px"><button class="btn ghost sm" id="sysRefCopy" data-i18n="ref.copy">Копировать ссылку</button></div>
+    </div>
     <div class="sys-sec">
       <div class="sec-label"><span data-i18n="sys.mem">Память</span><span class="line"></span></div>
       <div class="sys-kv"><span class="k" data-i18n="ov.k1">Воспоминания</span><span class="v" id="sysE">—</span></div>
@@ -634,6 +645,9 @@ ru:{
  'add.from':'Откуда','add.to':'Куда','add.fromph':'Начни вводить имя…','add.toph':'Начни вводить имя…','add.relname':'Связь (например: depends on)',
  'sys.h':'Система','sys.lic':'Лицензия','sys.state':'Состояние','sys.days':'Осталось дней','sys.mem':'Память','sys.size':'Файл данных','sys.key':'Ключ',
  'sys.svc':'Сервис','sys.ver':'Версия','sys.up':'Аптайм','sys.embed':'Семантический поиск','sys.act':'Действия',
+ 'lic.renewN':'Продлить −{n}%',
+ 'ref.h':'Пригласи друга','ref.hint':'Друг покупает со скидкой −20%, тебе +10% к скидке на продление за каждого (до −50%).',
+ 'ref.code':'Твой код','ref.clicks':'Переходы','ref.buys':'Покупки','ref.disc':'Скидка на продление','ref.copy':'Копировать ссылку',
  'toast.obsaved':'запомнил ✦','toast.obdeleted':'факт забыт','toast.entgone':'воспоминание забыто','toast.rel':'связь создана','toast.reldel':'связь удалена',
  'toast.entsaved':'запомнил ✦','toast.export':'бэкап скачан','toast.exporterr':'ошибка экспорта','toast.copied':'промпт скопирован','toast.keycopied':'ключ скопирован','toast.copyerr':'не удалось скопировать',
  'toast.readonly':'зеркало read-only: запись отключена','toast.newent':'новое воспоминание: ','toast.task':'дело записано ✦','toast.taskdone':'дело сделано ✦','toast.taskopen':'дело открыто снова','toast.bugfix':'баг исправлен ✦','toast.title':'название обновлено',
@@ -677,6 +691,9 @@ en:{
  'add.from':'From','add.to':'To','add.fromph':'Start typing a name…','add.toph':'Start typing a name…','add.relname':'Relation (e.g.: depends on)',
  'sys.h':'System','sys.lic':'License','sys.state':'State','sys.days':'Days left','sys.mem':'Memory','sys.size':'Data file','sys.key':'Key',
  'sys.svc':'Service','sys.ver':'Version','sys.up':'Uptime','sys.embed':'Semantic search','sys.act':'Actions',
+ 'lic.renewN':'Renew −{n}%',
+ 'ref.h':'Refer a friend','ref.hint':'Your friend gets −20% off the first purchase, you get +10% off your renewal for each buyer (up to −50%).',
+ 'ref.code':'Your code','ref.clicks':'Clicks','ref.buys':'Purchases','ref.disc':'Renewal discount','ref.copy':'Copy link',
  'toast.obsaved':'remembered ✦','toast.obdeleted':'fact forgotten','toast.entgone':'memory forgotten','toast.rel':'relation created','toast.reldel':'relation deleted',
  'toast.entsaved':'remembered ✦','toast.export':'backup downloaded','toast.exporterr':'export failed','toast.copied':'prompt copied','toast.keycopied':'key copied','toast.copyerr':'copy failed',
  'toast.readonly':'read-only mirror: writes disabled','toast.newent':'new memory: ','toast.task':'task recorded ✦','toast.taskdone':'task done ✦','toast.taskopen':'task reopened','toast.bugfix':'bug fixed ✦','toast.title':'title updated',
@@ -785,7 +802,9 @@ function renderPlans(){const en=LANG==='en';const b0=(plansCache&&plansCache[0])
 function buySelect(id){const refocus=document.activeElement&&document.activeElement.closest&&document.activeElement.closest('#buyPlans');buySel=id;renderPlans();updPayBtn();if(refocus){const el=document.querySelector('#buyPlans .plan-row.sel');if(el)el.focus();}}
 function buyStep(d){const ids=(plansCache||PLANS_FALLBACK).map(p=>p.id);const i=ids.indexOf(buySel);buySel=ids[(i+d+ids.length)%ids.length];renderPlans();updPayBtn();const el=document.querySelector('#buyPlans .plan-row.sel');if(el)el.focus();}
 function updPayBtn(){const p=(plansCache||PLANS_FALLBACK).find(x=>x.id===buySel)||PLANS_FALLBACK[0];const ext=$('#buyExtend').value.trim();const hasExt=ext.startsWith('mg_')&&ext.length>10;
-  const useUsd=LANG==='en'&&p.usd;const price=useUsd?(hasExt?p.usd*0.9:p.usd):(hasExt?Math.round(p.rub*0.9):p.rub);
+  /* v0.38.0: стек рефералки в цене кнопки — только отображение, сервер пересчитает сам */
+  const pct=(hasExt&&refInfo&&refInfo.ok)?Math.min(10+10*(refInfo.stack_n||0),50):(hasExt?10:0);
+  const useUsd=LANG==='en'&&p.usd;const price=useUsd?(pct?p.usd*(100-pct)/100:p.usd):(pct?Math.round(p.rub*(100-pct)/100):p.rub);
   $('#buyPay').textContent=t('buy.pay')+' '+fmtPlanPrice(p,price);
   $('#buyEmailBox').style.display=hasExt?'none':'';$('#buyEmailHint').style.display=hasExt?'':'none';}
 function buyShow(st){$('#buyChoose').style.display=st==='choose'?'':'none';$('#buyWait').style.display=st==='wait'?'':'none';$('#buyDone').style.display=st==='done'?'':'none';}
@@ -806,7 +825,10 @@ document.addEventListener('keydown',e=>{
 async function buyPay(){const ext=$('#buyExtend').value.trim();const hasExt=ext.startsWith('mg_')&&ext.length>10;const em=$('#buyEmail').value.trim();
   if(!ext&&(em.indexOf('@')<0||/\s/.test(em))){$('#buyEmail').classList.add('err');$('#buyEmail').setAttribute('aria-invalid','true');$('#buyEmail').focus();toast(t('buy.emailbad'));return;}
   $('#buyPay').disabled=true;
-  try{const r=await fetch(STORE+'/api/billing/pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(ext?{plan:buySel,extend:ext}:{plan:buySel,email:em})});
+  if(!refInfo)await loadReferral();  /* install_id/fp инстанса → магазин: стек продления + self-ref блок */
+  const body=ext?{plan:buySel,extend:ext}:{plan:buySel,email:em};
+  if(refInfo&&refInfo.install_id){body.install_id=refInfo.install_id;if(refInfo.fp)body.fp=refInfo.fp;}
+  try{const r=await fetch(STORE+'/api/billing/pay',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const j=await r.json();if(!j.ok)throw new Error(j.error||'pay');
     buyRef=j.ref;buyPayUrl=j.payUrl;window.open(j.payUrl,'_blank','noopener');
     buyShow('wait');buyGiveup=Date.now()+15*60000;buyTimer=setInterval(buyPoll,5000);
@@ -1102,13 +1124,29 @@ async function addRelation(){
 $('#nrBtn').onclick=addRelation;
 
 /* ═══════════ Панель «Система» ═══════════ */
-function sysOpen(open){$('#veil').classList.toggle('on',open);$('#sysPanel').classList.toggle('on',open);if(open){checkLicense();renderStats();}}
+function sysOpen(open){$('#veil').classList.toggle('on',open);$('#sysPanel').classList.toggle('on',open);if(open){checkLicense();renderStats();loadReferral();}}
 $('#gearBtn').onclick=()=>sysOpen(true);
 $('#licChip').onclick=()=>buyOpen();
 $('#sysClose').onclick=()=>sysOpen(false);
 $('#veil').onclick=()=>sysOpen(false);
 $('#sysExport').onclick=doExport;
 $('#sysPrompt').onclick=copyPrompt;
+
+/* ═══ Рефералка (v0.37.0): блок «Пригласи друга» в «Системе» ═══ */
+let refInfo=null;
+async function loadReferral(){
+  try{const j=await api('/api/referral');if(j&&j.ok&&j.code){refInfo=j;
+    $('#sysRefSec').style.display='';
+    $('#sysRefCode').textContent=j.code;
+    $('#sysRefClicks').textContent=j.clicks??0;
+    $('#sysRefBuys').textContent=j.buys??0;
+    const pct=Math.min(10+10*(j.stack_n||0),50);
+    $('#sysRefDisc').textContent='−'+pct+'%';
+    const rb=$('#sysLicRenew');if(rb)rb.textContent=t('lic.renewN').replace('{n}',pct);
+    if($('#buyPop').classList.contains('on'))updPayBtn();
+  }}catch(e){/* магазин недоступен — блок скрыт, инстанс не ломается */}
+}
+$('#sysRefCopy').onclick=()=>{if(refInfo&&refInfo.link)copyText(refInfo.link);};
 
 /* ═══════════ Граф: живая карта памяти ═══════════ */
 const cv=$('#graph'),ctx=cv.getContext('2d');

@@ -421,6 +421,11 @@ html.js:not(.rm) .shot-wrap:not(.play) .mg-lab{opacity:0}
 .form-err{margin:10px 0 0;font-size:13px;line-height:1.45;color:var(--err);text-align:left}
 .form-err:empty{margin-top:0}
 .form-err.ok{color:var(--ok)}
+.promo-line{margin:8px 0 0;font-size:12.5px;text-align:left}
+.promo-line a{color:var(--dim);text-decoration:underline;text-underline-offset:3px}
+.promo-line a:hover{color:var(--amber)}
+.promo-row input{font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em}
+.promo-row input::placeholder{text-transform:none;letter-spacing:0}
 
 /* ═══════════ Активация резервного кода ═══════════ */
 .redeem-card{
@@ -817,6 +822,13 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
                  data-i18n-attr="placeholder:buy.emailph,aria-label:buy.aria">
           <button type="button" class="btn btn-ghost" id="buyGo" data-i18n="buy.go">Перейти к оплате</button>
         </div>
+        <div class="buy-row promo-row" id="promoRow" hidden>
+          <input type="text" id="promoInp" maxlength="9" autocapitalize="characters" spellcheck="false" autocomplete="off"
+                 placeholder="XXXX-XXXX" aria-label="Промокод"
+                 data-i18n-attr="placeholder:buy.promoph,aria-label:buy.promoaria">
+        </div>
+        <p class="promo-line" id="promoLine" hidden><a href="#" id="promoToggle" data-i18n="buy.promo">Есть промокод?</a></p>
+        <p class="form-err ok" id="buyRefNote" role="status" hidden data-i18n="buy.refnote">Цена со скидкой −20%</p>
         <p class="form-err" id="buyErr" role="alert"></p>
       </div>
     </div>
@@ -1021,6 +1033,8 @@ ru:{
   'buy.go':'Перейти к оплате','buy.wait':'Создаю платёж…',
   'buy.err.email':'Введи корректный email','buy.err.net':'Ошибка сети, попробуй ещё раз',
   'buy.err.url':'Платёжная ссылка не прошла проверку, попробуй позже',
+  'buy.promo':'Есть промокод?','buy.promoph':'XXXX-XXXX','buy.promoaria':'Промокод',
+  'buy.refnote':'Цена со скидкой −20%',
   'redeem.tag':'Есть код?','redeem.title':'Получи ключ активации',
   'redeem.sub':'Введи резервный код из письма об оплате и email активации.',
   'redeem.codeph':'MG-XXXX-XXXX-XXXX','redeem.emailph':'твой@email',
@@ -1121,6 +1135,8 @@ en:{
   'buy.go':'Go to payment','buy.wait':'Creating payment…',
   'buy.err.email':'Enter a valid email','buy.err.net':'Network error, please try again',
   'buy.err.url':'Payment link failed verification, please try later',
+  'buy.promo':'Have a promo code?','buy.promoph':'XXXX-XXXX','buy.promoaria':'Promo code',
+  'buy.refnote':'Price with a −20% discount',
   'redeem.tag':'Got a code?','redeem.title':'Get your activation key',
   'redeem.sub':'Enter the backup code from the payment email and the activation email.',
   'redeem.codeph':'MG-XXXX-XXXX-XXXX','redeem.emailph':'your@email',
@@ -1419,13 +1435,31 @@ if(RM || !('IntersectionObserver' in window)){
   });
 });
 
-/* ═══ Покупка: POST /billing/create {plan, email}, ответ {payment_url} ═══ */
+/* ═══ Покупка: POST /billing/create {plan, email, ref?}, ответ {payment_url} ═══ */
 (function buy(){
   var row = document.getElementById('buyRow');
   var inp = document.getElementById('emailInp');
   var go = document.getElementById('buyGo');
   var err = document.getElementById('buyErr');
   if(!buyBtn || !row || !inp || !go || !err) return;
+  /* v0.37.0: рефералка — кука mg_ref (ставит сервер при ?ref=) предзаполняет промокод;
+     явно введённый код приоритетнее куки. Скидку считает сервер, тут только отображение. */
+  var promoRow = document.getElementById('promoRow');
+  var promoInp = document.getElementById('promoInp');
+  var promoLine = document.getElementById('promoLine');
+  var promoToggle = document.getElementById('promoToggle');
+  var refNote = document.getElementById('buyRefNote');
+  var REF_RE = /^[2-9A-HJKM-NP-TV-Z]{4}-?[2-9A-HJKM-NP-TV-Z]{4}$/i;
+  function readCookie(n){ var m = document.cookie.match(new RegExp('(?:^|; )' + n + '=([^;]*)')); return m ? m[1] : ''; }
+  function activeRef(){ var v = promoInp.value.trim(); return REF_RE.test(v) ? v : ''; }
+  function updRefNote(){ if(refNote) refNote.hidden = !activeRef(); }
+  var cookieRef = readCookie('mg_ref');
+  if(cookieRef){ promoInp.value = cookieRef; promoRow.hidden = false; }
+  updRefNote();
+  promoToggle.addEventListener('click', function(e){
+    e.preventDefault(); promoRow.hidden = false; promoLine.hidden = true; promoInp.focus();
+  });
+  promoInp.addEventListener('input', updRefNote);
   var lastMsg = null; /* {key}: наши строки (переводим при смене языка), {text}: серверные */
   function showErr(key){ err.classList.remove('ok'); err.textContent = I18N[curLang][key]; lastMsg = { key:key }; }
   function showServerErr(text){ err.classList.remove('ok'); err.textContent = text; lastMsg = { text:text }; }
@@ -1439,9 +1473,11 @@ if(RM || !('IntersectionObserver' in window)){
     if(!MG_STORE){ window.open(MG_STORE_URL + '/#pricing', '_blank', 'noopener'); return; }
     var opening = row.hidden;
     row.hidden = !opening;
+    if(promoLine) promoLine.hidden = !opening || !promoRow.hidden;  /* кука уже открыла поле */
     if(opening){ err.textContent = ''; lastMsg = null; inp.focus(); }
   });
   inp.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); go.click(); } });
+  promoInp.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); go.click(); } });
   go.addEventListener('click', async function(){
     if(!MG_STORE){ window.open(MG_STORE_URL + '/#pricing', '_blank', 'noopener'); return; }
     var email = inp.value.trim();
@@ -1449,7 +1485,10 @@ if(RM || !('IntersectionObserver' in window)){
     err.textContent = ''; lastMsg = null;
     go.disabled = true; go.textContent = I18N[curLang]['buy.wait'];
     try{
-      var r = await fetch('/billing/create', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ plan: TERM_PLAN[selectedTerm], email: email }) });
+      var payload = { plan: TERM_PLAN[selectedTerm], email: email };
+      var rv = activeRef();
+      if(rv) payload.ref = rv;
+      var r = await fetch('/billing/create', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
       var j = await r.json();
       if(r.ok && j.payment_url){
         /* security: редирект только на хосты платёжного шлюза */

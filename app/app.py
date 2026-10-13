@@ -188,6 +188,12 @@ ACCESS_FILE = DATA_DIR / "access.json"  # В2.3: ACT-R счётчики обра
 LICENSE_SECRET = licensing.get_secret(DATA_DIR)  # env LICENSE_HMAC_SECRET или DATA_DIR/.hmac_key
 LICENSE_SUB_DAYS = 31  # легаси-fallback (digiseller без суммы); реальный срок = PLANS[plan]["days"]
 EXTEND_DISCOUNT = 0.9  # продление −10% (решение владельца 2026-10-13) — применяется серверно в /api/billing/pay
+# --- v0.37.0: реферальная система (SPEC-referral.md) ---
+# Секрет деривации реф-кодов (HMAC от install_id). Прод — строго env; дефолт — только
+# для тестов/dev (compose подставляет пустую строку → `or`, не get(default)).
+REF_HMAC_SECRET = os.environ.get("REF_HMAC_SECRET") or "dev-only-ref-secret"  # dev-дефолт только для локалки
+REF_DISCOUNT = 0.8   # −20% приглашённому на первый платёж тарифа (только Platega-контур)
+REF_STACK_CAP = 4    # +10 п.п. за покупку приглашённого; кап 4 → продление до −50% (стек включает базу −10%)
 PORT = int(os.environ.get("PORT", "8787"))
 STARTED = time.time()
 EMBED_ON = False
@@ -195,6 +201,11 @@ EVENTS_CAP = 10000  # максимум строк в events.jsonl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("maxgraph")
+
+# L7: на магазине без явного секрета коды вычислимы офлайн по install_id — орём при старте
+# (после log=…: warn до этого места = NameError при импорте, ре-ревизия N1)
+if STORE_MODE and REF_HMAC_SECRET == "dev-only-ref-secret":
+    log.warning("REF_HMAC_SECRET не задан в .env — реф-коды вычислимы офлайн; задай секрет!")
 
 _lock = threading.RLock()
 
@@ -3414,6 +3425,8 @@ def _watchdog_iteration(env, telemetry):
         fp = licensing.machine_fingerprint()
         if fp:
             payload["fp"] = fp  # host-fp: магазин учитывает машину ключа (2 слота)
+        # v0.38.0: + install_id — магазин связывает ключ с инстансом (self-ref блок рефералки)
+        payload["install_id"] = _install_id()
         try:
             resp = _post_json(PUBLIC_BASE_URL + "/api/license/validate", payload, timeout=8)
         except Exception as e:
@@ -3613,7 +3626,7 @@ async def root(request: Request):
     # (покупка только на сторе). STORE_MODE=1 (магазин): лендинг на /, как раньше.
     if not STORE_MODE:
         return Response(status_code=302, headers={"location": "/app"})
-    return await _landing_page()
+    return await _landing_page(request)
 
 
 @mcp.custom_route("/landing", methods=["GET"])
@@ -3621,17 +3634,36 @@ async def landing(request: Request):
     # Магазин: лендинг строго на '/', отдельного /landing нет (магазин = лендинг + /admin).
     if STORE_MODE:
         return PlainTextResponse("Not Found", status_code=404)
-    return await _landing_page()
+    return await _landing_page(request)
 
 
-async def _landing_page():
+async def _landing_page(request: Request):
     html = _page_html("landing.html")
     # Инстанс сообщает лендингу свой режим: на self-hosted (STORE_MODE=0) покупка и
     # облачный триал ведут в стор (PUBLIC_BASE_URL), а не в локальные /billing-create —
     # у покупателя нет ключей продавца. Демка (/app) публично не ссылается нигде.
     flag = {"store": STORE_MODE, "storeUrl": PUBLIC_BASE_URL}
     html = html.replace("</head>", f"<script>window.__MG_STORE__={json.dumps(flag)};</script></head>", 1)
-    return HTMLResponse(html, headers=_NOCACHE)
+    headers = dict(_NOCACHE)
+    # v0.37.0: атрибуция рефералки — ?ref=XXXX-XXXX → кука mg_ref (30д, Lax) +
+    # счётчик переходов. Только известные коды (мусор не засоряет метрики);
+    # buybox дальше шлёт код в /billing/create, скидка считается серверно.
+    code = _ref_norm(request.query_params.get("ref"))
+    if code:
+        with _ref_lock:
+            refs = _load_referrals()
+            rec = refs.get(code) if refs is not None else None
+            if rec is not None:
+                # first-touch (L1) + анти-накрутка (L2): у гостя уже стоит валидная
+                # mg_ref → атрибуцию не переписываем и clicks не накручиваем
+                existing = _ref_norm(request.cookies.get("mg_ref"))
+                if not (existing and refs.get(existing)):
+                    rec["clicks"] = _safe_int(rec.get("clicks")) + 1
+                    _save_referrals(refs)
+                    secure = "; Secure" if request.url.scheme == "https" else ""
+                    headers["Set-Cookie"] = (f"mg_ref={code}; Path=/; Max-Age={30 * 86400}; "
+                                             f"SameSite=Lax{secure}")
+    return HTMLResponse(html, headers=headers)
 
 
 @mcp.custom_route("/app", methods=["GET"])
@@ -4496,6 +4528,231 @@ async def api_cabinet(request: Request):
                          "paidUntil": paid_until}, headers=_NOCACHE)
 
 
+# --- v0.37.0: реферальная система (SPEC-referral.md) -------------------------
+# Код приглашающего детерминирован из install_id (HMAC), реестр — data/referrals.json
+# {code: {install_id, fp, created, clicks, buys, stack_n, history[]}}. Свой лок;
+# порядок локов везде одинаковый: _codes_lock/_installs_lock → _ref_lock.
+
+REFERRALS_FILE = DATA_DIR / "referrals.json"
+_ref_lock = threading.Lock()
+# Crockford-подобный алфавит без визуально неоднозначных 0/O/1/I (+L/U по Crockford)
+_REF_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
+_REF_CODE_RE = re.compile(r"^[2-9A-HJKM-NP-TV-Z]{4}-[2-9A-HJKM-NP-TV-Z]{4}$")
+_REF_STRIP_RE = re.compile(r"[^2-9A-HJKM-NP-TV-Za-hjkm-np-tv-z]")
+
+
+def _ref_code_for(install_id: str) -> str:
+    """base32crockford-подобный код: HMAC(REF_HMAC_SECRET, install_id) → 8 символов
+    (формат XXXX-XXXX). Детерминирован: код существует, пока существует инстанс."""
+    d = hmac.new(REF_HMAC_SECRET.encode(), install_id.encode(), hashlib.sha256).digest()
+    n = int.from_bytes(d[:8], "big")
+    out = []
+    for _ in range(8):
+        n, r = divmod(n, len(_REF_ALPHABET))
+        out.append(_REF_ALPHABET[r])
+    raw = "".join(out)
+    return f"{raw[:4]}-{raw[4:]}"
+
+
+def _ref_norm(raw) -> str:
+    """Промокод из запроса → канон XXXX-XXXX (или ""). Регистр/дефис неважны."""
+    s = _REF_STRIP_RE.sub("", str(raw or "")).upper()
+    if len(s) != 8:
+        return ""
+    code = f"{s[:4]}-{s[4:]}"
+    return code if _REF_CODE_RE.match(code) else ""
+
+
+def _load_referrals():
+    """{} — нет файла; None — битый/не-dict (не затираем transient-ошибкой, как installs)."""
+    if not REFERRALS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(REFERRALS_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _save_referrals(data: dict):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = REFERRALS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(REFERRALS_FILE)
+    try:
+        os.chmod(REFERRALS_FILE, 0o600)  # install_id/fp приглашающих — только owner
+    except OSError:
+        pass  # Windows — best-effort
+
+
+def _ref_lookup(raw) -> str:
+    """Промокод → известный код реестра или "" (невалидный → полная цена, fail-open)."""
+    code = _ref_norm(raw)
+    if not code:
+        return ""
+    with _ref_lock:
+        refs = _load_referrals()
+        if refs is None:
+            log.error("referrals.json повреждён — ref-скидка пропущена")
+            return ""
+        return code if code in refs else ""
+
+
+_REF_PENDING_TTL = 86400  # брошенный платёж со стеком возвращается через сутки
+# N5: refunded/chargeback/reversed намеренно НЕ тут — для оплаченных платежей их
+# перехватит дедуп по payment.code раньше; живые терминальные фейлы только такие:
+_FAILED_STATUSES = ("failed", "cancelled", "canceled", "expired")
+
+
+def _ref_restore_locked(refs, payment, flag):
+    """Возврат стека платежа владельцу кода. Вызывать под _codes_lock + _ref_lock.
+    Идемпотентно по payment['stack_restored']. True = referrals.json изменился."""
+    if payment.get("stack_restored"):
+        return False
+    payment["stack_restored"] = True
+    rrec = refs.get(str(payment.get("stack_code") or ""))
+    spent = max(0, (_safe_int(payment.get("extend_pct")) - 10) // 10)
+    if rrec is None or not spent:
+        return False
+    rrec["stack_n"] = min(_safe_int(rrec.get("stack_n")) + spent, REF_STACK_CAP)
+    rrec.setdefault("history", []).append(
+        {"ts": now_iso(), "payment_id": payment.get("ref") or payment.get("id"),
+         "amount": payment.get("amount"), "flagged": flag})
+    rrec["history"] = rrec["history"][-200:]  # L4: кап истории
+    return True
+
+
+def _ref_sweep_pending():
+    """H1: возврат стеков по платежам, созданным со стек-скидкой и не оплаченным
+    >TTL. Оплата, дошедшая ПОСЛЕ возврата, сжигает стек повторно в вебхуке
+    (гард stack_restored). Порядок локов: _codes_lock → _ref_lock (как в вебхуке)."""
+    with _codes_lock:
+        data = _load_codes()
+        pend = [p for p in (data or {}).get("payments", [])
+                if p.get("stack_code") and p.get("status") == "created"
+                and not p.get("stack_restored")
+                and _safe_int(p.get("stack_ts")) < time.time() - _REF_PENDING_TTL]
+        if not pend:
+            return
+        with _ref_lock:
+            refs = _load_referrals()
+            if refs is None:
+                return
+            dirty = False
+            for p in pend:
+                dirty = _ref_restore_locked(refs, p, "stack_restored_timeout") or dirty
+            if dirty:
+                _save_referrals(refs)
+        _save_codes(data)
+
+
+def _ref_restore_burned(stack_code: str, burned_n: int):
+    """N3: платёж так и не создан (сбой Platega до записи) — вернуть сгоревший
+    при создании стек. Свип/вебхук тут не помогут: записи платежа нет."""
+    if not stack_code or not burned_n:
+        return
+    with _ref_lock:
+        refs = _load_referrals()
+        if refs is None:
+            return
+        rrec = refs.get(stack_code)
+        if rrec is None:
+            return
+        rrec["stack_n"] = min(_safe_int(rrec.get("stack_n")) + burned_n, REF_STACK_CAP)
+        rrec.setdefault("history", []).append(
+            {"ts": now_iso(), "flagged": "stack_restore_create_failed"})
+        rrec["history"] = rrec["history"][-200:]  # L4
+        _save_referrals(refs)
+
+
+@mcp.custom_route("/api/referral/code", methods=["POST"])
+async def api_referral_code(request: Request):
+    """Магазин: реф-код инстанса → {code, link, clicks, buys, stack_n}.
+
+    Публичный, rate-limit. install_id обязан быть известен по install-ping;
+    fp сверяется, если установка его присылала (v0.16.3+). Код детерминирован —
+    запись в referrals.json создаётся лениво при первом запросе (lazy-register).
+    M2: install_id+fp — ТОЛЬКО в теле POST: query оседает в access-логах, а пара
+    install_id+fp = креды к стеку (как ?token= в v0.11)."""
+    g = _store_gate()
+    if g:
+        return g
+    ip = _client_ip(request)
+    if _rate_limited(ip, "refcode", 30, 60):
+        return JSONResponse({"ok": False, "error": "too_many_attempts"}, status_code=429)
+    body, err = await _read_capped(request, 2048)
+    if err is not None:
+        return err
+    try:
+        body = json.loads(body)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
+    iid = str(body.get("install_id") or "") if isinstance(body, dict) else ""
+    fp = str(body.get("fp") or "") if isinstance(body, dict) else ""
+    if not _INSTALL_ID_RE.match(iid):
+        return JSONResponse({"ok": False, "error": "bad install_id"}, status_code=400)
+    if fp and not _FP_RE.match(fp):
+        return JSONResponse({"ok": False, "error": "bad fp"}, status_code=400)
+    with _installs_lock:
+        idata = _load_installs()
+        irec = (idata or {}).get("installs", {}).get(iid) if idata else None
+    if irec is None:
+        return JSONResponse({"ok": False, "error": "unknown install"}, status_code=404)
+    known_fp = str(irec.get("fp") or "")
+    if known_fp and fp != known_fp:
+        return JSONResponse({"ok": False, "error": "fp mismatch"}, status_code=403)
+    _ref_sweep_pending()  # H1: возврат стеков с брошенных платежей (>24ч)
+    code = _ref_code_for(iid)
+    with _ref_lock:
+        refs = _load_referrals()
+        if refs is None:
+            return JSONResponse({"ok": False, "error": "referrals store corrupted"}, status_code=500)
+        rec = refs.get(code)
+        if rec is None:
+            # M3: fp легаси-инсталла не дозаписываем из чужого вызова — иначе первый
+            # звонящий навесил бы свой fp на чужой код
+            rec = {"install_id": iid, "fp": known_fp, "created": now_iso(),
+                   "clicks": 0, "buys": 0, "stack_n": 0, "history": []}
+            refs[code] = rec
+            _save_referrals(refs)
+        elif rec.get("install_id") != iid:
+            # коллизия 8-символьного кода двух install_id — чужую запись не перезаписываем
+            log.error("ref code collision: %s", code)
+            _event("ref_code_collision", code, iid)
+            return JSONResponse({"ok": False, "error": "code collision"}, status_code=500)
+    return JSONResponse({"ok": True, "code": code,
+                         "link": f"{PUBLIC_BASE_URL}/?ref={code}",
+                         "clicks": _safe_int(rec.get("clicks")),
+                         "buys": _safe_int(rec.get("buys")),
+                         "stack_n": _safe_int(rec.get("stack_n"))}, headers=_NOCACHE)
+
+
+@mcp.custom_route("/api/referral", methods=["GET"])
+async def api_referral(request: Request):
+    """Инстанс: своя реф-карточка для дашборда («Система» → «Пригласи друга», v0.37.0).
+    Прокси на магазин /api/referral/code с install_id+fp этого инстанса. Bearer —
+    middleware (путь не публичный). Магазин недоступен → {ok:false} — блок скрыт,
+    инстанс не ломается (fail-open, как весь hosted-контур)."""
+    if STORE_MODE:
+        return PlainTextResponse("Not Found", status_code=404)  # как /app: у магазина нет дашборда
+    import asyncio
+    iid = _install_id()
+    fp = licensing.machine_fingerprint() or ""
+    out = {"ok": False, "install_id": iid, "fp": fp}
+    try:
+        # M2: install_id/fp — в теле POST (query оседает в access-логах магазина)
+        r = await asyncio.to_thread(_post_json, f"{PUBLIC_BASE_URL}/api/referral/code",
+                                    {"install_id": iid, "fp": fp}, 8)
+        if isinstance(r, dict) and r.get("ok"):
+            out.update({k: r[k] for k in ("code", "link", "clicks", "buys", "stack_n") if k in r})
+            out["ok"] = True
+    except Exception:
+        pass
+    return JSONResponse(out, headers=_NOCACHE)
+
+
 # ------------------------------------------------------------- billing ----
 
 def _platega_create(plan_id: str, ref: str, amount: "int | None" = None) -> dict:
@@ -4586,20 +4843,68 @@ async def api_billing_pay(request: Request):
     if body.get("email") is not None and not _valid_email(body.get("email")):
         return JSONResponse({"error": "valid email required"}, status_code=400, headers=_CORS)
     email = extend_email or (_valid_email(body.get("email")) or "")
-    # продление — скидка −10%, считается ТОЛЬКО серверно (клиент цену не подсовывает)
-    amount = int(round(PLANS[plan_id]["RUB"] * EXTEND_DISCOUNT)) if extend else None
+    # v0.38.0: рефералка. body.ref — промокод (кука лендинга mg_ref или ручной ввод);
+    # −20% только на НОВЫЙ платёж тарифа (не продление, не донат). Невалидный код →
+    # полная цена без ошибки (fail-open для покупателя). shortcut: «первая покупка»
+    # не форсится — email опционален (совместимость флота), проверять нечем.
+    ref_code = "" if extend else _ref_lookup(body.get("ref"))
+    # install_id/fp покупателя (дашборд-инстанс): self-ref блок в вебхуке + стек продления
+    buyer_iid = str(body.get("install_id") or "")
+    buyer_fp = str(body.get("fp") or "")
+    buyer_iid = buyer_iid if _INSTALL_ID_RE.match(buyer_iid) else ""
+    buyer_fp = buyer_fp if _FP_RE.match(buyer_fp) else ""
+    # Скидки считаются ТОЛЬКО серверно (клиент цену не подсовывает):
+    # продление −10% (EXTEND_DISCOUNT); со стеком рефералки — min(10+10×stack_n, 50)%
+    # (формула владельца: стек включает базу). install_id валидируем мягко по
+    # installs.json: неизвестный / fp не сошёлся → базовые −10%.
+    pct = 0
+    stack_code = ""
+    burned_n = 0
+    if extend:
+        pct = round(100 * (1 - EXTEND_DISCOUNT))  # база −10%
+        if buyer_iid:
+            with _installs_lock:
+                idata = _load_installs()
+                irec = (idata or {}).get("installs", {}).get(buyer_iid) if idata else None
+            # M3: стек только при ПОДТВЕРЖДЁННОМ fp — легаси-инсталл без fp стек не применяет
+            if irec is not None and irec.get("fp") and irec.get("fp") == buyer_fp:
+                with _ref_lock:
+                    refs = _load_referrals()
+                    rrec = refs.get(_ref_code_for(buyer_iid)) if refs is not None else None
+                    stack_n = _safe_int((rrec or {}).get("stack_n"))
+                    # H1: стек СГОРАЕТ при создании платежа — иначе N параллельных
+                    # продлений читают один стек (TOCTOU, мультитрата). Брошенный
+                    # платёж вернёт стек: _ref_sweep_pending (24ч) / failed-вебхук.
+                    if rrec is not None and stack_n > 0:
+                        burned_n = stack_n
+                        rrec["stack_n"] = 0
+                        stack_code = _ref_code_for(buyer_iid)
+                        rrec.setdefault("history", []).append(
+                            {"ts": now_iso(), "amount": PLANS[plan_id]["RUB"],
+                             "flagged": "stack_burn_at_create"})
+                        rrec["history"] = rrec["history"][-200:]
+                        _save_referrals(refs)
+                    pct = min(10 + 10 * stack_n, 50)
+        amount = int(round(PLANS[plan_id]["RUB"] * (100 - pct) / 100))
+    elif ref_code and not PLANS[plan_id].get("donation"):
+        amount = int(round(PLANS[plan_id]["RUB"] * REF_DISCOUNT))
+    else:
+        amount = None
     ref = "r-" + secrets.token_hex(8)
     try:
         resp = await asyncio.to_thread(_platega_create, plan_id, ref, amount=amount)
     except Exception as e:
         log.error("platega create failed: %s", e)
+        _ref_restore_burned(stack_code, burned_n)  # N3: платёж не создан — стек назад
         return JSONResponse({"error": "payment creation failed"}, status_code=502, headers=_CORS)
     log.info("platega create response: %s", json.dumps(resp, ensure_ascii=False)[:500])
     pdata = resp.get("data") or resp
     pay_url = pdata.get("redirect") or pdata.get("url") or pdata.get("link") or pdata.get("paymentUrl")
     platega_id = str(pdata.get("id") or pdata.get("transactionId") or "")
     if not pay_url:
-        return JSONResponse({"error": "no pay url", "raw": resp}, status_code=502, headers=_CORS)
+        # L6: сырой ответ Platega наружу не отдаём (внутрянка) — детали в серверном логе
+        _ref_restore_burned(stack_code, burned_n)  # N3
+        return JSONResponse({"error": "no pay url"}, status_code=502, headers=_CORS)
     with _codes_lock:
         data = _load_codes()
         rec = {"id": ref, "ref": ref, "platega_id": platega_id, "plan": plan_id,
@@ -4609,10 +4914,22 @@ async def api_billing_pay(request: Request):
             rec["email"] = email  # только когда известен — не засоряем запись пустотой
         if extend:
             rec["extend"] = extend
+            if pct > 10:
+                rec["extend_pct"] = pct  # стек применён и УЖЕ сгорел при создании (H1)
+            if stack_code:
+                rec["stack_code"] = stack_code
+                rec["stack_ts"] = int(time.time())  # для _ref_sweep_pending (24ч)
+        if ref_code:
+            rec["ref_code"] = ref_code
+        if buyer_iid:
+            rec["buyer_install"] = buyer_iid
+            if buyer_fp:
+                rec["buyer_fp"] = buyer_fp
         data["payments"].append(rec)
         _save_codes(data)
     _event("payment_created", ref, f"{plan_id} · {amount if amount is not None else PLANS[plan_id]['RUB']}₽"
-                                   + (" · продление −10%" if extend else ""))
+                                   + (f" · продление −{pct}%" if extend else "")
+                                   + (f" · реф {ref_code} −20%" if ref_code else ""))
     return JSONResponse({"ok": True, "payUrl": pay_url, "ref": ref},
                         headers={**_NOCACHE, **_CORS})
 
@@ -4820,6 +5137,7 @@ def _activate_key(key: str) -> dict:
     fp = licensing.machine_fingerprint()
     if fp:
         payload["fp"] = fp
+    payload["install_id"] = _install_id()  # v0.38.0: связка ключ↔инстанс (self-ref блок рефералки)
     try:
         j = _post_json(f"{PUBLIC_BASE_URL}/api/license/validate", payload, timeout=6)
     except Exception as e:
@@ -4904,6 +5222,52 @@ async def api_license_validate(request: Request):
                                 status_code=403, headers=_NOCACHE)
         if verdict == "bound":
             _event("license_machine_bound", payload.get("email") or "", fp[:12])
+    # v0.38.0: инстанс присылает install_id → связка ключ↔инстанс (key_installs в
+    # codes.json) для self-ref блока рефералки: ключ куплен по реф-коду и активируется
+    # с инстанса владельца кода → откат начисления (лицензию не трогаем — она оплачена).
+    iid = str(body.get("install_id") or "")
+    iid = iid if _INSTALL_ID_RE.match(iid) else ""
+    selfref_msg = None
+    if iid:
+        with _codes_lock:
+            data = _load_codes()
+            ki = data.setdefault("key_installs", {})
+            kh = _key_hash(key)
+            prev = ki.get(kh) or {}
+            if prev.get("install_id") != iid or prev.get("fp") != fp:
+                ki[kh] = {"install_id": iid, "fp": fp, "at": now_iso()}
+                if len(ki) > 5000:  # потолок реестра, как у revoked: трим самых старых
+                    data["key_installs"] = dict(sorted(ki.items(),
+                                                       key=lambda kv: kv[1].get("at", ""))[-4000:])
+                pay = next((p for p in data["payments"]
+                            if p.get("licenseKey") == key and p.get("ref_code")), None)
+                if pay is not None and not pay.get("selfref"):
+                    rcode = str(pay["ref_code"])
+                    with _ref_lock:  # порядок _codes_lock → _ref_lock, как в вебхуке
+                        refs = _load_referrals()
+                        rrec = refs.get(rcode) if refs is not None else None
+                        if rrec and (rrec.get("install_id") == iid
+                                     or (fp and rrec.get("fp") and rrec.get("fp") == fp)):
+                            pay["selfref"] = True
+                            rrec["buys"] = max(0, _safe_int(rrec.get("buys")) - 1)
+                            rrec["stack_n"] = max(0, _safe_int(rrec.get("stack_n")) - 1)
+                            rrec.setdefault("history", []).append(
+                                {"ts": now_iso(), "payment_id": pay.get("ref") or pay.get("id"),
+                                 "amount": pay.get("amount"), "flagged": "self_ref_activation"})
+                            rrec["history"] = rrec["history"][-200:]  # L4
+                            _save_referrals(refs)
+                            selfref_msg = (f"⚠️ Self-ref при активации: код {rcode} · "
+                                           f"начисление откачено")
+                            _event("ref_self_activation", rcode, iid)
+                _save_codes(data)
+    if selfref_msg and TG_NOTIFY_CHAT_ID:  # сеть — после локов, best-effort
+        tg_token = os.environ.get("TG_BOT_TOKEN", "")
+        if tg_token:
+            import asyncio
+            try:
+                await asyncio.to_thread(billing.send_telegram, TG_NOTIFY_CHAT_ID, selfref_msg, tg_token)
+            except Exception as e:
+                log.error("ref self-ref telegram: %s", e)
     _event("license_validated", payload.get("email") or "", payload.get("tier", ""))
     return JSONResponse({"ok": True, "email": payload.get("email"),
                          "tier": payload.get("tier"), "exp": payload.get("exp") or 0},
@@ -5465,16 +5829,26 @@ async def billing_create(request: Request):
         email = tenant.get("email") or email  # email кабинета авторитетнее
     if not email:
         return JSONResponse({"error": "valid email required"}, status_code=400)
+    # v0.37.0: промокод рефералки (кука mg_ref → buybox шлёт body.ref) — −20% на
+    # платёж тарифа (донатам фикс-цена). Невалидный код → полная цена, без ошибки.
+    # shortcut: «первая покупка» по email не проверяется (SPEC-referral §2, антифрод по email).
+    ref_code = "" if PLANS[plan_id].get("donation") else _ref_lookup(body.get("ref"))
+    amount = None
+    if ref_code:
+        base_price = PLANS[plan_id].get(PLATEGA_CURRENCY) or PLANS[plan_id]["RUB"]
+        amount = int(round(base_price * REF_DISCOUNT))
     ref = "r-" + secrets.token_hex(8)
     try:
         pay = await asyncio.to_thread(
             billing.create_platega_payment,
             PLATEGA_MERCHANT_ID, PLATEGA_API_KEY, plan_id, email,
             f"{PUBLIC_BASE_URL}/billing/success?pid={ref}",
-            PLATEGA_API, PLATEGA_CURRENCY, f"{PUBLIC_BASE_URL}/#pricing", ref)
+            PLATEGA_API, PLATEGA_CURRENCY, f"{PUBLIC_BASE_URL}/#pricing", ref,
+            amount=amount)
     except billing.BillingError as e:
         log.error("billing/create failed: %s", e)
-        return JSONResponse({"error": str(e)}, status_code=502)
+        # N4: str(e) может нести сырой ответ Platega — наружу generic, детали в логе
+        return JSONResponse({"error": "payment creation failed"}, status_code=502)
     with _codes_lock:
         data = _load_codes()
         # email храним у себя: callback Platega его не несёт (docs.platega.io CallbackPayload)
@@ -5482,6 +5856,9 @@ async def billing_create(request: Request):
                "plan": plan_id, "tier": "donation" if PLANS[plan_id].get("donation") else "pro",
                "email": email, "status": "created",
                "at": now_iso(), "payUrl": pay["payment_url"]}
+        if ref_code:
+            rec["ref_code"] = ref_code
+            rec["amount"] = amount  # ожидание для сверки суммы в вебхуке
         if tenant:
             rec["tenant"] = tenant["id"]
         data["payments"].append(rec)
@@ -5579,6 +5956,7 @@ async def billing_webhook_platega(request: Request):
         return JSONResponse({"error": "forbidden"}, status_code=403)
     if _rate_limited(ip, "webhook", 30, 60):
         return JSONResponse({"error": "too_many_requests"}, status_code=429)
+    _ref_sweep_pending()  # N7: возврат стеков брошенных платежей не ждёт открытия реф-карточки
     raw, err = await _read_capped(request, 65536)
     if err is not None:
         return JSONResponse({"error": "payload too large"}, status_code=413)
@@ -5590,6 +5968,7 @@ async def billing_webhook_platega(request: Request):
         body = {}
     delivery = None  # (code, lic_key, tier, email) — доставим после снятия лока
     donation_delivery = None  # v0.33.2: (email, label) — thank-you письмо донатеру
+    ref_msgs = []  # v0.37.0: TG владельцу о реф-событиях — отправка строго после локов
     with _codes_lock:
         data = _load_codes()
         pid = str(body.get("id") or body.get("payment_id") or body.get("order_id") or "")[:128]
@@ -5610,6 +5989,13 @@ async def billing_webhook_platega(request: Request):
             data["payments"].append(payment)
         payment["status"] = status
         payment["platega_id"] = payment.get("platega_id") or pid
+        # H1: терминальный фейл платежа со стеком → стек возвращаем сразу,
+        # не дожидаясь свипа 24ч (см. _ref_sweep_pending)
+        if status in _FAILED_STATUSES and payment.get("stack_code"):
+            with _ref_lock:
+                refs = _load_referrals()
+                if refs is not None and _ref_restore_locked(refs, payment, "stack_restored_failed"):
+                    _save_referrals(refs)
         result = {"ok": True, "recorded": True}
         if status in _PAID_STATUSES:
             try:
@@ -5686,6 +6072,66 @@ async def billing_webhook_platega(request: Request):
                 delivery = (code, lic_key, "pro", email, payment.get("ref") or pid)
                 _event("payment", pid, f"{plan_id} · {amount}{currency} · код {code}")
                 result["code"] = code
+                # --- v0.37.0: рефералка (SPEC-referral §3.3–3.4) — начисление
+                # приглашающему / self-ref блок / сгорание стека при продлении.
+                # refs под своим локом; порядок локов _codes_lock → _ref_lock (везде одинаково).
+                ref_code = str(payment.get("ref_code") or "")
+                b_iid = str(payment.get("buyer_install") or "")
+                b_fp = str(payment.get("buyer_fp") or "")
+                if ref_code or (ext_ok and b_iid):
+                    with _ref_lock:
+                        refs = _load_referrals()
+                        if refs is None:
+                            log.error("referrals.json повреждён — реф-начисление платежа %s пропущено", pid)
+                        else:
+                            dirty = False
+                            if ref_code:
+                                rrec = refs.get(ref_code)
+                                if rrec is None:
+                                    log.error("ref_code %s платежа %s отсутствует в referrals.json", ref_code, pid)
+                                else:
+                                    hist = {"ts": now_iso(), "payment_id": payment.get("ref") or pid,
+                                            "amount": amount}
+                                    # shortcut: self-ref только по install_id/fp платежа
+                                    # (email покупателя может отсутствовать — см. /api/billing/pay)
+                                    if (b_iid and b_iid == rrec.get("install_id")) or \
+                                       (b_fp and rrec.get("fp") and b_fp == rrec.get("fp")):
+                                        payment["selfref"] = True
+                                        hist["flagged"] = "self_ref"
+                                        rrec.setdefault("history", []).append(hist)
+                                        rrec["history"] = rrec["history"][-200:]  # L4
+                                        ref_msgs.append(f"⚠️ Self-ref блок: код {ref_code} · "
+                                                        f"{amount:.0f} {currency} · начисление отклонено")
+                                        _event("ref_self_blocked", ref_code, f"{amount:.0f}{currency}")
+                                    else:
+                                        rrec["buys"] = _safe_int(rrec.get("buys")) + 1
+                                        rrec["stack_n"] = min(_safe_int(rrec.get("stack_n")) + 1,
+                                                              REF_STACK_CAP)
+                                        rrec.setdefault("history", []).append(hist)
+                                        rrec["history"] = rrec["history"][-200:]  # L4
+                                        ref_msgs.append(f"🤝 Реф-продажа по {ref_code}: "
+                                                        f"{amount:.0f} {currency} · всего {rrec['buys']}")
+                                        _event("ref_sale", ref_code, f"{amount:.0f}{currency} · buys={rrec['buys']}")
+                                    dirty = True
+                            # H1: стек сгорает при СОЗДАНИИ платежа. Если платёж
+                            # провисел >24ч, свип вернул стек (stack_restored), а оплата
+                            # всё же дошла — сжигаем повторно (иначе двойная выгода).
+                            if ext_ok and payment.get("stack_code") and payment.get("stack_restored"):
+                                own = refs.get(str(payment.get("stack_code") or ""))
+                                spent = max(0, (_safe_int(payment.get("extend_pct")) - 10) // 10)
+                                if own is not None and spent:
+                                    own["stack_n"] = max(0, _safe_int(own.get("stack_n")) - spent)
+                                    own.setdefault("history", []).append(
+                                        {"ts": now_iso(), "payment_id": payment.get("ref") or pid,
+                                         "amount": payment.get("amount"),
+                                         "flagged": "stack_reburn_late_paid"})
+                                    own["history"] = own["history"][-200:]
+                                    dirty = True
+                                    _event("ref_stack_reburn", str(payment["stack_code"]),
+                                           f"поздняя оплата {payment.get('ref') or pid}")
+                                payment["stack_restored"] = False  # деньги пришли — возврату не бывать
+                            if dirty:
+                                _save_referrals(refs)
         _save_codes(data)
     if donation_delivery:  # v0.33.2: thank-you донатеру — сеть строго вне лока, best-effort
         import asyncio
@@ -5705,6 +6151,15 @@ async def billing_webhook_platega(request: Request):
             log.info("deliver_code %s: %s", code, res)
         except Exception as e:  # deliver_code сам не бросает; страховка
             log.error("deliver_code упал целиком (%s): код %s уже в codes.json и на success-странице", e, code)
+    if ref_msgs:  # v0.37.0: TG владельцу о реф-продаже/self-ref — после локов, best-effort
+        import asyncio
+        tg_token = os.environ.get("TG_BOT_TOKEN", "")
+        if TG_NOTIFY_CHAT_ID and tg_token:
+            for msg in ref_msgs:
+                try:
+                    await asyncio.to_thread(billing.send_telegram, TG_NOTIFY_CHAT_ID, msg, tg_token)
+                except Exception as e:
+                    log.error("ref telegram → %s", e)
     return JSONResponse(result, headers=_NOCACHE)
 
 
@@ -6015,6 +6470,7 @@ class TokenAuth:
                     "/api/admin/me",  # v0.18.0: страница входа админки (configured/authed — не секрет)
                     "/api/admin/login", "/api/admin/setup",  # v0.18.0: логин/первичная настройка (rate-limited)
                     "/api/relay/config",  # v0.19.0: zero-config hosted embed (license key → relay-токен)
+                    "/api/referral/code",  # v0.37.0: реф-код инстанса (install_id+fp → code+статы)
                     "/api/releases/latest.tar.gz", "/api/releases/latest.sha256",  # v0.20.0: автообновления
                     "/api/releases/latest.sig",  # v0.20.0: ed25519-подпись релиза
                     "/billing/digiseller/gen",  # --- digiseller per-order (v0.7) ---
