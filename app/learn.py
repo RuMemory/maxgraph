@@ -51,8 +51,8 @@ def _gated(env):
 
 
 def _clean(text):
-    """Truncation по code points + отсек lone surrogates (урок HIGH-1 v0.25.0:
-    иначе событие отравит буфер — utf-8 encode упадёт на каждом флаше)."""
+    """Truncation по code points + отсек lone surrogates
+    (иначе utf-8 encode упадёт на каждом флаше)."""
     return str(text or "").encode("utf-8", "ignore").decode("utf-8")[:LEARN_TEXT_MAX]
 
 
@@ -63,7 +63,7 @@ def record_search(query, hits, env=None, now=None):
         if _gated(env):
             return
         query = str(query or "")
-        # MED-3 (security W2): title пуст → "" — фоллбэка на name НЕТ (name —
+        # title пуст → "" — фоллбэка на name НЕТ (name —
         # внутренний слуг, в событие не уходит никогда; record_open пропустит).
         hits = {str(n): (str(t) if t else "") for n, t in (hits or [])}
         with _lock:
@@ -91,11 +91,11 @@ def record_open(names, env=None, now=None):
                 return
             for name in names or []:
                 title = hits.get(str(name))
-                if not title:  # нет в выдаче или без title → события нет (MED-3)
+                if not title:  # нет в выдаче или без title → события нет
                     continue
                 key = (_clean(query), _clean(title))
                 if key in _buf:
-                    # LOW-5 (security W2): кап счётчика — c>1000 сервер отклонит,
+                    # кап счётчика — c>1000 сервер отклонит,
                     # иначе пара стала бы poison-pill с вечным ретраем
                     _buf[key] = min(_buf[key] + 1, 1000)
                 elif len(_buf) < LEARN_BUFFER_CAP:

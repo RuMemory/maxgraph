@@ -46,7 +46,7 @@ def current():
 
 def _valid_token(tok):
     """Стем из сети/файла: непустой, ≤32, без whitespace/управляющих, кодируется
-    в utf-8 (lone surrogate ломал бы запись last-good — урок HIGH-1 v0.25.0)."""
+    в utf-8 (lone surrogate ломал бы запись last-good)."""
     if not isinstance(tok, str) or not tok or len(tok) > TOKEN_MAX:
         return False
     try:

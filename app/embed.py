@@ -137,11 +137,10 @@ _PREFIX_MAX = 32               # кап длины префикса из env/rel
 def _pfx(v) -> str:
     """Префикс из env/relay-конфига: только str ≤32 символов, иначе «нет поля».
     НЕ стрипаем: пробел в конце «query: » — значимая часть E5-конвенции.
-    SECURITY (ревизия 0.25.0): отсекаем не-кодируемое в UTF-8 (lone surrogate
-    легален в JSON — "\\ud800", но .encode() на нём падает → иначе вредоносный
-    relay убивал бы ВЕСЬ поиск клиента до рестарта — обход fail-open),
-    не-printable (управляющие молча портят вектора; \\0 ломал бы инъективность
-    сепаратора отпечатка) и whitespace-only («весь из пробелов» — мусор)."""
+    Отсекаем не-кодируемое в UTF-8 (lone surrogate легален в JSON —
+    "\\ud800", но .encode() на нём падает), не-printable (управляющие молча
+    портят вектора; \\0 ломал бы инъективность сепаратора отпечатка) и
+    whitespace-only («весь из пробелов» — мусор)."""
     if not isinstance(v, str) or not 0 < len(v) <= _PREFIX_MAX:
         return ""
     try:
@@ -249,7 +248,7 @@ def enabled(cfg=None) -> bool:
     """Embed включён только с URL И ключом; без них — молча выключен (офлайн)."""
     cfg = config_from_env() if cfg is None else cfg
     on = bool(cfg.get("url") and cfg.get("key"))
-    # LOW-1 (security-review волны 2): не-https URL — Bearer уйдёт открытым текстом.
+    # не-https URL — Bearer уйдёт открытым текстом.
     if on and not cfg["url"].lower().startswith("https://"):
         _warn_once("insecure-url", "embed: EMBED_URL не https — ключ пойдёт "
                                    "незашифрованным: %s", cfg["url"].split("://")[0] + "://…")

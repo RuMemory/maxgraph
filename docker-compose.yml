@@ -4,8 +4,7 @@ services:
     container_name: maxgraph
     restart: unless-stopped
     ports:
-      # Только localhost: снаружи ходит nginx → 127.0.0.1:8787. Иначе прямой доступ
-      # к порту + подделанный X-Forwarded-For обходят rate-limit'ы (SECURITY-REVIEW-v2 №2)
+      # Только localhost: снаружи ходит nginx → 127.0.0.1:8787
       - "127.0.0.1:8787:8787"
     volumes:
       - ./data:/data

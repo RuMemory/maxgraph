@@ -119,9 +119,8 @@ def consume_quota(lk: str, tokens: int) -> bool:
 
 
 # --- v0.28.0: алерт на всплеск разных lk за UTC-день -------------------------
-# MED-1 (security-ревизия): триальные токены фармятся self-minted fp — здесь
-# ранний СИГНАЛ, не блокировка (стена — per-IP кап выдачи на магазине).
-# Считаем lk, прошедшие auth (даже over-quota: фарм виден и по 429).
+# Ранний сигнал аномалии по лицензиям, не блокировка. Считаем lk, прошедшие
+# auth (даже over-quota: аномалия видна и по 429).
 _distinct_lock = threading.Lock()
 _distinct = {"day": "", "lks": set()}
 DISTINCT_LK_ALERT_AT = 50  # разных lk за UTC-день → один warning
@@ -140,7 +139,7 @@ def _note_lk(lk: str) -> None:
         n = len(lks)
     if n == DISTINCT_LK_ALERT_AT:
         log.warning("embed: %d разных lk за UTC-день — возможен фарм "
-                    "триальных токенов (MED-1 watch)", n)
+                    "триальных токенов", n)
 
 
 _load_usage(USAGE_FILE, _usage)
@@ -218,7 +217,7 @@ async def embeddings(request: Request):
     payload = verify_token(auth[7:]) if auth.startswith("Bearer ") else None
     if payload is None:
         return _err(401, "unauthorized")
-    _note_lk(payload["lk"])  # v0.28.0: алерт-счётчик разных lk/день (MED-1)
+    _note_lk(payload["lk"])  # v0.28.0: алерт-счётчик разных lk/день
 
     # лимиты до инференса: сначала дешёвые проверки размера, потом парсинг
     try:

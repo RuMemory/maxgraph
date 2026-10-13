@@ -21,7 +21,7 @@ project=X видит только X (+ сущность project:<slug>); all_pro
 Env:
   MEMORY_TOKEN  — bearer-токен (Authorization: Bearer, точное совпадение) для всех
                   эндпоинтов вне публичных — полный список в TokenAuth.PUBLIC_PATHS;
-                  аутентификации по query нет (удалена в v0.11, победа №10).
+                  аутентификации по query нет (удалена в v0.11).
                   Не задан → автогенерация mg_local_* в <data>/local_token.txt (v0.14)
   TELEMETRY     — TELEMETRY=0 отключает анонимный install-ping (v0.14):
                   один POST {install_id, version, fp?} на магазин при старте.
@@ -65,16 +65,32 @@ from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.responses import FileResponse
 from starlette.responses import Response  # --- digiseller per-order (v0.7) ---
 
-import billing     # stdlib-only: Platega create-payment + доставка кода
 import licensing   # stdlib-only: триал/лицензии (тестируется отдельно)
-import digiseller  # --- digiseller per-order (v0.7) --- stdlib-only: код по заказу Digiseller
-import webhooks    # --- digiseller уведомления (v0.9.1) --- stdlib-only: sale/message → лог + TG
+import plans       # stdlib-only: тарифы/лейблы планов (общие с магазином)
 import searchrank  # --- Ф6 (MEMORY-SYSTEM-v2) --- stdlib-only: ранжированный FTS-lite поиск
 import embed       # --- В2.2 (волна 2) --- stdlib-only: опциональные эмбеддинги, гибридный поиск
 import actr        # --- В2.3 (волна 2) --- stdlib-only: ACT-R reinforcement (частые факты всплывают)
 import learn       # --- W2 (v0.26.0) --- stdlib-only: анонимные learn-events «запрос → открытый заголовок»
 import rankcfg     # --- W3 (v0.27.0) --- stdlib-only: версионированный словарь синонимов (relay rank)
-import ghhook      # --- v0.33.0 --- stdlib-only: GitHub-вебхуки витрины → TG-уведомление владельцу
+
+# Компоненты магазина: в self-hosted сборке их нет; роуты, которые ими пользуются,
+# и так отвечают 404 через _store_gate() (STORE_MODE=0) — импорт терпимый.
+try:
+    import billing
+except ImportError:
+    billing = None
+try:
+    import digiseller
+except ImportError:
+    digiseller = None
+try:
+    import webhooks
+except ImportError:
+    webhooks = None
+try:
+    import ghhook
+except ImportError:
+    ghhook = None
 
 def _find_version() -> str:
     # Docker: /app/VERSION (копируется Dockerfile'ом); локальный запуск из app/: ../VERSION
@@ -84,14 +100,14 @@ def _find_version() -> str:
     return "0.0.0-dev"
 
 
-_TOKEN_SOURCE = ""  # env|file|generated|ephemeral — main() логирует токен один раз при генерации (HIGH-1)
+_TOKEN_SOURCE = ""  # env|file|generated|ephemeral — main() логирует токен один раз при генерации
 
 
 def _resolve_token(env=None, data_dir=None) -> str:
     """MEMORY_TOKEN: env побеждает; иначе автогенерация mg_local_* с персистом
     в <data>/local_token.txt (онбординг без шага «придумай токен», v0.14).
     Диск недоступен → эфемерный токен на процесс, без исключений.
-    Запись атомарная (tmp+os.replace): crash mid-write не ротует токен (LOW-8)."""
+    Запись атомарная (tmp+os.replace): crash mid-write не ротует токен."""
     global _TOKEN_SOURCE
     env = env if env is not None else os.environ
     tok = (env.get("MEMORY_TOKEN") or "").strip()
@@ -122,7 +138,7 @@ def _resolve_token(env=None, data_dir=None) -> str:
 
 def _require_store_token():
     """STORE_MODE=1 без явного MEMORY_TOKEN → fail-fast: молчаливая ротация
-    мастер-токена роняет клиентов/админку (401) и светит новый токен (HIGH-3)."""
+    мастер-токена роняет клиентов/админку (401) и светит новый токен."""
     if STORE_MODE and not _ENV_TOKEN:
         raise SystemExit("STORE_MODE=1 требует явный MEMORY_TOKEN в env (автогенерация запрещена)")
 
@@ -140,7 +156,7 @@ TOKEN = _resolve_token()
 WEBHOOK_SECRET = os.environ.get("PLATEGA_WEBHOOK_SECRET", "")
 PLATEGA_MERCHANT_ID = os.environ.get("PLATEGA_MERCHANT_ID", "")
 PLATEGA_API_KEY = os.environ.get("PLATEGA_API_KEY", "")
-PLATEGA_API = os.environ.get("PLATEGA_API_BASE") or billing.DEFAULT_API_BASE  # офиц. https://app.platega.io
+PLATEGA_API = os.environ.get("PLATEGA_API_BASE") or (billing.DEFAULT_API_BASE if billing else "")
 PLATEGA_CURRENCY = os.environ.get("PLATEGA_CURRENCY") or "RUB"
 PUBLIC_BASE_URL = (os.environ.get("PUBLIC_BASE_URL") or "https://rezon-ai.ru").rstrip("/")
 # Каталог релизных tarball'ов для автообновлений (v0.20.0): наполняет деплой-скрипт
@@ -150,14 +166,14 @@ RELEASES_DIR = os.environ.get("RELEASES_DIR") or str(DATA_DIR / "releases")
 # NB: docker-compose подставляет ${VAR:-} → env ПУСТАЯ, а не отсутствует — поэтому `or`, а не get(default)
 # Планы v0.13.0: только Pro, лесенка длительности. tier лицензии всегда "pro" —
 # длительность живёт в days (→ exp ключа). Скидки от базы 149₽/мес:
-# pro3 −11%, pro6 −16%, pro12 −27%. Цены/лейблы — единый источник billing.PRICES/LABELS.
+# pro3 −11%, pro6 −16%, pro12 −27%. Цены/лейблы — единый источник plans.PRICES/LABELS.
 _PLAN_DAYS = {"pro1": 31, "pro3": 93, "pro6": 186, "pro12": 372}
-PLANS = {pid: {**billing.PRICES[pid], "days": _PLAN_DAYS[pid], "label": billing.LABELS[pid]}
+PLANS = {pid: {**plans.PRICES[pid], "days": _PLAN_DAYS[pid], "label": plans.LABELS[pid]}
          for pid in _PLAN_DAYS}
 # v0.33.2: донаты — чистая поддержка проекта: days=0, без кода/ключа/лицензии,
 # thank-you письмо вместо выдачи. В /api/plans и лицензии не попадают.
 _DONATE = ("donate99", "donate249", "donate499")
-PLANS.update({pid: {**billing.PRICES[pid], "days": 0, "label": billing.LABELS[pid],
+PLANS.update({pid: {**plans.PRICES[pid], "days": 0, "label": plans.LABELS[pid],
                     "donation": True} for pid in _DONATE})
 PLAN_ALIASES = {"pro": "pro1", "team": "pro1"}  # легаси-вызовы (старые платежи хранят tier="pro"/"team"; team был месячным → pro1)
 
@@ -264,7 +280,7 @@ def _load():
     relations = [r for r in relations if r["from"] in entities and r["to"] in entities]
     if len(relations) != dropped:
         log.info("load: отброшено связей с отсутствующим концом: %d", dropped - len(relations))
-    # дедуп по тройке (security-ревью v0.34.0, MEDIUM-1): restore монолита поверх шардов
+    # дедуп по тройке: restore монолита поверх шардов
     # иначе дублирует связи (монолит-union + старый шард читаются вместе)
     seen = set()
     relations = [r for r in relations
@@ -577,7 +593,7 @@ def _is_invalidated(obs) -> bool:
 
 
 def _strip_marker_on_write(text):
-    """LOW-3 (ревизия В3.2): входящий факт с маркером [~дата] → маркер срезаем
+    """Входящий факт с маркером [~дата] → маркер срезаем
     (иначе запись рождается невидимой для search/session_start — копипаст из
     read_graph при ре-прайме). → (текст, был_маркер)."""
     s = str(text)
@@ -644,7 +660,7 @@ def _create_entities_graph(ents, rels, items, project: str = "", source: str = "
             have = {_norm_obs(o) for o in ex["observations"]}
             added = []
             for c in e.get("observations", []):
-                c, was_marked = _strip_marker_on_write(c)  # LOW-3 (В3.2)
+                c, was_marked = _strip_marker_on_write(c)
                 if was_marked:
                     warnings.append(f"'{e['name']}': вход с маркером [~дата] — "
                                     f"маркер срезан (факт не должен рождаться "
@@ -676,7 +692,7 @@ def _create_entities_graph(ents, rels, items, project: str = "", source: str = "
             continue
         obs_norm, obs_list = set(), []
         for c in e.get("observations", []):
-            c, was_marked = _strip_marker_on_write(c)  # LOW-3 (В3.2)
+            c, was_marked = _strip_marker_on_write(c)
             if was_marked:
                 warnings.append(f"'{e['name']}': вход с маркером [~дата] — "
                                 f"маркер срезан (факт не должен рождаться "
@@ -764,7 +780,7 @@ def op_create_entities(items, project: str = "", source: str = ""):
     # В3.3: подсказки к записи (Т3 similar + Т4 hygiene) — вне лока (embed =
     # HTTP к своему relay), только совет (И1). Тексты — факты сущности (не
     # entity_text как у neardup: name/title размывают containment) — отдельные
-    # embed-вызовы, ≤_HINT_TEXTS_MAX на батч (LOW-3 ревизии: шаринга LRU нет).
+    # embed-вызовы, ≤_HINT_TEXTS_MAX на батч (шаринга LRU нет).
     created = out.get("created") or []
     touched = [e["name"] for e in created]
     # similar — по ФАКТАМ новой сущности (name/title — идентификаторы, в
@@ -847,10 +863,10 @@ _HINT_OBS_SPLIT = 15          # Т4: «много наблюдений — ра�
 
 def _similar_hints(new_texts, ents, project, self_names) -> list:
     """Т3: [{text, similar_to, title, score, via}] ≤_HINTS_MAX. Кандидаты — сущности
-    видимого проекта (проект "" → полный граф, как read-пути; LOW-6 ревизии),
+    видимого проекта (проект "" → полный граф, как read-пути),
     кроме записанных (self). Embed-скан — только по сущностям с векторами
     (scorer → None без вектора); FTS — по стемам из prep-кэша searchrank
-    (MEDIUM-2 ревизии: без повторной токенизации корпуса)."""
+    (без повторной токенизации корпуса)."""
     texts = [str(t or "").strip() for t in (new_texts or [])]
     texts = [t for t in texts if t][:_HINT_TEXTS_MAX]
     if not texts:
@@ -872,7 +888,7 @@ def _similar_hints(new_texts, ents, project, self_names) -> list:
             hits = []
             qv = None
             if store:  # embed-путь: косинус по векторам с диска (без API на скан)
-                # MEDIUM-1: кап длины как у entity_text — длинный факт не выжигает
+                # кап длины как у entity_text — длинный факт не выжигает
                 # дневной кап embed (стоимость = len/4)
                 qv = embed.query_vector(text[:embed.ENTITY_TEXT_MAX], cfg=cfg,
                                         state_path=EMBED_STATE_FILE)
@@ -882,11 +898,11 @@ def _similar_hints(new_texts, ents, project, self_names) -> list:
                         s = scorer(n)
                         if s is not None and s >= _HINT_SIMILAR_COS:
                             hits.append((s, n, "embed"))
-            # FTS-фоллбэк — только когда embed-пути не было (LOW-4): embed
+            # FTS-фоллбэк — только когда embed-пути не было: embed
             # выключен/сбой/нет вектора; «честно пустой» embed-скан не дублируем
             if not hits and (not store or qv is None):
                 qt = set(searchrank.tokenize(text))
-                if len(qt) >= 3:  # <3 стемов → тривиальная 1.0, шум (ревизия)
+                if len(qt) >= 3:  # <3 стемов → тривиальная 1.0, шум
                     for n, e in scope:
                         stems = searchrank._prepare(e)["stems"]
                         if stems and len(qt & stems) / len(qt) >= _HINT_SIMILAR_CONTAIN:
@@ -985,7 +1001,7 @@ def op_update_entity(item, project: str = "", source: str = ""):
         # В3.2 (Т2, откат supersedes — признанный пробел суда): restore=[строки]
         # снимает маркер [~YYYY-MM-DD]. Принимает строку как с маркером, так и
         # без; ненайденные — в restoreNotFound ответа (молча не теряем).
-        # Валидация типов (MEDIUM-1 ревизии): строка → один элемент, прочие
+        # Валидация типов: строка → один элемент, прочие
         # не-списки → warning.
         rest = item.get("restore")
         if rest is None:
@@ -1070,7 +1086,7 @@ def op_add_observations(items, project: str = ""):
             obs_list = ents[name]["observations"]
             # Т2: инвалидация устаревших строк (до добавления новых — новый факт
             # может текстом совпадать с помечаемым старым, порядок важен).
-            # Валидация типов (MEDIUM-1 ревизии): строка → одноимённый элемент
+            # Валидация типов: строка → одноимённый элемент
             # (без посимвольной итерации), прочие не-списки → error по item.
             sup = item.get("supersedes")
             if sup is None:
@@ -1086,7 +1102,7 @@ def op_add_observations(items, project: str = ""):
                 if not s:
                     continue
                 idx = next((i for i, o in enumerate(obs_list)
-                            if o == s or str(o).strip() == s), None)  # LOW-4
+                            if o == s or str(o).strip() == s), None)
                 if idx is None:
                     # уже помечена ранее? (ищем по тексту без маркера) → идемпотентно
                     if any(_is_invalidated(o) and _INVALIDATED_RE.sub("", o, count=1).strip() == s
@@ -1104,7 +1120,7 @@ def op_add_observations(items, project: str = ""):
             added = []
             stripped = 0
             for c in contents:
-                c, was_marked = _strip_marker_on_write(c)  # LOW-3
+                c, was_marked = _strip_marker_on_write(c)
                 stripped += 1 if was_marked else 0
                 k = _norm_obs(c)
                 if k in have:
@@ -1119,7 +1135,7 @@ def op_add_observations(items, project: str = ""):
                 r["superseded"] = marked
                 r["supersedesNotFound"] = sup_nf
             if stripped:
-                r["markerStripped"] = stripped  # LOW-3: вход нёс [~дата] — срезали
+                r["markerStripped"] = stripped  # вход нёс [~дата] — срезали
             results.append(r)
             for c in added:
                 _event("add_observation", name, c[:120],
@@ -1268,7 +1284,7 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
     # не должна всплывать). Полная правда с маркерами — read_graph/open_nodes.
     # Векторная составляющая гибрида — по последнему embed-снимку (маркер
     # попадёт туда при ближайшем refresh после updatedAt-бампа). Копии только
-    # для затронутых сущностей, один проход (LOW-2 ревизии).
+    # для затронутых сущностей, один проход.
     _corpus, _changed = [], False
     for e in corpus:
         obs = e.get("observations", [])
@@ -1333,7 +1349,7 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
     # не-ранжированные ветки (пустой query, CJK-фоллбек) сбрасывают связку.
     if ranked:
         learn.record_search(query_str,
-                            [(e["name"], e.get("title"))  # без фоллбэка на name (MED-3)
+                            [(e["name"], e.get("title"))  # без фоллбэка на name
                              for e in out_entities])
     else:
         learn.record_search("", [])
@@ -1537,7 +1553,7 @@ def op_task_list(project: str = "") -> dict:
     """Открытые задачи (status≠done), recency-first. project задан — только его
     задачи (Ф1); без project — все открытые задачи графа (плоское чтение, как
     read_graph без проекта). → {"tasks": [...], "total": N}.
-    Ч2-контракт (LOW-5 ревизии В3.2): task_list — «полная правда», как
+    Ч2-контракт: task_list — «полная правда», как
     read_graph/open_nodes: инвалидированные наблюдения видны с маркером
     [~дата] (фильтруют только session_start и search)."""
     with _lock:
@@ -1671,7 +1687,7 @@ def op_session_close(summary: str = "", done=(), links=(), project: str = "",
         return {"error": "session_close: пусто — дай summary или done"}
     today = now_iso()[:10]
     # пульс читаем ДО лока (один раз, свежести на секунды для связей достаточно) —
-    # чтобы не держать _lock на чтении журнала (Л2 security-ревизии v0.24.0)
+    # чтобы не держать _lock на чтении журнала
     ev_lines = (EVENTS_FILE.read_text(encoding="utf-8").splitlines()
                 if EVENTS_FILE.exists() else [])
     raw_touched = _touched_today(project, today, lines=ev_lines)
@@ -1710,7 +1726,7 @@ def op_session_close(summary: str = "", done=(), links=(), project: str = "",
                 l = str(l or "").strip()
                 if not l or l == name:
                     continue
-                # Ф1: явные связи тоже внутри проекта (Л5 ревизии)
+                # Ф1: явные связи тоже внутри проекта
                 if l in ents and _in_project(ents[l], project):
                     want.append(l)
                 else:
@@ -2099,7 +2115,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
             if ent:
                 line += f" {ent}"
             det = str(ev.get("detail") or "")
-            # Ч2 (В3.2, security MEDIUM-2): detail add_observation несёт сырой
+            # Ч2: detail add_observation несёт сырой
             # текст факта — инвалидированная строка не должна жить в контексте
             # через журнал; действие/сущность/время остаются
             if det and ev.get("action") != "add_observation":
@@ -2488,7 +2504,7 @@ def _dashboard_html() -> str:
     return _page_html("dashboard.html")
 
 
-# Security-заголовки в одной точке (SECURITY-REVIEW-v2, быстрая победа №2).
+# Security-заголовки в одной точке.
 # CSP этап 1: страницы однофайловые (инлайн CSS/JS — без 'unsafe-inline' нельзя),
 # но внешние скрипты/шрифты, fetch наружу, чужие формы и iframe-встраивание закрыты.
 # Без upgrade-insecure-requests: self-hosted ходит по http://LAN.
@@ -2568,7 +2584,7 @@ async def api_search(request: Request):
     except (TypeError, ValueError):
         limit = searchrank.DEFAULT_LIMIT
     import asyncio
-    # MED-1 (security-review волны 2): op_search при включённом embed делает синхронную
+    # op_search при включённом embed делает синхронную
     # сеть (embed.query_vector) — в async-хендлере это блокирует весь event loop.
     # Уводим в threadpool, как остальные сетевые вызовы REST-слоя.
     return JSONResponse(await asyncio.to_thread(
@@ -2639,7 +2655,7 @@ async def api_entity_update(request: Request):
     blocked = _write_block()
     if blocked:
         return JSONResponse(blocked, status_code=402)
-    raw, rerr = await _read_capped(request, 262144)  # LOW-6 (ревизия В3.2)
+    raw, rerr = await _read_capped(request, 262144)  # кап по факту длины
     if rerr is not None:
         return JSONResponse({"error": "bad request"}, status_code=400)
     try:
@@ -2649,7 +2665,7 @@ async def api_entity_update(request: Request):
     slug, err = _body_project(body)
     if err:
         return JSONResponse({"error": err}, status_code=400)
-    rest = body.get("restore")  # MEDIUM-1 (В3.2): без типовой валидации — 400
+    rest = body.get("restore")  # без типовой валидации — 400
     if rest is not None and not isinstance(rest, (list, str)):
         return JSONResponse({"error": "restore must be an array of strings"},
                             status_code=400)
@@ -2666,7 +2682,7 @@ async def api_task_add(request: Request):
     blocked = _write_block()
     if blocked:
         return JSONResponse(blocked, status_code=402)
-    raw, rerr = await _read_capped(request, 262144)  # LOW-1 (ревизия В3.4)
+    raw, rerr = await _read_capped(request, 262144)  # кап по факту длины
     if rerr is not None:
         return JSONResponse({"error": "bad request"}, status_code=400)
     try:
@@ -2739,7 +2755,7 @@ async def api_observations(request: Request):
     blocked = _write_block()
     if blocked:
         return JSONResponse(blocked, status_code=402)
-    raw, rerr = await _read_capped(request, 262144)  # LOW-6 (ревизия В3.2)
+    raw, rerr = await _read_capped(request, 262144)  # кап по факту длины
     if rerr is not None:
         return JSONResponse({"error": "bad request"}, status_code=400)
     try:
@@ -2752,7 +2768,7 @@ async def api_observations(request: Request):
     items = body.get("observations", [])
     if not isinstance(items, list):
         return JSONResponse({"error": "observations must be an array"}, status_code=400)
-    for it in items:  # MEDIUM-1 (В3.2): supersedes — список или строка, иначе 400
+    for it in items:  # supersedes — список или строка, иначе 400
         if isinstance(it, dict):
             sup = it.get("supersedes")
             if sup is not None and not isinstance(sup, (list, str)):
@@ -3051,7 +3067,7 @@ def _plan_for(amount: float, currency: str) -> str:
     best = "pro1"
     for pid in sorted(PLANS, key=lambda p: PLANS[p].get(cur, PLANS[p]["RUB"])):
         if PLANS[pid].get("donation"):
-            continue  # v0.33.2 (security HIGH-1): донат никогда не конвертируется в лицензию
+            continue  # v0.33.2: донат никогда не конвертируется в лицензию
         if amount >= PLANS[pid].get(cur, PLANS[pid]["RUB"]):
             best = pid
     return best
@@ -3079,12 +3095,12 @@ def _save_codes(data: dict):
     with _lock:
         data["payments"] = data.get("payments", [])[-500:]  # платежи не растут бесконечно
         # атомарная запись tmp+replace (как licensing._save_state): обрыв записи не должен
-        # превращать codes.json в битый файл → 500 на всех платёжных путях (ревью, победа №4)
+        # превращать codes.json в битый файл → 500 на всех платёжных путях
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         tmp = CODES_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
         try:
-            os.chmod(tmp, 0o600)  # LOW-2: ДО replace — без микроокна umask-пермишений
+            os.chmod(tmp, 0o600)  # ДО replace — без микроокна umask-пермишений
         except OSError:
             pass  # Windows/экзотика — best-effort
         tmp.replace(CODES_FILE)
@@ -3153,7 +3169,7 @@ _TRIALS_CAP = 100_000   # потолок fp-реестра; переполнен
 
 def _load_installs():
     """None при битом файле — хендлер отвечает fail-open БЕЗ записи (не затираем
-    данные transient-ошибкой, LOW-10). Нет файла → свежий каркас."""
+    данные transient-ошибкой). Нет файла → свежий каркас."""
     if not INSTALLS_FILE.exists():
         return {"installs": {}}
     try:
@@ -3190,7 +3206,7 @@ _machines_reset_notified = False  # _event о реинициализации —
 def _load_machines() -> dict:
     """Нет файла → свежий каркас. Битый файл — fail-closed, как codes.json:
     бэкап + raise (хендлер ответит 500, чужие привязки молча не затираем).
-    LOW-1: после corrupt-бэкапа файл отсутствует → реестр стартует ПУСТЫМ —
+    После corrupt-бэкапа файл отсутствует → реестр стартует ПУСТЫМ —
     не молчим: log.critical + событие в пульс (привязки потеряны до ручного
     восстановления из machines.corrupt-*.json)."""
     if not MACHINES_FILE.exists():
@@ -3223,7 +3239,7 @@ def _save_machines(data: dict):
     tmp = MACHINES_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     try:
-        os.chmod(tmp, 0o600)  # LOW-2: ДО replace — без микроокна umask-пермишений
+        os.chmod(tmp, 0o600)  # ДО replace — без микроокна umask-пермишений
     except OSError:
         pass  # Windows — best-effort
     tmp.replace(MACHINES_FILE)
@@ -3485,7 +3501,7 @@ def _license_for_code(data: dict, code: str):
     return (pay or {}).get("licenseKey"), rec
 
 
-# --- tenant-токены: в codes.json только sha256 (SECURITY-REVIEW-v2 №6) ---
+# --- tenant-токены: в codes.json только sha256 ---
 
 def _token_hash(token: str) -> str:
     """sha256 токена кабинета: файл хранит хеш, сам токен показывается клиенту один раз."""
@@ -3545,7 +3561,7 @@ def migrate_token_hashes() -> int:
 
 
 # XFF доверяем только за своим reverse-proxy (TRUST_PROXY=1 на проде за nginx) —
-# иначе подделанный X-Forwarded-For обходит ВСЕ per-IP rate-limit'ы (ревью №2, победа №6).
+# X-Forwarded-For доверяем только за своим proxy (TRUST_PROXY=1).
 # Дополнительно порт 8787 в docker-compose слушает только 127.0.0.1.
 TRUST_PROXY = (os.environ.get("TRUST_PROXY") or "").strip() == "1"
 
@@ -3554,7 +3570,7 @@ def _client_ip(request) -> str:
     if TRUST_PROXY:
         xff = request.headers.get("x-forwarded-for", "")
         if xff:
-            # ПОСЛЕДНИЙ элемент: его добавил наш nginx (клиентский спуф стоит первым — HIGH-2)
+            # ПОСЛЕДНИЙ элемент: его добавляет доверенный proxy
             return xff.split(",")[-1].strip()
     return request.client.host if request.client else "?"
 
@@ -3750,14 +3766,25 @@ async def demo_shot(request: Request):
                     headers={"Cache-Control": "public, max-age=86400"})
 
 
+def _page_or_404(name: str):
+    """Страница с диска; отсутствует в этой сборке → 404 (неотличимо от роутера)."""
+    override = _PAGES.get(name)
+    if override is not None and override.exists():
+        return HTMLResponse(override.read_text(encoding="utf-8"), headers=_NOCACHE)
+    f = Path(__file__).parent / name
+    if not f.exists():
+        return PlainTextResponse("Not Found", status_code=404)
+    return HTMLResponse(f.read_text(encoding="utf-8"), headers=_NOCACHE)
+
+
 @mcp.custom_route("/privacy", methods=["GET"])
 async def privacy_page(request: Request):
-    return HTMLResponse(_page_html("privacy.html"), headers=_NOCACHE)
+    return _page_or_404("privacy.html")
 
 
 @mcp.custom_route("/offer", methods=["GET"])
 async def offer_page(request: Request):
-    return HTMLResponse(_page_html("offer.html"), headers=_NOCACHE)
+    return _page_or_404("offer.html")
 
 
 @mcp.custom_route("/api/codes/generate", methods=["POST"])
@@ -3767,7 +3794,7 @@ async def api_codes_generate(request: Request):
         return g
     if not _admin_auth(request):
         return _admin_401()
-    body, err = await _read_capped(request, 4096)  # LOW-4 review; кап по факту длины
+    body, err = await _read_capped(request, 4096)  # кап по факту длины
     if err is not None:
         return JSONResponse({"error": "bad request"}, status_code=400)
     try:
@@ -3810,7 +3837,7 @@ async def api_telemetry_install(request: Request):
     ip = _client_ip(request)
     if _rate_limited(ip, "telemetry", 10, 3600):
         return JSONResponse({"ok": False, "error": "rate_limited"}, status_code=429)
-    # MEDIUM-7: лимит тела — кап по ФАКТУ длины (content-length может врать/отсутствовать)
+    # лимит тела — кап по ФАКТУ длины (content-length может врать/отсутствовать)
     body, err = await _read_capped(request, 4096)
     if err is not None:
         return JSONResponse({"ok": False, "error": "too_large"}, status_code=413)
@@ -3831,7 +3858,7 @@ async def api_telemetry_install(request: Request):
     trial_ts = None
     with _installs_lock:
         data = _load_installs()
-        if data is None:  # битый installs.json — fail-open без записи (не затираем, LOW-10)
+        if data is None:  # битый installs.json — fail-open без записи (не затираем)
             return JSONResponse({"ok": True}, headers=_NOCACHE)
         rec = data["installs"].get(iid)
         first = rec is None
@@ -3860,7 +3887,7 @@ async def api_telemetry_install(request: Request):
                 trial_ts = t["started_at"]  # якорь НИКОГДА не двигается вперёд
         _save_installs(data)
     if first and fp:
-        # MEDIUM-5: событие только для fp-анкоренных установок — анонимный флуд
+        # событие только для fp-анкоренных установок — анонимный флуд
         # uuid'ами не засоряет таймлайн админки (fp флудеру вычислять лень)
         _event("install_seen", iid, ver)
     out = {"ok": True}
@@ -3878,12 +3905,12 @@ _LEARN_CAP = 500_000         # belt&braces: drop oldest при prune
 _LEARN_BODY_CAP = 16384
 _LEARN_MAX_EVENTS = 50
 _LEARN_TEXT_MAX = 200
-_LEARN_BYTES_CAP = 32 * 1024 * 1024  # stat-клапан до append (MED-2): между
+_LEARN_BYTES_CAP = 32 * 1024 * 1024  # stat-клапан до append: между
                                      # суточными prune файл не растёт безмерно
 
 
 def _learn_clean(text):
-    """Серверная копия санитизации клиента (MED-1): границе доверия не верим —
+    """Серверная копия санитизации клиента: границе доверия не верим —
     lone surrogate легален в JSON, но ломает utf-8 encode при записи."""
     return (text.encode("utf-8", "ignore").decode("utf-8")
             .replace("\x00", "").strip()[:_LEARN_TEXT_MAX])
@@ -3904,7 +3931,7 @@ def _learn_prune(now):
     try:
         lines = LEARN_EVENTS_FILE.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError, ValueError):
-        lines = []  # битый/нечитаемый файл → начинаем с чистого (LOW-4)
+        lines = []  # битый/нечитаемый файл → начинаем с чистого
     for line in lines:
         try:
             ts = float(json.loads(line).get("ts") or 0)
@@ -3913,7 +3940,7 @@ def _learn_prune(now):
         if ts >= cutoff:
             kept.append(line)
     kept = kept[-_LEARN_CAP:]
-    try:  # атомарно: tmp + replace (LOW-4) — крэш/disk-full не затирает файл
+    try:  # атомарно: tmp + replace — крэш/disk-full не затирает файл
         tmp = LEARN_EVENTS_FILE.with_suffix(".tmp")
         tmp.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
         os.replace(tmp, LEARN_EVENTS_FILE)
@@ -3961,7 +3988,7 @@ async def api_telemetry_learn(request: Request):
         return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
     with _learn_lock:
         _learn_prune(now)
-        try:  # MED-2: stat-клапан ДО append — файл не растёт сверх капа
+        try:  # stat-клапан ДО append — файл не растёт сверх капа
             full = (LEARN_EVENTS_FILE.exists()
                     and LEARN_EVENTS_FILE.stat().st_size > _LEARN_BYTES_CAP)
         except OSError:
@@ -3991,7 +4018,7 @@ _RANK_MIN_DAYS = 3           # …в ≥3 разных UTC-дня (прокси 
 _RANK_NOISE_MIN = 2          # count < 2 не храним (одноразовый шум)
 _RANK_PAIRS_CAP = 500
 _RANK_SYNONYMS_CAP = 5       # синонимов на токен (топ по count)
-_RANK_STATS_CAP = 200_000    # кап пар ДО фильтра шума (security W3 MED-3: пара
+_RANK_STATS_CAP = 200_000    # кап пар ДО фильтра шума (пара
                              # из 100-токенных q/t плодит ~10k записей за 450 байт)
 
 
@@ -4026,7 +4053,7 @@ def _rank_config_compute(now):
         mtime = LEARN_EVENTS_FILE.stat().st_mtime
     except OSError:
         return {"version": 0, "synonyms": {}}, {}
-    # MED-2 (security W3): вето должно доезжать до клиентов немедленно — версия
+    # вето должно доезжать до клиентов немедленно — версия
     # учитывает и mtime вето-файла, иначе клиент отклонит пересчёт как «старый»
     try:
         vmtime = RANK_VETO_FILE.stat().st_mtime
@@ -4063,7 +4090,7 @@ def _rank_config_compute(now):
                 st = stats.get(key_ab)
                 if st is None:
                     if len(stats) >= _RANK_STATS_CAP:
-                        continue  # кап против DoS-раздувания (W3 MED-3)
+                        continue  # кап против DoS-раздувания
                     st = stats[key_ab] = {"count": 0, "days": set(),
                                           "surf_q": {}, "surf_t": {}}
                 st["count"] += c
@@ -4221,7 +4248,7 @@ async def api_payments_list(request: Request):
 async def api_codes_export(request: Request):
     """Свежие коды для Digiseller. mark=1 (пометить listed, чтобы не продать дважды) —
     ТОЛЬКО по POST: SameSite=Lax шлёт куку на кросс-сайт GET-навигацию, GET с сайд-эффектом
-    был бы CSRF-уязвим (M1 review). GET всегда read-only."""
+    был бы CSRF-риск. GET всегда read-only."""
     g = _store_gate()
     if g:
         return g
@@ -4246,8 +4273,8 @@ async def api_codes_export(request: Request):
 
 # общий in-memory рейт-лимитер (сбрасывается при рестарте — приемлемо; персистентный — в ROADMAP)
 _rate_buckets: dict = {}
-_RATE_GC_AT = 50000  # GC при переполнении: выкидываем ключи без хитов за 24ч (MEDIUM-6;
-                     # окно самого длинного лимита = 86400 — семантика не страдает)
+_RATE_GC_AT = 50000  # GC при переполнении: выкидываем ключи без хитов за 24ч
+                     # (окно самого длинного лимита = 86400 — семантика не страдает)
 
 
 def _rate_limited(ip: str, bucket: str, maxn: int, window: int = 60) -> bool:
@@ -4295,7 +4322,7 @@ async def api_codes_redeem(request: Request):
         body = json.loads(body)
     except Exception:
         return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
-    if not isinstance(body, dict):  # LOW-3: "[1,2]" и т.п. — не 500, а 400
+    if not isinstance(body, dict):  # "[1,2]" и т.п. — не 500, а 400
         return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
     raw_code = body.get("code")
     code = (raw_code if isinstance(raw_code, str) else "")[:32].strip().upper()
@@ -4310,7 +4337,7 @@ async def api_codes_redeem(request: Request):
             tenant = next((t for t in data["tenants"] if t["id"] == rec.get("tenant")), None)
             if not tenant:
                 return JSONResponse({"ok": False, "error": "Код уже активирован."}, status_code=409)
-            # security CRITICAL (SECURITY-REVIEW-v2 №1, быстрая победа №1): код MG-… —
+            # Код MG-… —
             # НЕ долговременный секрет (email, Digiseller, success-URL, перепродажа).
             # v0.22.3: восстановление = ротация КЛЮЧА АКТИВАЦИИ (раньше ротировался токен
             # кабинета — кабинет отменён, токен дашборд не принимал). Повторный redeem ключ
@@ -4334,7 +4361,7 @@ async def api_codes_redeem(request: Request):
                     exp = 0
                     if old_lic:
                         if _is_revoked(data, old_lic):
-                            # иначе recovery обходит revoke: чарджбэкнутый ключ воскресал бы
+                            # revoke доезжает и в recovery: отозванный ключ не воскресает
                             # новым с тем же exp, и kill-switch админа переставал работать
                             return JSONResponse({"ok": False, "already": True,
                                                  "error": "Лицензия отозвана. Вопросы — в поддержку: help@rezon-ai.ru"},
@@ -4454,7 +4481,7 @@ async def api_codes_trial(request: Request):
     if _rate_limited(ip, "trial", 2, 86400):
         return JSONResponse({"ok": False, "error": "trial_limit_reached"}, status_code=429)
     try:
-        raw, _err = await _read_capped(request, 4096)  # MED-2: факт-кап и тут
+        raw, _err = await _read_capped(request, 4096)  # кап по факту и тут
         body = json.loads(raw) if raw and _err is None else {}
     except Exception:
         body = {}
@@ -4462,7 +4489,7 @@ async def api_codes_trial(request: Request):
     if not email:
         return JSONResponse({"ok": False, "error": "valid_email_required"}, status_code=400)
     # per-email throttle: ответ email_exists — оракул «зарегистрирован ли этот email»;
-    # 1 запрос/час на email делает массовый перебор непрактичным (SECURITY-REVIEW-v2 §4)
+    # 1 запрос/час на email делает массовый перебор непрактичным
     if _rate_limited(f"em:{email}", "trial_email", 1, 3600):
         return JSONResponse({"ok": False, "error": "trial_limit_reached"}, status_code=429)
     with _codes_lock:
@@ -5071,7 +5098,7 @@ async def api_release_sha(request: Request):
 async def api_release_sig(request: Request):
     """Публично: ed25519-подпись tarball'а (v0.20.0). Trust anchor — публичный ключ,
     вшитый в образ updater'а при установке: компрометация раздачи (nginx/data) без
-    ключа подписи (/root/.release-sign, 0600) не даёт подсунуть код клиентам."""
+    ключа подписи (хранится только на сервере магазина) не даёт подсунуть код клиентам."""
     guard = _release_guard(request)
     if guard is not None:
         return guard
@@ -5091,7 +5118,7 @@ async def api_license_activate(request: Request):
         body = json.loads(body)
     except Exception:
         return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
-    if not isinstance(body, dict):  # LOW-3: "[1,2]" и т.п. — не 500, а 400
+    if not isinstance(body, dict):  # "[1,2]" и т.п. — не 500, а 400
         return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
     key = str(body.get("key") or "")[:512].strip()
     if not key:
@@ -5189,7 +5216,7 @@ async def api_license_validate(request: Request):
         body = json.loads(body)
     except Exception:
         return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
-    if not isinstance(body, dict):  # LOW-3: "[1,2]" и т.п. — не 500, а 400
+    if not isinstance(body, dict):  # "[1,2]" и т.п. — не 500, а 400
         return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
     key = str(body.get("key") or "")[:512].strip()
     payload, err = licensing.verify_key(LICENSE_SECRET, key)
@@ -5279,7 +5306,7 @@ _RELAY_EMBED_MODEL = os.environ.get("RELAY_EMBED_MODEL", "intfloat/multilingual-
 
 def _relay_pfx(name: str, default: str) -> str:
     """RELAY_EMBED_*_PREFIX из env: валидируем по клиентскому правилу embed._pfx
-    (SECURITY ревизия 0.25.0: мусор уехал бы всем клиентам, которые его молча
+    (иначе мусор уехал бы всем клиентам, которые его молча
     дропнут → рассинхрон конвенции без единой ошибки). Невалидное → дефолт."""
     raw = os.environ.get(name)
     v = embed._pfx(raw)
@@ -5340,7 +5367,7 @@ async def api_relay_config(request: Request):
         # к fp с ЖИВЫМ серверным якорем триала (install-ping, v0.16.3); грант
         # умирает вместе с триалом. NB: fp self-minted через install-ping —
         # смягчение фарма = per-IP rate-limit этого эндпоинта и install-ping
-        # (10/час) + дневная квота на каждый trial-lk (MED-1 ревизии 0.28.0).
+        # (10/час) + дневная квота на каждый trial-lk.
         iid = str(payload.get("install_id") or "")
         fp = str(payload.get("fp") or "")
         t = None
@@ -5363,7 +5390,7 @@ async def api_relay_config(request: Request):
             _event("relay_config_rejected", "", "trial grant")
             return JSONResponse({"ok": False, "error": "invalid key"}, status_code=403,
                                 headers=_NOCACHE)
-        # решение владельца (MED-1, v0.28.0): ≤2 триальные ВЫДАЧИ в сутки на IP —
+        # ≤2 триальные ВЫДАЧИ в сутки на IP —
         # фарм self-minted fp упирается сюда; 403-отказы выше кап не едят,
         # легитимный (boot + суточный watchdog) укладывается в 2
         if _rate_limited(ip, "relaytrial", 2, 86400):
@@ -5427,7 +5454,7 @@ _ADMIN_COOKIE_PATHS = {"/api/payments", "/api/tenants", "/api/codes", "/api/code
 
 def _admin_cfg() -> dict | None:
     """{} = файла нет (setup открыт); None = файл есть, но не читается/не dict —
-    fail-closed (M3 review): setup/login/password → 500, configured считаем True,
+    fail-closed: setup/login/password → 500, configured считаем True,
     иначе битый файл молча переоткрывает публичный enrollment (takeover)."""
     if not _ADMIN_FILE.exists():
         return {}
@@ -5505,7 +5532,7 @@ def _admin_401():
     return JSONResponse({"error": "unauthorized"}, status_code=401, headers=_NOCACHE)
 
 
-# login-лимит считает ТОЛЬКО неудачи (LOW-2 review): иначе владелец с нескольких вкладок
+# login-лимит считает ТОЛЬКО неудачи: иначе владелец с нескольких вкладок
 # сам себя локает, а атакующий перманентно блокирует вход. Успех — бакет чистится.
 def _rate_peek(ip: str, bucket: str, maxn: int, window: int) -> bool:
     now = time.time()
@@ -5521,7 +5548,7 @@ def _rate_clear(ip: str, bucket: str):
     _rate_buckets.pop(f"{bucket}:{ip}", None)
 
 
-_ADMIN_SETUP_LOCK = threading.Lock()  # check-and-save атомарно (страховка; L1 review)
+_ADMIN_SETUP_LOCK = threading.Lock()  # check-and-save атомарно (страховка)
 
 
 @mcp.custom_route("/api/admin/me", methods=["GET"])
@@ -5540,7 +5567,7 @@ async def api_admin_me(request: Request):
 async def api_admin_setup(request: Request):
     """Первичная настройка пароля — ровно один раз (дальше 409). Только магазин.
     Закрыта master-токеном (Bearer): иначе любой в интернете настроит пароль раньше
-    владельца (M2 review — публичный first-come enrollment)."""
+    владельца (публичный first-come enrollment)."""
     g = _store_gate()
     if g:
         return g
@@ -5600,7 +5627,7 @@ async def api_admin_login(request: Request):
         return JSONResponse({"error": "not configured"}, status_code=409)
     if not _admin_check_password(user, password, cfg):
         _rate_hit(ip, "adminlogin")
-        # user санитизируем: log-forging через \n и пароль, вставленный в поле логина (LOW-3)
+        # user санитизируем: log-forging через \n и пароль, вставленный в поле логина
         log.warning("admin: неудачный вход user=%s ip=%s",
                     re.sub(r"[^\w.@-]", "?", user), ip)
         return JSONResponse({"error": "неверный логин или пароль"}, status_code=401)
@@ -5681,7 +5708,7 @@ async def api_admin_revoke(request: Request):
         body = json.loads(body)
     except Exception:
         return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
-    if not isinstance(body, dict):  # LOW-3: "[1,2]" и т.п. — не 500, а 400
+    if not isinstance(body, dict):  # "[1,2]" и т.п. — не 500, а 400
         return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
     key = str(body.get("key") or "")[:600].strip()
     unrevoke = bool(body.get("unrevoke"))
@@ -5807,13 +5834,13 @@ async def billing_create(request: Request):
         return JSONResponse({"error": "payments not configured (PLATEGA_MERCHANT_ID/PLATEGA_API_KEY)"},
                             status_code=503)
     try:
-        raw, _err = await _read_capped(request, 16384)  # MED-2: факт-кап и тут
+        raw, _err = await _read_capped(request, 16384)  # кап по факту и тут
         if _err is not None:
             return JSONResponse({"error": "bad request"}, status_code=400)
         body = json.loads(raw)
     except Exception:
         return JSONResponse({"error": "bad json"}, status_code=400)
-    if not isinstance(body, dict):  # LOW-3: [1,2] и т.п. не ломают .get
+    if not isinstance(body, dict):  # [1,2] и т.п. не ломают .get
         return JSONResponse({"error": "bad json"}, status_code=400)
     plan_id = _plan_key(str(body.get("plan") or body.get("tier") or "")[:16])
     email = _valid_email(body.get("email")) or ""
@@ -5875,7 +5902,7 @@ def _success_page(pid: str) -> str:
     if pid:
         data = _load_codes()
         # security: матчим ТОЛЬКО наш ref (r-<16 hex>, 64 бита). platega_id убран из
-        # сравнения (SECURITY-REVIEW-v2 №5/победа №7): внешние ID могут быть предсказуемы.
+        # сравнения: внешние ID могут быть предсказуемы.
         p = next((x for x in reversed(data["payments"])
                   if pid in (x.get("id"), x.get("ref"))), None)
     paid = bool(p and p.get("status") in _PAID_STATUSES and p.get("code"))
@@ -5964,7 +5991,7 @@ async def billing_webhook_platega(request: Request):
         body = json.loads(raw)
     except Exception:
         body = dict(await request.form()) if request.method == "POST" else {}
-    if not isinstance(body, dict):  # LOW-3: JSON-массив и т.п. → пусто
+    if not isinstance(body, dict):  # JSON-массив и т.п. → пусто
         body = {}
     delivery = None  # (code, lic_key, tier, email) — доставим после снятия лока
     donation_delivery = None  # v0.33.2: (email, label) — thank-you письмо донатеру
@@ -6051,7 +6078,7 @@ async def billing_webhook_platega(request: Request):
                 payment["licenseKey"] = lic_key
                 if ext_ok:
                     # продление = ротация (как recovery v0.22.3): старый ключ гасим с grace 72ч,
-                    # иначе один ключ мультиплицирует дни повторными покупками (ревизия MED-1)
+                    # иначе один ключ мультиплицирует дни повторными покупками
                     _add_revoked(data, ext, "superseded: продление")
                 if email:
                     payment["email"] = email
@@ -6286,7 +6313,7 @@ async def _digiseller_hook(request: Request, kind: str):
     try:
         webhooks.append_log(WEBHOOKS_LOG, kind, d, params)
         try:
-            os.chmod(WEBHOOKS_LOG, 0o600)  # email/заказы покупателей — только owner (победа №3)
+            os.chmod(WEBHOOKS_LOG, 0o600)  # email/заказы покупателей — только owner
         except OSError:
             pass
     except Exception as e:
@@ -6450,8 +6477,8 @@ class TokenAuth:
     (лендинг, оболочки /app и кабинета, redeem/trial, биллинг, вебхуки, /healthz).
 
     Master-токен — ТОЛЬКО точное совпадение `Authorization: Bearer <MEMORY_TOKEN>`:
-    аутентификации по query нет — `?token=` удалён в v0.11 (победа №10: оседал
-    в access-логах uvicorn/nginx, да ещё и substring-match'ем).
+    аутентификации по query нет — `?token=` удалён в v0.11: токен не должен
+    жить в access-логах uvicorn/nginx.
 
     Токен кабинета (mg_…) проверяет сам хендлер /api/cabinet — ТОЛЬКО Bearer
     (legacy-вход `?key=` удалён в v0.12.2: токены не живут в access-логах);
@@ -6484,7 +6511,7 @@ class TokenAuth:
         # self-hosted: activate публичен (пользователь активирует свою копию).
         # STORE_MODE=1 (инстанс магазина): публичный activate позволял бы любому
         # с валидным ключом перезаписать license.json магазина → отложенный DoS
-        # после exp ключа (SECURITY-REVIEW-v2 №7) — поэтому тут его нет.
+        # после exp ключа — поэтому тут его нет.
         PUBLIC_PATHS = PUBLIC_PATHS | {"/api/license/activate"}
 
     def __init__(self, app):
@@ -6496,7 +6523,7 @@ class TokenAuth:
             if path not in self.PUBLIC_PATHS and not path.startswith(self.PUBLIC_PREFIXES):
                 headers = dict(scope.get("headers") or [])
                 auth = headers.get(b"authorization", b"").decode("utf-8", "ignore")
-                ok = bool(TOKEN) and hmac.compare_digest(auth, f"Bearer {TOKEN}")  # LOW-9: без timing-оракула
+                ok = bool(TOKEN) and hmac.compare_digest(auth, f"Bearer {TOKEN}")  # без timing-оракула
                 if not ok and STORE_MODE and path in _ADMIN_COOKIE_PATHS:
                     # v0.18.0: админка магазина — сессионная кука; хендлер сам проверит
                     # _admin_auth() и вернёт 401. Self-hosted: кука не играет.
@@ -6510,12 +6537,12 @@ class TokenAuth:
 
 
 def main():
-    _require_store_token()  # HIGH-3: магазин без явного MEMORY_TOKEN → fail-fast, не ротация
+    _require_store_token()  # магазин без явного MEMORY_TOKEN → fail-fast, не ротация
     _migrate_to_shards()  # v0.34.0: одноразовая разрезка memory.json → projects/ (с бэкапом)
     st = _license_status()  # при старте: создаёт license.json на первом запуске, ловит fail-closed
     log.info("license: %s (days_left=%s)%s", st.get("state"), st.get("days_left"),
              "" if licensing.allows_write(st) else " — МУТАЦИИ ЗАБЛОКИРОВАНЫ, activate: /#activate")
-    # HIGH-1: полный токен — ровно один раз при генерации (онбординг «токен в логах»);
+    # полный токен — ровно один раз при генерации (онбординг «токен в логах»);
     # при чтении из файла молчим — токен не тонет в журналах при каждом рестарте
     if _TOKEN_SOURCE == "generated":
         log.info("MEMORY_TOKEN сгенерирован и сохранён в data/local_token.txt: %s", TOKEN)
@@ -6534,9 +6561,12 @@ def main():
     migrate_token_hashes()  # одноразово: легаси plaintext-токены в codes.json → sha256 (№6)
     app = TokenAuth(mcp.streamable_http_app())
     if os.environ.get("TG_BOT_TOKEN"):
-        import tgbot
-        tgbot.start_poller(os.environ["TG_BOT_TOKEN"], _tg_on_start)  # daemon-поток, getUpdates
-        log.info("tgbot: deep-link доставка активна (/start <ref>)")
+        try:
+            import tgbot
+            tgbot.start_poller(os.environ["TG_BOT_TOKEN"], _tg_on_start)  # daemon-поток, getUpdates
+            log.info("tgbot: deep-link доставка активна (/start <ref>)")
+        except ImportError:
+            log.warning("tgbot: TG_BOT_TOKEN задан, но компонент отсутствует в этой сборке")
     global EMBED_ON
     emb_cfg = embed.config_from_env()  # В2.2: семантический слой (опционально, офлайн-safe)
     EMBED_ON = embed.should_start(emb_cfg, READONLY)

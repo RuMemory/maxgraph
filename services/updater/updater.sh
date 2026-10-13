@@ -122,9 +122,9 @@ clone_recreate() {
 
     # Опции: --name + всё из inspect. Построчно через set — пробелы в значениях
     # env/label не ломаются; \r\n в значениях заменяются на пробел в jq
-    # (иначе перевод строки разбил бы значение на «новый флаг» — ревизия L1).
+    # (иначе перевод строки разбил бы значение на «новый флаг»).
     # Сети уходят отдельным файлом (NET\tname\taliases): create принимает одну
-    # --network, остальные подключаются post-create (ревизия M3).
+    # --network, остальные подключаются post-create.
     set -- --name "$name"
     : > "$cj.nets"
     while IFS= read -r a; do
@@ -140,9 +140,9 @@ $(jq -r '
   | (($c.Config.Env // [])[] | "--env", (. | clean)),
     (($c.Config.Labels // {}) | to_entries[] | "--label", ((.key + "=" + .value) | clean)),
     (($c.Mounts // [])[]
-      # LOW-1 (ревизия 0.24.1): запятая в пути инжектит ключи в csv-парсер
+      # Запятая в пути инжектит ключи в csv-парсер
       # --mount (last-wins) — отклоняем весь маунт, лог через REJ-строку.
-      # LOW-3: volume без .Name дал бы source= → анонимный том — отклоняем.
+      # Volume без .Name дал бы source= → анонимный том — отклоняем.
       | if ([.Type // "", .Source // "", .Name // "", .Destination // ""]
             | map(contains(",")) | any) then
           "REJ\tмаунт с запятой в пути отклонён: " + (.Destination // "?")
@@ -182,7 +182,7 @@ EOF
     fi
 
     # --entrypoint принимает одну строку: [0] → флаг, ОСТАТОК entrypoint
-    # prepend к cmd (HIGH-1: ENTRYPOINT ["sh","script"] ≠ голый sh).
+    # prepend к cmd (ENTRYPOINT ["sh","script"] ≠ голый sh).
     ep=$(jq -r '(.[0].Config.Entrypoint // [])[0] // empty | gsub("[\r\n]";" ")' "$cj" 2>/dev/null)
     [ -n "$ep" ] && set -- "$@" --entrypoint "$ep"
     # docker create [опции] IMAGE [CMD…] — cmd = entrypoint[1:] + Cmd, по элементам
@@ -192,7 +192,7 @@ $(jq -r '(((.[0].Config.Entrypoint // [])[1:]) + (.[0].Config.Cmd // []))[] | gs
 EOF
     rm -f "$cj"
 
-    # rollback-имя не должно существовать (stale от SIGKILL-прошлого — ревизия L7)
+    # rollback-имя не должно существовать (stale от SIGKILL-прошлого)
     i=2; base_rb="$rb"
     while docker inspect "$rb" >/dev/null 2>&1; do rb="$base_rb-$i"; i=$((i + 1)); done
 
@@ -254,7 +254,7 @@ self_update() {  # $1 = src dir tarball'а
     src="$1"
     [ -f "$src/services/updater/Dockerfile" ] || return 0
     log "self-update updater'а — сборка образа + helper-контейнер"
-    # keep prev: :new → :prev ДО пересборки — dangling не копятся (ревизия M2)
+    # keep prev: :new → :prev ДО пересборки — dangling не копятся
     docker tag "$SELF_IMAGE:new" "$SELF_IMAGE:prev" >/dev/null 2>&1 || true
     timeout 900 docker build -q -t "$SELF_IMAGE:new" "$src/services/updater" >/dev/null 2>&1 || {
         log "WARN: образ updater'а не собрался — self-update пропущен"; return 0; }
@@ -310,7 +310,7 @@ _do_update() {  # $1 = новая версия, $2 = tmp; 0 = успех
 
     mkdir "$tmp/src" && tar xzf "$tmp/rel.tar.gz" --no-same-permissions -C "$tmp/src" || {
         log "ОШИБКА: распаковка tarball"; write_state extract_failed "$new" ""; return 1; }
-    # MED-2: decompression-bomb — кап на РАСПАКОВАННЫЙ размер (тарball подписан,
+    # Decompression-bomb — кап на РАСПАКОВАННЫЙ размер (тарball подписан,
     # но defence-in-depth): >2 ГБ — отмена до того, как это станет build context'ом
     unpacked_mb=$(du -sm "$tmp/src" 2>/dev/null | awk '{print $1}')
     case "$unpacked_mb" in ""|*[!0-9]*) unpacked_mb=9999 ;; esac
