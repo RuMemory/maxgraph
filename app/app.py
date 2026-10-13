@@ -187,6 +187,7 @@ EMBED_STATE_FILE = DATA_DIR / "embed.state.json"   # В2.2: дневной ка�
 ACCESS_FILE = DATA_DIR / "access.json"  # В2.3: ACT-R счётчики обращений {name: {"n","t"}}
 LICENSE_SECRET = licensing.get_secret(DATA_DIR)  # env LICENSE_HMAC_SECRET или DATA_DIR/.hmac_key
 LICENSE_SUB_DAYS = 31  # легаси-fallback (digiseller без суммы); реальный срок = PLANS[plan]["days"]
+EXTEND_DISCOUNT = 0.9  # продление −10% (решение владельца 2026-10-13) — применяется серверно в /api/billing/pay
 PORT = int(os.environ.get("PORT", "8787"))
 STARTED = time.time()
 EMBED_ON = False
@@ -4395,12 +4396,13 @@ async def api_cabinet(request: Request):
 
 # ------------------------------------------------------------- billing ----
 
-def _platega_create(plan_id: str, ref: str) -> dict:
-    """Создание платежа в Platega (X-MerchantId/X-Secret, v2 без метода — выбирает покупатель)."""
+def _platega_create(plan_id: str, ref: str, amount: "int | None" = None) -> dict:
+    """Создание платежа в Platega (X-MerchantId/X-Secret, v2 без метода — выбирает покупатель).
+    amount=None → полная цена плана; продление приходит со скидкой от вызывающего."""
     import urllib.request
     plan = PLANS[plan_id]
     payload = {
-        "paymentDetails": {"amount": plan["RUB"], "currency": "RUB"},
+        "paymentDetails": {"amount": amount if amount is not None else plan["RUB"], "currency": "RUB"},
         "description": plan["label"],
         "return": f"https://rezon-ai.ru/billing/result?ref={ref}",
         "failedUrl": "https://rezon-ai.ru/#pricing",
@@ -4459,6 +4461,9 @@ async def api_billing_pay(request: Request):
         return JSONResponse({"error": "plan must be pro1|pro3|pro6|pro12"}, status_code=400,
                             headers=_CORS)
     extend = str(body.get("extend") or "")[:600].strip()
+    if extend and PLANS[plan_id].get("donation"):
+        return JSONResponse({"error": "extend: продление неприменимо к донатам"}, status_code=400,
+                            headers=_CORS)
     if extend:
         if not extend.startswith("mg_"):
             return JSONResponse({"error": "extend: ожидается license key mg_…"}, status_code=400,
@@ -4468,9 +4473,11 @@ async def api_billing_pay(request: Request):
             return JSONResponse({"error": f"extend: {err}"}, status_code=400, headers=_CORS)
         if _is_revoked(_load_codes(), extend):
             return JSONResponse({"error": "extend: ключ отозван"}, status_code=400, headers=_CORS)
+    # продление — скидка −10%, считается ТОЛЬКО серверно (клиент цену не подсовывает)
+    amount = int(round(PLANS[plan_id]["RUB"] * EXTEND_DISCOUNT)) if extend else None
     ref = "r-" + secrets.token_hex(8)
     try:
-        resp = await asyncio.to_thread(_platega_create, plan_id, ref)
+        resp = await asyncio.to_thread(_platega_create, plan_id, ref, amount=amount)
     except Exception as e:
         log.error("platega create failed: %s", e)
         return JSONResponse({"error": "payment creation failed"}, status_code=502, headers=_CORS)
@@ -4483,13 +4490,14 @@ async def api_billing_pay(request: Request):
     with _codes_lock:
         data = _load_codes()
         rec = {"id": ref, "ref": ref, "platega_id": platega_id, "plan": plan_id,
-               "tier": "pro", "status": "created", "at": now_iso(), "payUrl": pay_url}
+               "tier": "pro", "status": "created", "at": now_iso(), "payUrl": pay_url,
+               "amount": amount if amount is not None else PLANS[plan_id]["RUB"]}
         if extend:
             rec["extend"] = extend
         data["payments"].append(rec)
         _save_codes(data)
-    _event("payment_created", ref, f"{plan_id} · {PLANS[plan_id]['RUB']}₽"
-                                   + (" · продление" if extend else ""))
+    _event("payment_created", ref, f"{plan_id} · {amount if amount is not None else PLANS[plan_id]['RUB']}₽"
+                                   + (" · продление −10%" if extend else ""))
     return JSONResponse({"ok": True, "payUrl": pay_url, "ref": ref},
                         headers={**_NOCACHE, **_CORS})
 
@@ -5360,8 +5368,15 @@ async def billing_webhook_platega(request: Request):
             except (TypeError, ValueError):
                 amount = 0.0
             currency = str(body.get("currency") or body.get("currency_code") or "")
-            plan_id = _plan_key(str(payment.get("plan") or "")) or _plan_key(str(payment.get("tier") or "")) \
-                or _plan_for(amount, currency)
+            plan_id = _plan_key(str(payment.get("plan") or "")) or _plan_key(str(payment.get("tier") or ""))
+            if not plan_id:
+                # записи платежа нет (трим 500) — сумма со скидкой угадала бы младший план; алертим
+                plan_id = _plan_for(amount, currency)
+                _event("plan_guessed_from_amount", pid, f"{amount}{currency} → {plan_id}")
+            exp_amt = payment.get("amount")
+            if exp_amt and amount and abs(amount - float(exp_amt)) > 1:
+                _event("payment_amount_mismatch", pid,
+                       f"{plan_id} · оплачено {amount}{currency} · выставлено {exp_amt}")
             if PLANS[plan_id].get("donation"):
                 # v0.33.2: донат — чистая поддержка: без кода/ключа/лицензии.
                 # code="DONATION" — маркер обработанности для дедупа повторных callback.
@@ -5379,9 +5394,11 @@ async def billing_webhook_platega(request: Request):
                 days = PLANS[plan_id]["days"]
                 # v0.18.0: продление — дни плана поверх max(старый exp, сейчас), остаток не сгорает
                 ext = str(payment.get("extend") or "")[:600].strip()
+                ext_ok = False
                 if ext:
                     p2, err2 = licensing.verify_key(LICENSE_SECRET, ext)
-                    if not err2 and not _is_revoked(data, ext):
+                    ext_ok = not err2 and not _is_revoked(data, ext)
+                    if ext_ok:
                         old_exp = int(p2.get("exp") or 0)
                         if old_exp > time.time():
                             days += (old_exp - time.time()) / 86400
@@ -5397,6 +5414,10 @@ async def billing_webhook_platega(request: Request):
                 email = (payment.get("email") or _valid_email(body.get("email"))) or None
                 lic_key = licensing.generate_key(LICENSE_SECRET, email or "buyer@unknown", "pro", days)
                 payment["licenseKey"] = lic_key
+                if ext_ok:
+                    # продление = ротация (как recovery v0.22.3): старый ключ гасим с grace 72ч,
+                    # иначе один ключ мультиплицирует дни повторными покупками (ревизия MED-1)
+                    _add_revoked(data, ext, "superseded: продление")
                 if email:
                     payment["email"] = email
                 # покупка из кабинета (платёж привязан к тенанту) → код сразу активирован,

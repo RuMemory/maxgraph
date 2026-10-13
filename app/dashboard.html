@@ -369,9 +369,8 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
         <span class="f-label" style="margin:0" data-i18n="hdr.project">Проект</span>
         <select class="inp" id="projSel"></select>
         <button class="lic-chip" id="licChip">—</button>
-        <button class="icon-btn" id="sysBtn" title="Система"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75"/></svg></button>
         <div class="langseg"><button id="langRu" class="on">RU</button><button id="langEn">EN</button></div>
-        <button class="iconbtn" id="gearBtn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path stroke-linecap="round" stroke-linejoin="round" d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 011.45.12l.773.774c.39.389.44 1.002.12 1.45l-.527.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.559.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.894.149c-.424.07-.764.383-.929.78-.165.398-.143.854.107 1.204l.527.738c.32.447.269 1.06-.12 1.45l-.774.773a1.125 1.125 0 01-1.449.12l-.738-.527c-.35-.25-.806-.272-1.203-.107-.398.165-.71.505-.781.929l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527c-.447.32-1.06.269-1.45-.12l-.773-.774a1.125 1.125 0 01-.12-1.45l.527-.737c.25-.35.273-.806.108-1.204-.165-.397-.506-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.108-1.204l-.526-.738a1.125 1.125 0 01.12-1.45l.773-.773a1.125 1.125 0 011.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg></button>
+        <button class="icon-btn" id="gearBtn" title="Система" data-i18n-al="sys.h" aria-label="Система"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path stroke-linecap="round" stroke-linejoin="round" d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 011.45.12l.773.774c.39.389.44 1.002.12 1.45l-.527.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.559.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.894.149c-.424.07-.764.383-.929.78-.165.398-.143.854.107 1.204l.527.738c.32.447.269 1.06-.12 1.45l-.774.773a1.125 1.125 0 01-1.449.12l-.738-.527c-.35-.25-.806-.272-1.203-.107-.398.165-.71.505-.781.929l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527c-.447.32-1.06.269-1.45-.12l-.773-.774a1.125 1.125 0 01-.12-1.45l.527-.737c.25-.35.273-.806.108-1.204-.165-.397-.506-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.108-1.204l-.526-.738a1.125 1.125 0 01.12-1.45l.773-.773a1.125 1.125 0 011.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg></button>
       </div>
     </header>
     <div class="grace" id="graceBar"></div>
@@ -514,8 +513,12 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
       <div class="sec-label"><span data-i18n="sys.lic">Лицензия</span><span class="line"></span></div>
       <div class="sys-kv"><span class="k" data-i18n="sys.state">Состояние</span><span class="v" id="sysLicState">—</span></div>
       <div class="sys-kv"><span class="k" data-i18n="sys.days">Осталось дней</span><span class="v" id="sysLicDays">—</span></div>
-      <div style="margin-top:12px"><input class="inp mono" id="sysLicKey" data-i18n-ph="lic.ph" placeholder="MG-XXXX-XXXX-XXXX" autocomplete="off"></div>
-      <div class="gate-row" style="margin-top:8px"><button class="btn sm" id="sysLicBtn" data-i18n="lic.btn">Активировать</button><button class="btn ghost sm" id="sysLicBuy" data-i18n="lic.buy">Купить</button></div>
+      <div class="sys-kv" id="sysLicKeyRow" style="display:none"><span class="k" data-i18n="sys.key">Ключ</span><span class="v mono" id="sysLicKeyShow">—</span></div>
+      <div id="sysLicActivate">
+        <div style="margin-top:12px"><input class="inp mono" id="sysLicKey" data-i18n-ph="lic.ph" placeholder="MG-XXXX-XXXX-XXXX" autocomplete="off"></div>
+        <div class="gate-row" style="margin-top:8px"><button class="btn sm" id="sysLicBtn" data-i18n="lic.btn">Активировать</button><button class="btn ghost sm" id="sysLicBuy" data-i18n="lic.buy">Купить</button></div>
+      </div>
+      <div class="gate-row" id="sysLicLicensed" style="display:none;margin-top:12px"><button class="btn ghost sm" id="sysLicCopy" data-i18n="lic.copy">Копировать</button><button class="btn sm" id="sysLicRenew" data-i18n="lic.renew">Продлить −10%</button></div>
     </div>
     <div class="sys-sec">
       <div class="sec-label"><span data-i18n="sys.mem">Память</span><span class="line"></span></div>
@@ -553,7 +556,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
     <div id="buyChoose">
       <div class="sub" data-i18n="buy.sub">Выбери срок — нажми «Оплатить». Ключ активируется сам, как только платёж пройдёт.</div>
       <div id="buyPlans" role="radiogroup" aria-label="Pro"></div>
-      <label class="f-label" for="buyExtend" data-i18n="buy.extend">Текущий ключ (если продлеваешь — дни суммируются)</label>
+      <label class="f-label" for="buyExtend" data-i18n="buy.extend">Текущий ключ (продление −10% — дни суммируются)</label>
       <input class="inp mono" id="buyExtend" placeholder="mg_…" autocomplete="off" style="margin:2px 0 10px;font-size:10.5px">
       <button class="btn" id="buyPay" style="width:100%">—</button>
       <div class="gate-links"><a href="#" id="buyManual" data-i18n="buy.manual">Ввести ключ вручную</a></div>
@@ -595,11 +598,11 @@ ru:{
  'lic.h2':'Триал закончился','upd.tip':'Доступно обновление — нажми, чтобы установить',
   'upd.doing':'Обновляюсь…','upd.sub':'Сервер перезапускается — страница перезагрузится сама. Обычно 1–3 минуты.','upd.timeout':'Долго не поднимается. Проверь docker logs maxgraph-updater и обнови страницу.','upd.fail':'Не удалось запустить обновление','upd.none':'Уже актуально','upd.reload':'Перезагрузить','upd.slow':'Не поднялся вовремя',
  'lic.sub':'Запись в память приостановлена. Данные в сохранности — чтение и экспорт работают всегда. Введи ключ активации (mg_…) — он на странице оплаты и в письме. Резервный код MG-… активируется в кабинете: rezon-ai.ru/cabinet',
- 'lic.btn':'Активировать','lic.buy':'Купить','lic.export':'Скачать экспорт данных','lic.ph':'mg_…',
+ 'lic.btn':'Активировать','lic.buy':'Купить','lic.export':'Скачать экспорт данных','lic.ph':'mg_…','lic.copy':'Копировать','lic.renew':'Продлить −10%',
  'lic.ok':'активировано: ','lic.bad':'не подошёл','lic.net':'ошибка сети','lic.trial':'TRIAL · ','lic.days':'дн','lic.expired':'истекла','lic.pro':'PRO',
  'buy.title':'Оплата Pro','buy.sub':'Выбери срок — нажми «Оплатить». Ключ активируется сам, как только платёж пройдёт.',
  'buy.p1':'1 месяц','buy.p3':'3 месяца','buy.p6':'6 месяцев','buy.p12':'12 месяцев','buy.permo':'₽/мес',
- 'buy.pay':'Оплатить','buy.extend':'Текущий ключ (если продлеваешь — дни суммируются)',
+ 'buy.pay':'Оплатить','buy.extend':'Текущий ключ (продление −10% — дни суммируются)',
  'buy.waiting':'Оплата открыта в новой вкладке. Жду подтверждение…','buy.reopen':'открыть оплату снова','buy.cancel':'отмена',
  'buy.done':'Готово! Pro активирован. Сохрани ключ на всякий случай:','buy.copy':'Скопировать ключ',
  'buy.manual':'Ввести ключ вручную','buy.err':'Оплата не прошла. Попробуй ещё раз или напиши: help@rezon-ai.ru',
@@ -621,10 +624,10 @@ ru:{
  'add.h3':'Новое воспоминание','add.name':'ID (например: proekt-kimi)','add.title':'Имя (например: Проект Kimi)','add.type':'Тип','add.tags':'Теги через запятую',
  'add.obs':'Факты — по одному на строку','add.btn':'Запомнить','add.rel':'Новая связь','add.relbtn':'Связать',
  'add.from':'Откуда','add.to':'Куда','add.fromph':'Начни вводить имя…','add.toph':'Начни вводить имя…','add.relname':'Связь (например: depends on)',
- 'sys.h':'Система','sys.lic':'Лицензия','sys.state':'Состояние','sys.days':'Осталось дней','sys.mem':'Память','sys.size':'Файл данных',
+ 'sys.h':'Система','sys.lic':'Лицензия','sys.state':'Состояние','sys.days':'Осталось дней','sys.mem':'Память','sys.size':'Файл данных','sys.key':'Ключ',
  'sys.svc':'Сервис','sys.ver':'Версия','sys.up':'Аптайм','sys.embed':'Семантический поиск','sys.act':'Действия',
  'toast.obsaved':'запомнил ✦','toast.obdeleted':'факт забыт','toast.entgone':'воспоминание забыто','toast.rel':'связь создана','toast.reldel':'связь удалена',
- 'toast.entsaved':'запомнил ✦','toast.export':'бэкап скачан','toast.exporterr':'ошибка экспорта','toast.copied':'промпт скопирован','toast.copyerr':'не удалось скопировать',
+ 'toast.entsaved':'запомнил ✦','toast.export':'бэкап скачан','toast.exporterr':'ошибка экспорта','toast.copied':'промпт скопирован','toast.keycopied':'ключ скопирован','toast.copyerr':'не удалось скопировать',
  'toast.readonly':'зеркало read-only: запись отключена','toast.newent':'новое воспоминание: ','toast.task':'дело записано ✦','toast.taskdone':'дело сделано ✦','toast.taskopen':'дело открыто снова','toast.bugfix':'баг исправлен ✦','toast.title':'название обновлено',
  'det.newobs':'Новый факт…','det.remember':'Запомнить','det.delete':'Забыть','det.confirm':'Забыть «%s» и все её связи?',
  'det.id':'id','det.project':'проект','det.created':'создано','det.updated':'обновлено','det.rels':'Связи',
@@ -636,11 +639,11 @@ en:{
  'lic.h2':'Trial is over','upd.tip':'Update available — click to install',
   'upd.doing':'Updating…','upd.sub':'The server is restarting — this page will reload itself. Usually 1–3 minutes.','upd.timeout':'Taking too long. Check docker logs maxgraph-updater and reload the page.','upd.fail':'Failed to start the update','upd.none':'Already up to date','upd.reload':'Reload','upd.slow':'Did not come up in time',
  'lic.sub':'Writing to memory is paused. Your data is safe — reading and export always work. Enter the activation key (mg_…) — it is on the payment page and in the email. Backup codes (MG-…) are redeemed in the cabinet: rezon-ai.ru/cabinet',
- 'lic.btn':'Activate','lic.buy':'Buy','lic.export':'Download data export','lic.ph':'mg_…',
+ 'lic.btn':'Activate','lic.buy':'Buy','lic.export':'Download data export','lic.ph':'mg_…','lic.copy':'Copy','lic.renew':'Renew −10%',
  'lic.ok':'activated: ','lic.bad':'rejected','lic.net':'network error','lic.trial':'TRIAL · ','lic.days':'d','lic.expired':'expired','lic.pro':'PRO',
  'buy.title':'Pro purchase','buy.sub':'Pick a period and hit "Pay". The key activates itself once the payment clears.',
  'buy.p1':'1 month','buy.p3':'3 months','buy.p6':'6 months','buy.p12':'12 months','buy.permo':'₽/mo',
- 'buy.pay':'Pay','buy.extend':'Current key (renewal — days add up)',
+ 'buy.pay':'Pay','buy.extend':'Current key (renewal −10% — days add up)',
  'buy.waiting':'Payment opened in a new tab. Waiting for confirmation…','buy.reopen':'reopen payment','buy.cancel':'cancel',
  'buy.done':'Done! Pro activated. Save the key just in case:','buy.copy':'Copy key',
  'buy.manual':'Enter key manually','buy.err':'Payment failed. Retry or contact: help@rezon-ai.ru',
@@ -662,10 +665,10 @@ en:{
  'add.h3':'New memory','add.name':'ID (e.g.: project-kimi)','add.title':'Name (e.g.: Project Kimi)','add.type':'Type','add.tags':'Tags, comma-separated',
  'add.obs':'Facts — one per line','add.btn':'Remember','add.rel':'New relation','add.relbtn':'Link',
  'add.from':'From','add.to':'To','add.fromph':'Start typing a name…','add.toph':'Start typing a name…','add.relname':'Relation (e.g.: depends on)',
- 'sys.h':'System','sys.lic':'License','sys.state':'State','sys.days':'Days left','sys.mem':'Memory','sys.size':'Data file',
+ 'sys.h':'System','sys.lic':'License','sys.state':'State','sys.days':'Days left','sys.mem':'Memory','sys.size':'Data file','sys.key':'Key',
  'sys.svc':'Service','sys.ver':'Version','sys.up':'Uptime','sys.embed':'Semantic search','sys.act':'Actions',
  'toast.obsaved':'remembered ✦','toast.obdeleted':'fact forgotten','toast.entgone':'memory forgotten','toast.rel':'relation created','toast.reldel':'relation deleted',
- 'toast.entsaved':'remembered ✦','toast.export':'backup downloaded','toast.exporterr':'export failed','toast.copied':'prompt copied','toast.copyerr':'copy failed',
+ 'toast.entsaved':'remembered ✦','toast.export':'backup downloaded','toast.exporterr':'export failed','toast.copied':'prompt copied','toast.keycopied':'key copied','toast.copyerr':'copy failed',
  'toast.readonly':'read-only mirror: writes disabled','toast.newent':'new memory: ','toast.task':'task recorded ✦','toast.taskdone':'task done ✦','toast.taskopen':'task reopened','toast.bugfix':'bug fixed ✦','toast.title':'title updated',
  'det.newobs':'New fact…','det.remember':'Remember','det.delete':'Forget','det.confirm':'Forget "%s" and all its relations?',
  'det.id':'id','det.project':'project','det.created':'created','det.updated':'updated','det.rels':'Relations',
@@ -713,6 +716,11 @@ async function checkLicense(){try{
   if(s.revoked&&s.grace_ends){const h=Math.max(1,Math.round((s.grace_ends*1000-Date.now())/3600000));gb.textContent='';gb.append(t('grace.pre')+' ');const bb=document.createElement('b');bb.textContent='~'+h+t('grace.h');gb.append(bb);gb.classList.add('on');}
   else gb.classList.remove('on');
   $('#sysLicState').textContent=s.state||'—';$('#sysLicDays').textContent=dl??'—';
+  const licd=s.state==='licensed'&&!!s.key;
+  $('#sysLicActivate').style.display=licd?'none':'';
+  $('#sysLicLicensed').style.display=licd?'':'none';
+  $('#sysLicKeyRow').style.display=licd?'':'none';
+  if(licd)$('#sysLicKeyShow').textContent=s.key.slice(0,3)+'…'+s.key.slice(-4);
   const uc=$('#updChip');
   if(s.update_available&&s.latest){uc.textContent='↑ v'+s.latest;uc.title=t('upd.tip');uc.style.display='';bindUpdChip();}
   else uc.style.display='none';
@@ -764,9 +772,9 @@ function renderPlans(){const base=PLANS_FALLBACK[0].rub;$('#buyPlans').innerHTML
       else if(e.key==='ArrowUp'||e.key==='ArrowLeft'){e.preventDefault();buyStep(-1);}};});}
 function buySelect(id){const refocus=document.activeElement&&document.activeElement.closest&&document.activeElement.closest('#buyPlans');buySel=id;renderPlans();updPayBtn();if(refocus){const el=document.querySelector('#buyPlans .plan-row.sel');if(el)el.focus();}}
 function buyStep(d){const ids=(plansCache||PLANS_FALLBACK).map(p=>p.id);const i=ids.indexOf(buySel);buySel=ids[(i+d+ids.length)%ids.length];renderPlans();updPayBtn();const el=document.querySelector('#buyPlans .plan-row.sel');if(el)el.focus();}
-function updPayBtn(){const p=(plansCache||PLANS_FALLBACK).find(x=>x.id===buySel)||PLANS_FALLBACK[0];$('#buyPay').textContent=t('buy.pay')+' '+p.rub+' ₽';}
+function updPayBtn(){const p=(plansCache||PLANS_FALLBACK).find(x=>x.id===buySel)||PLANS_FALLBACK[0];const ext=$('#buyExtend').value.trim();const rub=(ext.startsWith('mg_')&&ext.length>10)?Math.round(p.rub*0.9):p.rub;$('#buyPay').textContent=t('buy.pay')+' '+rub+' ₽';}
 function buyShow(st){$('#buyChoose').style.display=st==='choose'?'':'none';$('#buyWait').style.display=st==='wait'?'':'none';$('#buyDone').style.display=st==='done'?'':'none';}
-async function buyOpen(){buyOpener=document.activeElement;$('#buyPop').classList.add('on');buyShow('choose');await loadPlans();renderPlans();updPayBtn();$('#buyExtend').value=(licInfo&&licInfo.key)||'';const f=document.querySelector('#buyPlans .plan-row.sel');if(f)f.focus();}
+async function buyOpen(){buyOpener=document.activeElement;$('#buyPop').classList.add('on');buyShow('choose');await loadPlans();$('#buyExtend').value=(licInfo&&licInfo.key)||'';renderPlans();updPayBtn();const f=document.querySelector('#buyPlans .plan-row.sel');if(f)f.focus();}
 function buyClose(){$('#buyPop').classList.remove('on');if(buyTimer){clearInterval(buyTimer);buyTimer=null;}if(buyOpener&&buyOpener.focus)buyOpener.focus();buyOpener=null;}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#buyPop').classList.contains('on'))buyClose();});
 // Focus trap: aria-modal диалог держит Tab внутри карточки (ревизия P3)
@@ -799,17 +807,20 @@ $('#buyPop').addEventListener('click',e=>{if(e.target.id==='buyPop')buyClose();}
 $('#buyPay').onclick=buyPay;
 $('#buyCancel').addEventListener('click',e=>{e.preventDefault();buyClose();});
 $('#buyReopen').addEventListener('click',e=>{e.preventDefault();if(buyPayUrl)window.open(buyPayUrl,'_blank','noopener');});
-$('#buyManual').addEventListener('click',e=>{e.preventDefault();buyClose();sysOpen(true);$('#sysLicKey').focus();});
+$('#buyManual').addEventListener('click',e=>{e.preventDefault();buyClose();$('#sysLicActivate').style.display='';sysOpen(true);$('#sysLicKey').focus();});
 $('#buyCopy').onclick=()=>{const k=$('#buyKeyTxt').textContent;if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(k).then(()=>toast(t('toast.copied')));}else{const ta=document.createElement('textarea');ta.value=k;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();toast(t('toast.copied'));}};
 $('#licBuy').onclick=()=>buyOpen();
 $('#sysLicBuy').onclick=()=>{sysOpen(false);buyOpen();};
-$('#sysBtn').onclick=()=>sysOpen(true);
+$('#sysLicRenew').onclick=()=>{sysOpen(false);buyOpen();};
+$('#sysLicCopy').onclick=()=>{if(licInfo&&licInfo.key)copyText(licInfo.key,'toast.keycopied');};
+$('#buyExtend').addEventListener('input',updPayBtn);
 function saveToken(){const v=$('#gateToken').value.trim();if(!v)return;TOKEN=v;localStorage.setItem('rm_token',v);$('#gate').classList.remove('on');init();}
 $('#gateBtn').onclick=saveToken;
 $('#gateToken').addEventListener('keydown',e=>{if(e.key==='Enter')saveToken();});
 async function doExport(){try{const r=await fetch('/api/export',{headers:{'Authorization':'Bearer '+TOKEN}});const b=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='maxgraph-export-'+new Date().toISOString().slice(0,10)+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),5000);toast(t('toast.export'));}catch(e){toast(t('toast.exporterr'));}}
 const AGENT_PROMPT='У тебя есть постоянная память Maxgraph (инструменты maxgraph/*).\n\nСТАРТ СЕССИИ: вызови session_start(project=<slug>) — бюджетный блок контекста\n(решения владельца, открытые баги и задачи, прошлые сессии). Нужна тема — search_nodes.\nПеред работой по теме ВСЕГДА ищи, что уже сделано/исправлено — не переделывай решённое.\n\nВО ВРЕМЯ РАБОТЫ — ПИШИ СРАЗУ, не откладывай на конец разговора:\n- новый проект/сервис/файл/инструмент → create_entities (с title, entityType, tags);\n  name = kebab-case id навсегда, title = человеческое имя;\n  перед созданием — search_nodes, существующие не дублировать;\n- новый durable-факт о существующем → add_observations\n  (одно наблюдение = один атомарный факт, со ссылкой на дату/версию, если важно);\n- объект X использует/зависит от Y → create_relations в активном залоге\n  ("uses", "depends on", "configured by", "hosted on", "part of" — не "is used by");\n- изменился статус/параметр → add_observations (новый факт с датой),\n  при смене имени — update_entity.\n\nЗАКРЫТИЕ ХВОСТОВ — обязательно с отметкой ГДЕ реализовано:\n- баг исправлен → update_entity(status="fixed") + факт: коммит/файл:строки, чем проверено;\n- задача/отложенное сделано → task_done(project, name) + факт с датой и ссылкой;\n- просьба владельца выполнена → факт с датой на той же сущности.\nНе закрыл в памяти = не сделал: следующие сессии считают баг открытым.\n\nКОНЕЦ СЕССИИ: создай сущность session-YYYY-MM-DD с итогами разговора\n(entityType: "session") и свяжи её связью "discussed" с затронутыми сущностями.\n\nПолный протокол: https://github.com/RuMemory/maxgraph/blob/master/docs/PROTOCOL.md';
-async function copyPrompt(){try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(AGENT_PROMPT);}else{const ta=document.createElement('textarea');ta.value=AGENT_PROMPT;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();}toast(t('toast.copied'));}catch(e){toast(t('toast.copyerr'));}}
+async function copyText(s,tk){try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(s);}else{const ta=document.createElement('textarea');ta.value=s;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();}toast(t(tk||'toast.copied'));}catch(e){toast(t('toast.copyerr'));}}
+async function copyPrompt(){copyText(AGENT_PROMPT);}
 
 /* ═══════════ Тост ═══════════ */
 let toastT=null;
