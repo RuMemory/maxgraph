@@ -23,7 +23,7 @@
 ## Правила кода
 
 - Python 3.12, чистый stdlib в модулях (`billing.py`, `licensing.py`, `digiseller.py`, `webhooks.py`, `tgbot.py`) — каждый тестируется отдельно от сервера (инъекция http/smtp), `app.py` — единственный тяжёлый (mcp/starlette)
-- HTML-страницы — однофайловые, ноль внешних URL, данные сервера только через `textContent` (см. `docs/DESIGN-SYSTEM-v2.md`, `docs/SECURITY-REVIEW-v2.md` §7)
+- HTML-страницы — однофайловые, ноль внешних URL, данные сервера только через `textContent` (см. `docs/DESIGN-SYSTEM-v3.md`)
 - Сеть в хендлерах — после снятия `_codes_lock`, никогда внутри лока
 - Секреты — только env (`.env` на сервере), никогда в репо; compose подставляет пустую строку → использовать `or default`, не `os.environ.get(x, default)`
 - Тесты: `python -m unittest discover -s app -p "test_*.py"` (перед коммитом; 88 шт.)
@@ -31,14 +31,4 @@
 
 ## Agent skills
 
-### Issue tracker
-
-Issues and specs live as GitHub issues in `RuMemory/maxgraph` (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-The five canonical labels as-is: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Single-context layout: one `GLOSSARY.md` plus `docs/adr/` at the repo root, created lazily by `/domain-modeling`. See `docs/agents/domain.md`.
+Процессы разработки (триаж issues, доменные документы, ADR) ведутся в приватном репозитории разработки; эта витрина содержит только продукт.
