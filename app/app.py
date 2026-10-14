@@ -29,6 +29,9 @@ Env:
                   якорем начала триала → снос data/ не сбрасывает 7 дней.
                   Тот же выключатель гасит learn-events (v0.26.0): анонимный
                   пакет «запрос → открытый заголовок» раз в 5 мин (W2)
+  INSTALL_FLAVOR — метка способа установки (docker|rancher|python) в install-ping;
+                  ставится установщиком (install.sh/install.ps1), пусто →
+                  autodetect по маркеру контейнера /.dockerenv (v0.39.0)
   MEMORY_DIR    — каталог данных (default /data)
   PORT          — порт (default 8787)
   READONLY      — READONLY=1: зеркало (resync.py перезаписывает memory.json из прода) —
@@ -3163,6 +3166,8 @@ _installs_lock = threading.Lock()
 _INSTALL_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 # v0.16.3: серверный якорь триала по machine fingerprint (sha256 hex)
 _FP_RE = re.compile(r"^[0-9a-f]{64}$")
+# v0.39.0: способ установки в install-ping; неизвестное значение не храним
+_INSTALL_FLAVORS = frozenset({"docker", "rancher", "python"})
 _INSTALLS_CAP = 10000   # потолок installs-дикта; вытеснение самых старых по last_seen
 _TRIALS_CAP = 100_000   # потолок fp-реестра; переполнение → ответ без trial-блока (не 5xx)
 
@@ -3325,15 +3330,20 @@ def _get_json(url: str, timeout: int = 5):
 
 
 def _telemetry_ping(post=None, env=None, data_dir=None):
-    """Анонимный install-ping на магазин: install_id + версия + fp (sha256-хеш
-    машины, v0.16.3). TELEMETRY=0 отключает. Магазин отвечает якорем начала
-    триала: started_at РАНЬШЕ локального first_seen → отматываем триал на якорь
+    """Анонимный install-ping на магазин: install_id + версия + install_flavor
+    (v0.39.0) + fp (sha256-хеш машины, v0.16.3). TELEMETRY=0 отключает.
+    Магазин отвечает якорем начала триала: started_at РАНЬШЕ локального
+    first_seen → отматываем триал на якорь
     (снос data/ не даёт новые 7 дней); позже/битый ответ — игнор. Best-effort:
     оффлайн/таймаут — молча пропускаем, старт сервера не блокируем (fail-open)."""
     env = env if env is not None else os.environ
     if STORE_MODE or (env.get("TELEMETRY") or "1").strip() == "0":
         return
-    payload = {"install_id": _install_id(data_dir), "version": VERSION}
+    payload = {"install_id": _install_id(data_dir), "version": VERSION,
+               # v0.39.0: способ установки (доля python-фолбэков). INSTALL_FLAVOR
+               # ставит установщик (install.sh/install.ps1); пусто → autodetect.
+               "install_flavor": (env.get("INSTALL_FLAVOR") or "").strip()
+               or ("docker" if os.path.exists("/.dockerenv") else "python")}
     fp = licensing.machine_fingerprint()
     if fp:
         payload["fp"] = fp
@@ -3840,9 +3850,10 @@ async def api_codes_list(request: Request):
 @mcp.custom_route("/api/telemetry/install", methods=["POST"])
 async def api_telemetry_install(request: Request):
     """Анонимный install-ping self-hosted копий (v0.14; opt-out TELEMETRY=0).
-    install_id + версия + опциональный fp (sha256-хеш машины, v0.16.3) — ни email,
-    ни контента памяти, ни IP-логирования. По fp ведём реестр начала триалов
-    (trials в installs.json) и отвечаем якорем started_at: снос data/ у клиента
+    install_id + версия + install_flavor (v0.39.0) + опциональный fp (sha256-хеш
+    машины, v0.16.3) — ни email, ни контента памяти, ни IP-логирования.
+    По fp ведём реестр начала триалов (trials в installs.json) и отвечаем якорем
+    started_at: снос data/ у клиента
     триал не сбрасывает. Защита от случайного сброса, не от целенаправленного
     взлома — код открыт."""
     ip = _client_ip(request)
@@ -3865,6 +3876,7 @@ async def api_telemetry_install(request: Request):
     fp = str(body.get("fp") or "")
     if fp and not _FP_RE.match(fp):
         return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
+    flavor = str(body.get("install_flavor") or "")[:16]  # v0.39.0
     now = time.time()
     trial_ts = None
     with _installs_lock:
@@ -3875,6 +3887,8 @@ async def api_telemetry_install(request: Request):
         first = rec is None
         rec = rec or {"first_seen": now, "starts": 0}
         rec.update({"last_seen": now, "version": ver, "starts": int(rec.get("starts") or 0) + 1})
+        if flavor in _INSTALL_FLAVORS:  # вайтлист: неизвестное молча не храним (forward-compat)
+            rec["install_flavor"] = flavor  # перезаписывается при миграции python → docker
         if fp:
             rec["fp"] = fp  # fp установки — для админки
         data["installs"][iid] = rec
@@ -6531,6 +6545,23 @@ class TokenAuth:
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
             path = scope.get("path", "")
+            # v0.38.1: канонический хост self-hosted UI — localhost. Токен дашборда живёт
+            # в localStorage и привязан к origin, а Docker Desktop открывает 127.0.0.1 →
+            # покупатель видел гейт без токена. Только GET/HEAD: POST /mcp и /api/*
+            # с 127.0.0.1 продолжают работать без редиректа.
+            if scope.get("method") in ("GET", "HEAD"):
+                host = dict(scope.get("headers") or []).get(b"host", b"").decode("utf-8", "ignore")
+                # строгий матч: порт только цифрами — иначе userinfo-трюк
+                # (127.0.0.1:8787@evil.com) уводил бы Location на чужой домен
+                m = re.fullmatch(r"127\.0\.0\.1(?::(\d{1,5}))?", host)
+                if m:
+                    # latin-1: байты qs 1:1 в символы → заголовок не упадёт на non-ASCII
+                    qs = scope.get("query_string", b"").decode("latin-1")
+                    loc = ("http://localhost" + (":" + m.group(1) if m.group(1) else "")
+                           + urllib.parse.quote(path, safe="/%") + (f"?{qs}" if qs else ""))
+                    resp = Response(status_code=308, headers={"location": loc})
+                    await resp(scope, receive, send)
+                    return
             if path not in self.PUBLIC_PATHS and not path.startswith(self.PUBLIC_PREFIXES):
                 headers = dict(scope.get("headers") or [])
                 auth = headers.get(b"authorization", b"").decode("utf-8", "ignore")

@@ -89,6 +89,13 @@ a:hover{text-decoration:underline}
 .gsearch input::placeholder{color:#8F8778}
 .gsearch input:focus{border-color:var(--accent)}
 .link-hint{position:absolute;right:16px;bottom:140px;z-index:4;font-family:var(--mono);font-size:10px;color:#A79C8B;background:rgba(20,17,13,.82);border:1px solid var(--canvas-line);border-radius:8px;padding:6px 10px;pointer-events:none}
+.hero-empty{position:absolute;inset:0;z-index:5;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:0 24px;pointer-events:none}
+.hero-empty.on{display:flex}
+.he-title{font-size:22px;font-weight:700;color:#EDE6DA;letter-spacing:-.01em}
+.he-sub{font-size:13px;color:#A79C8B;max-width:420px;line-height:1.5}
+.he-prompt{pointer-events:auto;display:flex;flex-direction:column;gap:8px;max-width:460px;background:rgba(35,31,26,.92);border:1px solid var(--canvas-line);border-radius:14px;padding:14px 18px;color:#D8CFC0;font-size:13px;line-height:1.5;cursor:pointer;transition:border-color var(--t-fast)}
+.he-prompt:hover{border-color:#D98E32}
+.he-copy{font-family:var(--mono);font-size:10px;color:#D98E32;text-transform:uppercase;letter-spacing:.08em}
 .link-hint kbd{border:1px solid #4A4136;border-radius:4px;padding:1px 5px;font-size:9px;color:#D8CFC0}
 .kpis{position:absolute;left:20px;bottom:20px;z-index:5;display:flex;gap:10px}
 .kpi{background:rgba(20,17,13,.85);border:1px solid var(--canvas-line);border-radius:11px;padding:10px 16px;min-width:96px}
@@ -384,6 +391,11 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
         <div class="wrap">
           <div class="hero" id="hero">
             <canvas id="graph"></canvas>
+            <div class="hero-empty" id="heroEmpty">
+              <div class="he-title" data-i18n="he.title">Память пока пуста</div>
+              <div class="he-sub" data-i18n="he.sub">Скажи своему агенту — и первая точка появится на карте сама:</div>
+              <button class="he-prompt" id="hePrompt" type="button"><span data-i18n="he.prompt"></span><span class="he-copy" data-i18n="he.copy">скопировать промпт</span></button>
+            </div>
             <div class="hero-head"><span class="hero-title" data-i18n="ov.graph">Карта памяти</span><span class="live-chip"><span class="live-dot"></span>LIVE</span></div>
             <div class="gsearch"><input id="gsearch" data-i18n-ph="ov.gsearch" placeholder="Найти на карте…" autocomplete="off"></div>
             <div class="link-hint" id="linkHint"><kbd>Shift</kbd> <span data-i18n="ov.linkhint">+ drag между узлами — новая связь</span></div>
@@ -634,6 +646,7 @@ ru:{
  'ov.k1':'Воспоминания','ov.k2':'Связи','ov.k3':'Факты','ov.obs':'Факты','ov.linked':'Связанные','ov.more':'Открыть в каталоге →',
  'ov.recent':'Недавние воспоминания','ov.tocatalog':'В каталог →','ov.feed':'Лента памяти','ov.live':'обновляется','ov.allhistory':'Вся история (Хроника)',
  'ov.empty':'память пуста — запомни первое','ov.emptyproj':'в проекте пока нет воспоминаний','ov.norel':'пока без связей','ov.nobs':'пока пусто — расскажи что-нибудь',
+ 'he.title':'Память пока пуста','he.sub':'Скажи своему агенту — и первая точка появится на карте сама:','he.prompt':'Запомни: я только что установил MaxGraph. Спроси, как меня зовут и над чем я работаю, и сохрани это в память.','he.copy':'скопировать промпт',
  'cat.pick':'выбери воспоминание слева','cat.empty':'память пуста','cat.emptyproj':'в проекте пока нет воспоминаний','cat.all':'все',
  'search.ph':'Например: триал слетает…','search.hint':'введи запрос','search.none':'ничего не найдено','search.noneproj':'в проекте ничего не найдено',
  'tl.sessions':'Сессии','tl.pulse':'Хроника','tl.all':'Все','tl.memory':'Память','tl.billing':'Биллинг',
@@ -680,6 +693,7 @@ en:{
  'ov.k1':'Memories','ov.k2':'Relations','ov.k3':'Facts','ov.obs':'Facts','ov.linked':'Linked','ov.more':'Open in catalog →',
  'ov.recent':'Recent memories','ov.tocatalog':'To catalog →','ov.feed':'Memory feed','ov.live':'live','ov.allhistory':'Full history (Timeline)',
  'ov.empty':'memory is empty — record the first one','ov.emptyproj':'no memories in this project yet','ov.norel':'no relations yet','ov.nobs':'empty — tell me something',
+ 'he.title':'Memory is empty for now','he.sub':'Tell your agent — and the first dot will appear on the map by itself:','he.prompt':'Remember this: I just installed MaxGraph. Ask me my name and what I am working on, and save it to memory.','he.copy':'copy prompt',
  'cat.pick':'pick a memory on the left','cat.empty':'memory is empty','cat.emptyproj':'no memories in this project yet','cat.all':'all',
  'search.ph':'E.g.: trial resets…','search.hint':'type a query','search.none':'nothing found','search.noneproj':'nothing found in this project',
  'tl.sessions':'Sessions','tl.pulse':'Timeline','tl.all':'All','tl.memory':'Memory','tl.billing':'Billing',
@@ -881,7 +895,7 @@ document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLower
 
 /* ═══════════ Данные ═══════════ */
 let graph={entities:[],relations:[]},knownNames=new Set();
-let refreshSeq=0;
+let refreshSeq=0,lastStatCounts='';
 const cacheKey=()=>'mg_graph'+(curProject?':'+curProject:'');
 function loadCache(){try{const g=localStorage.getItem(cacheKey());if(!g)return false;const p=JSON.parse(g);if(!p||!Array.isArray(p.entities))return false;graph={entities:p.entities,relations:Array.isArray(p.relations)?p.relations:[]};knownNames=new Set(graph.entities.map(e=>e.name));return true;}catch(e){return false;}}
 function saveCache(){try{localStorage.setItem(cacheKey(),JSON.stringify(graph));}catch(e){}}
@@ -896,6 +910,7 @@ async function refresh(){
   knownNames=new Set(graph.entities.map(e=>e.name));
   renderStats();renderRecent();renderCatList();renderTimeline();renderTasks();fillDatalists();
   buildGraph();
+  syncHeroEmpty();
   const fresh=graph.entities.filter(e=>!was.has(e.name)&&was.size>0);
   for(const e of fresh){const n=nodes.find(x=>x.id===e.name);if(n&&!REDUCED)pulses.push({x:n.x,y:n.y,r:0,life:1});}
   if(fresh.length&&!REDUCED)needsSim=true;
@@ -933,6 +948,11 @@ async function renderStats(){try{
   $('#sysVer').textContent='v'+s.version;
   const up=s.uptimeSec||0;$('#sysUp').textContent=up>3600?Math.floor(up/3600)+'h '+Math.floor(up%3600/60)+'m':Math.floor(up/60)+'m';
   $('#sysEmb').textContent=typeof s.embed==='boolean'?(s.embed?'ON':'OFF'):'—';
+  /* карта подхватывает записи агента без F5: stats уже приходят раз в 45с —
+     если счётчики съехали от графа (и это новая дельта), делаем refresh() */
+  const c=(s.entities??0)+':'+(s.relations??0);
+  if(lastStatCounts&&c!==lastStatCounts&&((s.entities??0)!==graph.entities.length||(s.relations??0)!==graph.relations.length))refresh();
+  lastStatCounts=c;
 }catch(e){}}
 function fillDatalists(){
   $('#entNames').innerHTML=graph.entities.map(e=>'<option value="'+esc(e.name)+'">'+esc(e.title||e.name)+'</option>').join('');
@@ -1414,6 +1434,9 @@ $('#relName').addEventListener('keydown',e=>{if(e.key==='Enter')relGo();if(e.key
 document.addEventListener('mousedown',e=>{if(!e.target.closest('.rel-pop')&&!e.target.closest('#graph'))closeRelPop();});
 
 /* ═══════════ Запуск ═══════════ */
+/* empty-state карты: виден при 0 сущностей, уходит при первой записи */
+function syncHeroEmpty(){const el=$('#heroEmpty');if(el)el.classList.toggle('on',!graph.entities.length);}
+$('#hePrompt').onclick=()=>copyText(t('he.prompt'));
 async function init(){
   try{
     loadCache();

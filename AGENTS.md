@@ -5,19 +5,25 @@
 Сделай всё сам, шаг за шагом:
 
 1. **Склонируй репозиторий**: `git clone https://github.com/RuMemory/maxgraph` и перейди в каталог проекта.
-2. **Вычисли `HOST_FP` и запиши в `.env`** — стабильный fingerprint машины (привязка триала и лицензии к железу хоста), ДО запуска сервера:
-   - Windows (PowerShell):
-     ```powershell
-     $guid=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography').MachineGuid
-     [BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("$guid"))).Replace('-','').ToLower()
-     ```
-   - macOS: `printf %s "$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/{print $4}')" | shasum -a 256 | awk '{print $1}'`
-   - Linux: `tr -d '[:space:]' < /etc/machine-id | sha256sum | awk '{print $1}'`
+2. **Проверь Docker**: `docker info` отвечает без ошибок и `docker compose version` работает → Docker есть, установщик пойдёт коротким путём. Нет → установщик поставит движок сам (шаг 3).
+3. **Запусти установщик** из корня репозитория — он проверит/поставит движок, вычислит `HOST_FP` (sha256 железа хоста — привязка триала и лицензии; существующий непустой НЕ перезаписывает; сырой идентификатор никуда не отправляется), запишет `.env` и поднимет сервер (`docker compose up -d --build`):
+   - macOS/Linux: `bash install.sh --yes`
+   - Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes`
 
-   Итог — 64 hex-символа. `.env` в каталоге установки отсутствует → создай (можно копией `.env.example`); есть → обнови строку `HOST_FP=<hash>` или допиши её. **Повторная установка НЕ перезаписывает существующий непустой `HOST_FP`.** Сырой идентификатор железа никуда не отправляется — только его sha256 остаётся в `.env`.
-3. **Запусти сервер** — один из вариантов:
-   - Docker (предпочтительно): `docker compose up -d`
-   - Без Docker: нужен Python 3.12+, затем `pip install "mcp<2"` и `python app/app.py`
+   **Docker отсутствует → СНАЧАЛА спроси пользователя** (на его языке): «Docker на машине не найден. Установщик поставит Rancher Desktop — бесплатный Docker-совместимый движок (на Linux — официальный Docker Engine + добавление пользователя в группу docker — постоянные права, эквивалентные root): скачивание ~650 МБ, нужны права администратора; на Windows возможна перезагрузка — после неё установка продолжится автоматически. Ставим?» Согласие → та же команда с `--yes`/`-Yes`. Отказ → шаг 3a.
+
+   Коды выхода: `0` — MaxGraph запущен, иди к шагу 4; `2` — началась перезагрузка Windows: после входа пользователя установка продолжится автоматически (предупреди об этом); если пользователь отказался от ребута в интерактивном prompt — авторезюм СНЯТО: он перезагружает вручную и перезапускает `install.ps1`; `3` — движок не установлен → шаг 3a; `1` — ошибка → читай `install.log`.
+
+3a. **Python-фолбэк** (ТОЛЬКО если Docker отклонён или недоступен; нужен Python 3.12+):
+   1. `pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"` (`mcp<2` обязательно: в 2.x `FastMCP` переименован)
+   2. Вычисли `HOST_FP` и запиши строкой `HOST_FP=<64 hex>` в `.env` (нет файла → создай копией `.env.example`; непустой не перезаписывай):
+      - Windows (PowerShell): `$guid=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography').MachineGuid; [BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("$guid"))).Replace('-','').ToLower()`
+      - macOS: `printf %s "$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/{print $4}')" | shasum -a 256 | awk '{print $1}'`
+      - Linux: `tr -d '[:space:]' < /etc/machine-id | sha256sum | awk '{print $1}'`
+   3. Запуск ИЗ КОРНЯ репозитория и обязательно с `MEMORY_DIR=./data` (иначе данные уйдут в `/data` и не подхватятся при будущем переходе на Docker):
+      - Windows: `$env:MEMORY_DIR="./data"; python app/app.py`
+      - macOS/Linux: `MEMORY_DIR=./data python app/app.py`
+   4. **Обязательно скажи пользователю**, что Python-режим теряет: автообновления (только вручную: `git pull` + `pip install -U …`), автозапуск (после перезагрузки сервер надо запускать снова), изоляцию сети (слушает 0.0.0.0 — виден в локальной сети, доступ по токену). Переход на Docker позже: поставить Docker и запустить install-скрипт из папки установки — данные `./data` подхватятся.
 4. **Возьми токен доступа**: он генерируется сам при первом запуске — в файле `data/local_token.txt` (или в логах: `docker compose logs`).
 5. **Подключи MCP к хосту пользователя**: эндпоинт `http://localhost:8787/mcp`, заголовок `Authorization: Bearer <токен>`. Готовые конфиги под Claude Code, Cursor и другие хосты — в `docs/PAIRING.md`.
 6. **Проверь установку**: сохрани тестовый факт (`create_entities`) и прочитай его обратно (`search_nodes`). Сообщи пользователю, что память работает.
@@ -28,7 +34,7 @@
    - ЗАПРЕЩЕНО класть правила в подпапку установки (`maxgraph/…`) или в папки хоста (IDE/CLI) — агент проекта их там не увидит, и память работать не будет.
 9. **Скажи пользователю явно**: «Перезапусти хост (IDE/CLI полностью, не крестиком в окно) и начни НОВУЮ сессию в папке проекта» — MCP-подключение и правила из `./AGENTS.md` подхватываются только при старте сессии. Без этого шага пользователь продолжит старую сессию и решит, что память не работает.
 
-**EN:** A user asked you to install MaxGraph (memory). Clone the repo → compute `HOST_FP` (sha256 of the host hardware id — Windows: `MachineGuid` from `HKLM\SOFTWARE\Microsoft\Cryptography`; macOS: `IOPlatformUUID` from `ioreg`; Linux: `/etc/machine-id` of the host — exact commands in step 2 above) and write it as `HOST_FP=<64 hex>` into the install dir `.env` (create it from `.env.example` if missing; NEVER overwrite an existing non-empty `HOST_FP` on reinstall; the raw hardware id never leaves the host — only the hash) → run `docker compose up -d` (or Python 3.12+: `pip install "mcp<2"` then `python app/app.py`) → take the auto-generated token from `data/local_token.txt` → connect `http://localhost:8787/mcp` with `Authorization: Bearer <token>` (host configs in `docs/PAIRING.md`) → verify by saving and reading back a test fact → then read `maxgraph-agent.md` and `docs/PROTOCOL.md`. Dashboard: `http://localhost:8787/app`.
+**EN:** A user asked you to install MaxGraph (memory). Clone the repo → check Docker (`docker info` and `docker compose version` both work) → run the installer from the repo root: `bash install.sh --yes` (macOS/Linux) or `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes` (Windows). The installer installs a missing engine itself (Rancher Desktop on Win/mac, official Docker Engine on Linux), computes `HOST_FP` (sha256 of the host hardware id; NEVER overwrites an existing non-empty value; the raw id never leaves the host), writes `.env` and runs `docker compose up -d --build`. **If Docker is missing, ask the user FIRST** (in their language): "Docker not found. The installer will set up Rancher Desktop — a free Docker-compatible engine (on Linux: the official Docker Engine script — it also adds your user to the docker group, permanent root-equivalent rights): ~650 MB download, admin rights; on Windows a reboot may be required — installation continues automatically afterwards. Proceed?" Installer exit codes: `0` = running, continue; `2` = Windows reboot started — the installer resumes automatically at logon (warn the user); `3` = engine declined/impossible → Python fallback (step 3a: `pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"`, write `HOST_FP` per the commands in step 3a, run `MEMORY_DIR=./data python app/app.py` from the repo root — and you MUST tell the user what Python mode loses: no auto-updates, no autostart after reboot, server listens on 0.0.0.0 = visible on the LAN, token required; migrate later by installing Docker and re-running the installer — `./data` is picked up); `1` = error, read `install.log` → take the auto-generated token from `data/local_token.txt` → connect `http://localhost:8787/mcp` with `Authorization: Bearer <token>` (host configs in `docs/PAIRING.md`) → verify by saving and reading back a test fact → then read `maxgraph-agent.md` and `docs/PROTOCOL.md`. Dashboard: `http://localhost:8787/app`.
 
 **EN — install destination (mandatory):** Write the memory rules from `maxgraph-agent.md` into `AGENTS.md` in the ROOT of the user's current project directory (your cwd — where you, the installer agent, were launched; the user creates this project folder themselves, anywhere). If `./AGENTS.md` already exists, insert the rules between the markers `<!-- maxgraph:start -->` and `<!-- maxgraph:end -->`; on re-install, replace only the content between the markers and leave the rest of the file untouched (idempotent). If it doesn't exist, create the file with that marked block. NEVER put the rules into the install subfolder (`maxgraph/…`) or into host (IDE/CLI) folders — the project agent won't see them there, and memory will silently not work.
 

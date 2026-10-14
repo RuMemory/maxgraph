@@ -8,5 +8,9 @@ __pycache__/
 .venv/
 .tmp-issues/
 
+# артефакты установщика на машине покупателя (v0.39.0)
+install-state.json
+install.log
+
 # служебные страницы магазина — только на сервере (DATA_DIR hot-override), не в репо
 app/admin.html
