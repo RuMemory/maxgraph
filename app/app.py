@@ -385,6 +385,8 @@ def _migrate_to_shards():
         backup.write_bytes(MEMORY_FILE.read_bytes())
     ents, rels = _load()
     _save(ents, rels)
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)  # v0.39.1: при плоской памяти _save
+    # не создаёт projects/ — без этого сентинел падал FileNotFoundError (краш-луп 2026-10-15)
     sentinel.write_text("ok\n", encoding="ascii")  # маркер «миграция была»
     log.info("шардинг: memory.json разрезан (%d сущностей, %d связей), слепок → %s",
              len(ents), len(rels), backup.name)
