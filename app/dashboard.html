@@ -657,7 +657,7 @@ ru:{
  'add.obs':'Факты — по одному на строку','add.btn':'Запомнить','add.rel':'Новая связь','add.relbtn':'Связать',
  'add.from':'Откуда','add.to':'Куда','add.fromph':'Начни вводить имя…','add.toph':'Начни вводить имя…','add.relname':'Связь (например: depends on)',
  'sys.h':'Система','sys.lic':'Лицензия','sys.state':'Состояние','sys.days':'Осталось дней','sys.mem':'Память','sys.size':'Файл данных','sys.key':'Ключ',
- 'sys.svc':'Сервис','sys.ver':'Версия','sys.up':'Аптайм','sys.embed':'Семантический поиск','sys.act':'Действия',
+ 'sys.svc':'Сервис','sys.ver':'Версия','sys.up':'Аптайм','sys.embed':'Семантический поиск','sys.act':'Действия','sys.embRo':'зеркало read-only','sys.embTele':'TELEMETRY=0','sys.embNoconf':'нет конфига — см. лог контейнера',
  'lic.renewN':'Продлить −{n}%',
  'ref.h':'Пригласи друга','ref.hint':'Друг покупает со скидкой −20%, тебе +10% к скидке на продление за каждого (до −50%).',
  'ref.code':'Твой код','ref.clicks':'Переходы','ref.buys':'Покупки','ref.disc':'Скидка на продление','ref.copy':'Копировать ссылку',
@@ -704,7 +704,7 @@ en:{
  'add.obs':'Facts — one per line','add.btn':'Remember','add.rel':'New relation','add.relbtn':'Link',
  'add.from':'From','add.to':'To','add.fromph':'Start typing a name…','add.toph':'Start typing a name…','add.relname':'Relation (e.g.: depends on)',
  'sys.h':'System','sys.lic':'License','sys.state':'State','sys.days':'Days left','sys.mem':'Memory','sys.size':'Data file','sys.key':'Key',
- 'sys.svc':'Service','sys.ver':'Version','sys.up':'Uptime','sys.embed':'Semantic search','sys.act':'Actions',
+ 'sys.svc':'Service','sys.ver':'Version','sys.up':'Uptime','sys.embed':'Semantic search','sys.act':'Actions','sys.embRo':'read-only mirror','sys.embTele':'TELEMETRY=0','sys.embNoconf':'no config — see container log',
  'lic.renewN':'Renew −{n}%',
  'ref.h':'Refer a friend','ref.hint':'Your friend gets −20% off the first purchase, you get +10% off your renewal for each buyer (up to −50%).',
  'ref.code':'Your code','ref.clicks':'Clicks','ref.buys':'Purchases','ref.disc':'Renewal discount','ref.copy':'Copy link',
@@ -947,7 +947,8 @@ async function renderStats(){try{
   $('#sysSize').textContent=s.fileBytes?(s.fileBytes>1048576?(s.fileBytes/1048576).toFixed(1)+' MB':Math.round(s.fileBytes/1024)+' KB'):'—';
   $('#sysVer').textContent='v'+s.version;
   const up=s.uptimeSec||0;$('#sysUp').textContent=up>3600?Math.floor(up/3600)+'h '+Math.floor(up%3600/60)+'m':Math.floor(up/60)+'m';
-  $('#sysEmb').textContent=typeof s.embed==='boolean'?(s.embed?'ON':'OFF'):'—';
+  const ed=s.embedDetail||{}, edR={readonly:'sys.embRo',telemetry_off:'sys.embTele',no_config:'sys.embNoconf'}[ed.reason];
+  $('#sysEmb').textContent=typeof s.embed==='boolean'?(s.embed?'ON':('OFF'+(edR?' · '+t(edR):''))):'—';
   /* карта подхватывает записи агента без F5: stats уже приходят раз в 45с —
      если счётчики съехали от графа (и это новая дельта), делаем refresh() */
   const c=(s.entities??0)+':'+(s.relations??0);

@@ -2608,6 +2608,23 @@ async def api_timeline(request: Request):
                                     _truthy(request.query_params.get("all_projects"))))
 
 
+def _embed_detail():
+    """v0.40.0: деталь семантики для дашборда — источник (env=свой endpoint,
+    relay=облако магазина) или причина «выкл». telemetry_off гасит ТОЛЬКО
+    триал-грант: с license key relay живёт и при TELEMETRY=0."""
+    src = reason = None
+    if EMBED_ON:
+        src = "env" if (os.environ.get("EMBED_URL") or "").strip() else "relay"
+    elif READONLY:
+        reason = "readonly"
+    elif (os.environ.get("TELEMETRY") or "1").strip() == "0" \
+            and not licensing.current_key(DATA_DIR, LICENSE_SECRET):
+        reason = "telemetry_off"
+    else:
+        reason = "no_config"
+    return {"on": EMBED_ON, "source": src, "reason": reason}
+
+
 @mcp.custom_route("/api/stats", methods=["GET"])
 async def api_stats(request: Request):
     slug, err = _query_project(request)
@@ -2626,6 +2643,7 @@ async def api_stats(request: Request):
         "fileBytes": _graph_file_bytes(),  # v0.34.0: memory.json + шарды projects/
         "license": {"state": lic.get("state"), "daysLeft": lic.get("days_left")},
         "embed": EMBED_ON,
+        "embedDetail": _embed_detail(),  # v0.40.0
     }
     if slug:
         out["project"] = slug
@@ -3403,6 +3421,9 @@ def _relay_config_pull(env=None):
             payload = {"install_id": _install_id(), "fp": fp}
         cfg = _post_json(PUBLIC_BASE_URL + "/api/relay/config", payload, timeout=8)
         ok = isinstance(cfg, dict) and cfg.get("ok")
+        if not ok:  # v0.40.0: молчание мешало диагностике «нет семантики» у покупателя
+            err = cfg.get("error") if isinstance(cfg, dict) else None
+            log.warning("relay: конфиг не получен (%r)", str(err or "магазин недоступен")[:120])
         base = (PUBLIC_BASE_URL or "").rstrip("/")
         # SECURITY v0.19.0: конфиг принимаем только с origin самого магазина по
         # https — иначе скомпрометированный ответ увёл бы relay-токен и поток
@@ -3427,8 +3448,9 @@ def _relay_config_pull(env=None):
         if isinstance(rank, dict) and rankcfg.apply_rank_config(rank, path=RANK_CONFIG_FILE):
             log.info("relay: rank-конфиг применён (version=%s, синонимов=%d)",
                      rank.get("version"), len(rank.get("synonyms") or {}))
-    except Exception:
-        pass  # hosted-фичи опциональны — сбой relay не ломает инстанс
+    except Exception as e:
+        # hosted-фичи опциональны — сбой relay не ломает инстанс, но причину пишем (v0.40.0)
+        log.warning("relay: конфиг не получен: %r", e)
 
 
 def _watchdog_iteration(env, telemetry):
@@ -5398,15 +5420,18 @@ async def api_relay_config(request: Request):
         iid = str(payload.get("install_id") or "")
         fp = str(payload.get("fp") or "")
         t = None
+        pair_known = False
         if _INSTALL_ID_RE.match(iid) and _FP_RE.match(fp):
             try:
                 with _installs_lock:
                     data = _load_installs() or {}
                     t = (data.get("trials") or {}).get(fp)
+                    pair_known = f"{iid}:{fp}" in (data.get("relay_grants") or {})
             except Exception:  # битый installs.json → fail-closed (403), не 500
                 t = None
             if not isinstance(t, dict) or iid not in (t.get("installs") or []):
                 t = None  # fp известен, но install_id не привязан к нему
+                pair_known = False
         try:
             started = float((t or {}).get("started_at") or 0)
         except (TypeError, ValueError, OverflowError):  # NaN/Infinity/мусор
@@ -5417,14 +5442,28 @@ async def api_relay_config(request: Request):
             _event("relay_config_rejected", "", "trial grant")
             return JSONResponse({"ok": False, "error": "invalid key"}, status_code=403,
                                 headers=_NOCACHE)
-        # ≤2 триальные ВЫДАЧИ в сутки на IP —
-        # фарм self-minted fp упирается сюда; 403-отказы выше кап не едят,
-        # легитимный (boot + суточный watchdog) укладывается в 2
-        if _rate_limited(ip, "relaytrial", 2, 86400):
-            log.info("relay/config trial-грант: дневной кап IP %s", ip)
-            _event("relay_config_rejected", "", "trial daily cap")
-            return JSONResponse({"ok": False, "error": "too_many_attempts"},
-                                status_code=429)
+        # v0.40.0: кап — на НОВУЮ пару (install_id, fp) в сутки с IP (анти-фарм новых
+        # личностей); повторный pull с той же пары (рестарт, watchdog) — бесплатно:
+        # покупатель с рестартами в день установки больше не гаснет молча.
+        if not pair_known:
+            if _rate_limited(ip, "relaytrial", 2, 86400):
+                log.info("relay/config trial-грант: дневной кап IP %s (новая пара)", ip)
+                _event("relay_config_rejected", "", "trial daily cap")
+                return JSONResponse({"ok": False, "error": "too_many_attempts"},
+                                    status_code=429)
+            with _installs_lock:  # запоминаем выдачу; записи старше TTL токена чистим
+                gdata = _load_installs()
+                if gdata is not None:  # битый файл — выдачу не блокируем, просто не запоминаем
+                    grants = gdata.setdefault("relay_grants", {})
+                    grants[f"{iid}:{fp}"] = time.time()
+                    cut = time.time() - licensing.RELAY_TOKEN_TTL
+                    for gk, gts in list(grants.items()):
+                        if not isinstance(gts, (int, float)) or gts < cut:
+                            del grants[gk]
+                    try:
+                        _save_installs(gdata)
+                    except OSError:
+                        pass  # диск полон — выдачу не блокируем, просто не запоминаем
         seed, tag, detail = f"trial:{fp}", "trial", "trial"
     ttl = int(time.time()) + licensing.RELAY_TOKEN_TTL
     tok_exp = min(exp, ttl) if exp else ttl
