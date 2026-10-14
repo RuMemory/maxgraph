@@ -3661,6 +3661,17 @@ async def _landing_page(request: Request):
     flag = {"store": STORE_MODE, "storeUrl": PUBLIC_BASE_URL}
     html = html.replace("</head>", f"<script>window.__MG_STORE__={json.dumps(flag)};</script></head>", 1)
     headers = dict(_NOCACHE)
+    if STORE_MODE:
+        # LiveInternet-голос в футере лендинга магазина: hit-пиксель с counter.yadro.ru.
+        headers["Content-Security-Policy"] = headers["Content-Security-Policy"].replace(
+            "img-src 'self' data:", "img-src 'self' data: https://counter.yadro.ru")
+    else:
+        # Self-hosted копия покупателя: маркетинговый счётчик магазина вырезаем по
+        # маркерам — внутренний URL инстанса не должен уходить на counter.yadro.ru.
+        _li_a = html.find("<!--LiveInternet counter-->")
+        _li_b = html.find("<!--/LiveInternet-->")
+        if _li_a != -1 and _li_b != -1:
+            html = html[:_li_a] + html[_li_b + 20:]
     # v0.37.0: атрибуция рефералки — ?ref=XXXX-XXXX → кука mg_ref (30д, Lax) +
     # счётчик переходов. Только известные коды (мусор не засоряет метрики);
     # buybox дальше шлёт код в /billing/create, скидка считается серверно.

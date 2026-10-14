@@ -3,25 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MaxGraph: хватит объяснять нейросети всё сначала</title>
-<meta name="description" content="MaxGraph: память для работы с нейросетью. Агент помнит проект между сессиями, данные лежат на твоей машине, триал 7 дней без карты.">
+<title>MaxGraph — память для AI-агентов. Перестань объяснять проект с нуля</title>
+<meta name="description" content="MaxGraph — память для AI-агентов. Агент помнит проект между сессиями, данные лежат на твоей машине. Триал 7 дней, карта не нужна.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://rezon-ai.ru/">
-<meta property="og:title" content="MaxGraph: хватит объяснять нейросети всё сначала">
-<meta property="og:description" content="MaxGraph: память для работы с нейросетью. Агент помнит проект между сессиями, данные лежат на твоей машине, триал 7 дней без карты.">
+<meta property="og:title" content="MaxGraph — память для AI-агентов. Перестань объяснять проект с нуля">
+<meta property="og:description" content="MaxGraph — память для AI-агентов. Агент помнит проект между сессиями, данные лежат на твоей машине. Триал 7 дней, карта не нужна.">
 <meta property="og:image" content="https://rezon-ai.ru/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="canonical" href="https://rezon-ai.ru/">
+<link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="icon" href="/og.png" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "MaxGraph",
   "alternateName": "MAXGRAPH Context Memory",
-  "description": "Память для работы с ИИ-агентами: записи решений, багов и задач, журнал событий и дашборд в одном Docker-контейнере на твоей машине.",
+  "description": "Память для AI-агентов: записи решений, багов и задач, журнал событий и дашборд в одном Docker-контейнере на твоей машине.",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Any (Docker)",
   "url": "https://rezon-ai.ru/",
@@ -40,13 +42,25 @@
   "@context": "https://schema.org",
   "@type": "FAQPage",
   "mainEntity": [
-    { "@type": "Question", "name": "Что такое MaxGraph?", "acceptedAnswer": { "@type": "Answer", "text": "Память для работы с нейросетью. MaxGraph запоминает, что вы с агентом решали и делали, и находит это в следующих сессиях. Всё живёт на твоей машине, каждую запись видно в дашборде." } },
-    { "@type": "Question", "name": "С какими агентами работает?", "acceptedAnswer": { "@type": "Answer", "text": "ChatGPT, Claude, Gemini, Copilot, Cursor, Kimi, DeepSeek Harness и любой клиент с поддержкой MCP. Подключение занимает один промпт из блока установки." } },
-    { "@type": "Question", "name": "Где лежат мои данные?", "acceptedAnswer": { "@type": "Answer", "text": "На твоей машине. Наружу ничего не уходит, телеметрии нет. Интернет нужен один раз для активации, дальше всё работает автономно." } },
+    { "@type": "Question", "name": "Что такое MaxGraph?", "acceptedAnswer": { "@type": "Answer", "text": "Память для AI-агентов. MaxGraph запоминает, что ты с агентом решал и делал, и находит это в следующих сессиях. Всё живёт на твоей машине, каждую запись видно в дашборде." } },
+    { "@type": "Question", "name": "С какими агентами работает?", "acceptedAnswer": { "@type": "Answer", "text": "ChatGPT, Claude, Gemini, Copilot, Cursor, Kimi, DeepSeek Harness и любой клиент с поддержкой MCP. Подключается одним промптом — скопируй его из блока «Установка» выше." } },
+    { "@type": "Question", "name": "Где лежат мои данные?", "acceptedAnswer": { "@type": "Answer", "text": "На твоей машине. Твои записи наружу не уходят. Интернет нужен один раз для активации, дальше всё работает автономно." } },
     { "@type": "Question", "name": "Что будет после триала?", "acceptedAnswer": { "@type": "Answer", "text": "Запись новых фактов остановится. Дашборд, поиск и выгрузка останутся доступны без ограничений по сроку: накопленная память остаётся с тобой." } },
     { "@type": "Question", "name": "Как забрать данные, если решу уйти?", "acceptedAnswer": { "@type": "Answer", "text": "Выгрузка в NDJSON одной кнопкой из дашборда. Это обычный текстовый формат, он читается хоть блокнотом." } },
-    { "@type": "Question", "name": "Поиск отправляет мои тексты наружу?", "acceptedAnswer": { "@type": "Answer", "text": "Нет. Смысловой поиск считает твой собственный MaxGraph на твоей машине, тексты никуда не уходят и не сохраняются. Поиск можно отключить совсем." } }
+    { "@type": "Question", "name": "Поиск отправляет мои тексты наружу?", "acceptedAnswer": { "@type": "Answer", "text": "Нет. Поиск работает внутри твоего MaxGraph, на твоей машине — тексты наружу не уходят. Поиск можно отключить совсем." } },
+    { "@type": "Question", "name": "Чем MaxGraph отличается от встроенной памяти ChatGPT?", "acceptedAnswer": { "@type": "Answer", "text": "Встроенная память привязана к одному сервису и живёт на его серверах. MaxGraph работает с любым агентом, а записи лежат на твоей машине и читаются хоть блокнотом." } }
   ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Organization",
+  "name": "MaxGraph",
+  "url": "https://rezon-ai.ru/",
+  "logo": "https://rezon-ai.ru/og.png",
+  "contactPoint": { "@type": "ContactPoint", "email": "help@rezon-ai.ru", "contactType": "customer support" },
+  "sameAs": ["https://github.com/RuMemory/maxgraph", "https://t.me/maxgraph_mcp"]
 }
 </script>
 <script>
@@ -191,6 +205,7 @@ body::after{
 }
 .hero-sub{margin-top:22px;font-size:18px;line-height:1.55;color:var(--muted);max-width:44ch}
 .hero-cta{margin-top:34px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.hero-note{margin-top:14px;color:var(--dim);font-size:13.5px;max-width:52ch}
 .hero-fact{
   margin-top:22px;font-family:var(--mono);font-size:12.5px;color:var(--dim);max-width:60ch;
 }
@@ -285,6 +300,7 @@ h2{font-size:clamp(28px,4.2vw,42px);font-weight:800;letter-spacing:-.02em;line-h
 
 /* ═══════════ Демо: тёмный скриншот + оживающая карта памяти поверх ═══════════ */
 .demo-wrap{max-width:1120px;margin:0 auto}
+.demo-cap{max-width:62ch;margin:18px auto 0;color:var(--muted);font-size:15px;text-align:center}
 html.js:not(.rm) .demo-frame{opacity:0;transform:translateY(16px) scale(.995);
   transition:opacity .6s var(--ease) .1s,transform .6s var(--ease) .1s}
 html.js:not(.rm) .demo-frame.awake{opacity:1;transform:none}
@@ -368,6 +384,7 @@ html.js:not(.rm) .shot-wrap:not(.play) .mg-lab{opacity:0}
   overflow-wrap:anywhere;word-break:break-word;  /* длинный URL install-промпта не ломает 320px */
 }
 .install-actions{display:flex;gap:14px;align-items:center;margin-top:20px;flex-wrap:wrap}
+#go .install-actions .btn{height:50px;padding-top:0;padding-bottom:0}
 .install-hint{font-size:13.5px;color:var(--dim)}
 
 /* ═══════════ Цены ═══════════ */
@@ -402,7 +419,8 @@ html.js:not(.rm) .shot-wrap:not(.play) .mg-lab{opacity:0}
 .term:last-child{margin-bottom:0}
 .term:hover{background:var(--panel-2)}
 .term.is-selected{background:#2E2820;border-color:var(--amber)}
-.term.don-chip{width:auto;min-width:110px;justify-content:center;margin-bottom:0}
+.don-plain{background:none;border:none;color:var(--muted);text-decoration:underline;text-underline-offset:3px;padding:12px 6px;font-size:15px;transition:color .2s var(--ease)}
+.don-plain:hover{color:var(--ink)}
 .tprice{font-family:var(--mono);font-size:15.5px;font-weight:500;white-space:nowrap;
   padding-left:16px;text-align:right}
 .tper{display:block;margin-top:2px;font-size:11.5px;color:var(--dim);letter-spacing:.04em}
@@ -494,6 +512,8 @@ footer{border-top:1px solid var(--hairline-soft);padding:40px 0 48px}
 .foot-legal a{font-size:13px;color:var(--muted);text-decoration:none;transition:color .2s var(--ease)}
 .foot-legal a:hover{color:var(--ink)}
 .foot-legal a + a{margin-left:16px;padding-left:16px;border-left:1px solid var(--hairline)}
+/* счётчик LI: прибит вправо на десктопе; при переносе — без висячего «|» и паддинга; line-height:0 убирает зазор под img */
+.foot-legal a.li-counter{margin-left:auto;padding-left:0;border-left:none;line-height:0}
 
 /* ═══════════ Reveal по скроллу: fade + подъём на 14px ═══════════ */
 html.js:not(.rm) .reveal{opacity:0;transform:translateY(14px);
@@ -607,13 +627,14 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
 <header class="hero" id="top">
   <div class="container hero-in">
     <div class="hero-text">
-      <p class="hero-tag" data-i18n="hero.tag">Память для работы с нейросетью</p>
-      <h1 data-i18n="hero.h1" data-i18n-html>Хватит объяснять<br>нейросети<br>всё сначала.</h1>
-      <p class="hero-sub" data-i18n="hero.sub">MaxGraph запоминает твой проект: что решили, что сломали, что пообещали. Агент находит это сам и начинает там, где вы закончили.</p>
+      <p class="hero-tag" data-i18n="hero.tag">Память для AI-агентов</p>
+      <h1 data-i18n="hero.h1" data-i18n-html>Перестань объяснять<br>ИИ проект<br>с нуля.</h1>
+      <p class="hero-sub" data-i18n="hero.sub">MaxGraph запоминает твой проект: что решили, что сломали, что пообещали. Агент находит это сам и начинает там, где ты закончил.</p>
       <div class="hero-cta">
         <button type="button" class="btn btn-amber" data-copy="hero" data-i18n="hero.cta">Скопировать промпт установки</button>
         <a class="btn btn-ghost" href="#demo" data-i18n="hero.demo">Сначала посмотреть демо</a>
       </div>
+      <p class="hero-note" data-i18n="hero.note">Это текст для твоего агента: вставь его в чат — агент сам скачает, установит и включит память.</p>
       <p class="hero-fact" data-i18n="hero.fact" data-i18n-html>Экономия токенов примерно <b>43&nbsp;%</b> при работе с MaxGraph.</p>
     </div>
     <aside class="hero-feed" aria-label="Пример живой памяти" data-i18n-aria="a11y.feed">
@@ -657,14 +678,14 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
     <ol class="steps">
       <li><span class="stepnum mono">01</span><div>
         <h3 data-i18n="how.s1t">Работаешь как обычно</h3>
-        <p data-i18n="how.s1">Ничего в привычках менять не нужно. Агент сам запоминает важное из вашей работы: решения, баги, договорённости.</p>
+        <p data-i18n="how.s1">Агент сам запоминает важное из твоей работы: решения, баги, договорённости.</p>
       </div></li>
       <li><span class="stepnum mono">02</span><div>
-        <h3 data-i18n="how.s2t">Память на твоём ПК</h3>
-        <p data-i18n="how.s2">Вся память лежит на твоём ПК. Открой дашборд и проверь любой факт глазами.</p>
+        <h3 data-i18n="how.s2t">Память лежит у тебя</h3>
+        <p data-i18n="how.s2">Вся память лежит на твоей машине. Открой дашборд и проверь любой факт глазами.</p>
       </div></li>
       <li><span class="stepnum mono">03</span><div>
-        <h3 data-i18n="how.s3t">Начал новую сессию</h3>
+        <h3 data-i18n="how.s3t">Начинаешь новую сессию</h3>
         <p data-i18n="how.s3">Агент уже помнит проект. Он сам находит нужное и не делает одну и ту же работу дважды.</p>
       </div></li>
     </ol>
@@ -684,20 +705,20 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
         <p data-i18n="mem.f1">Чат можно закрыть, сжать или удалить. Записи это не заденет: они лежат отдельно от диалога, на твоей машине, и переживут сколько угодно сжатий и новых сессий.</p>
       </div></li>
       <li style="--fc:#E15A4F"><span class="fdot" aria-hidden="true"></span><div>
-        <h3 data-i18n="mem.f2t">Записывает в момент, когда факт прозвучал</h3>
+        <h3 data-i18n="mem.f2t">Записывает факт в тот же момент</h3>
         <p data-i18n="mem.f2">Факт попадает в память сразу, как прозвучал. Оборвись диалог хоть через минуту, записанное уже на месте.</p>
       </div></li>
       <li style="--fc:#E8B93E"><span class="fdot" aria-hidden="true"></span><div>
         <h3 data-i18n="mem.f3t">Свежая выжимка в начале каждой сессии</h3>
-        <p data-i18n="mem.f3">Выжимка собирается заново из записей при каждом старте: твои решения дословно, открытые баги, итоги прошлых сессий. Формулировки не плывут, потому что их никто не пересказывает, и наверху всегда то, что актуально именно сейчас.</p>
+        <p data-i18n="mem.f3">Выжимка собирается заново из записей при каждом старте: твои решения дословно, открытые баги, итоги прошлых сессий. Формулировки не плывут, потому что их никто не пересказывает. Наверху — то, что актуально сейчас.</p>
       </div></li>
       <li style="--fc:#5FB87A"><span class="fdot" aria-hidden="true"></span><div>
         <h3 data-i18n="mem.f4t">Незаконченные дела всплывают сами</h3>
-        <p data-i18n="mem.f4">Открытая задача сама всплывёт в начале следующей сессии. Напоминать о ней специально не нужно.</p>
+        <p data-i18n="mem.f4">Открытая задача сама всплывёт в начале следующей сессии — напоминать не надо.</p>
       </div></li>
       <li style="--fc:#B07DE0"><span class="fdot" aria-hidden="true"></span><div>
         <h3 data-i18n="mem.f5t">Всегда видно, что происходило</h3>
-        <p data-i18n="mem.f5">Все записи идут в общий журнал с датами. Диалог может быть сжат до неузнаваемости, по журналу ты всё равно восстановишь ход работы.</p>
+        <p data-i18n="mem.f5">Все записи идут в общий журнал с датами. Диалог могут сжать до неузнаваемости — по журналу ты всё равно восстановишь ход работы.</p>
       </div></li>
       <li style="--fc:#D98E32"><span class="fdot" aria-hidden="true"></span><div>
         <h3 data-i18n="mem.f6t">Чат заполняется медленнее</h3>
@@ -712,13 +733,13 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
   <div class="container">
     <div class="sec-head reveal">
       <p class="sec-tag" data-i18n="demo.tag">Демо</p>
-      <h2 data-i18n="demo.h2">Понятный и удобный интерфейс</h2>
+      <h2 data-i18n="demo.h2">Вот как это выглядит</h2>
     </div>
     <div class="demo-wrap">
       <div class="demo-frame">
         <div class="shot-wrap">
           <img src="/static/demo-dashboard-dark.png" width="1428" height="900"
-               alt="Живой дашборд MaxGraph: карта памяти проекта Ритм, свежие воспоминания и лента памяти"
+               alt="Дашборд MaxGraph: карта памяти проекта Ритм, лента записей и поиск"
                data-i18n-alt="demo.alt">
           <div class="shot-cover" aria-hidden="true"></div>
           <svg class="shot-graph" viewBox="0 0 1305 522" preserveAspectRatio="none" aria-hidden="true">
@@ -757,12 +778,13 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
             <span class="mg-lab c" style="--t:1.28s;left:51.8908%;top:59.1111%" data-i18n="demo.n8">Шаблоны привычек</span>
           </div>
           <div class="shot-live" aria-hidden="true"><i></i>LIVE</div>
-          <div class="kpi" style="left:7.9132%;top:63.8889%;width:7.423%;height:6.5556%" aria-hidden="true"><span class="kpi-num" data-n="8">8</span><span class="kpi-lab" data-i18n="demo.kpi1">воспоминаний</span></div>
+          <div class="kpi" style="left:7.9132%;top:63.8889%;width:7.423%;height:6.5556%" aria-hidden="true"><span class="kpi-num" data-n="8">8</span><span class="kpi-lab" data-i18n="demo.kpi1">записей</span></div>
           <div class="kpi" style="left:16.1064%;top:63.8889%;width:6.6527%;height:6.5556%" aria-hidden="true"><span class="kpi-num" data-n="12">12</span><span class="kpi-lab" data-i18n="demo.kpi2">связей</span></div>
           <div class="kpi" style="left:23.5294%;top:63.8889%;width:6.6527%;height:6.5556%" aria-hidden="true"><span class="kpi-num" data-n="10">10</span><span class="kpi-lab" data-i18n="demo.kpi3">фактов</span></div>
         </div>
       </div>
     </div>
+      <p class="demo-cap" data-i18n="demo.cap">Это дашборд — окно в память агента. Каждая точка на карте — запись: решение, баг или задача из твоих чатов. Сюда можно заглянуть в любой момент и проверить, что он запомнил.</p>
   </div>
 </section>
 
@@ -774,12 +796,12 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
       <h2 data-i18n="install.h2">Просто попроси своего агента установить MaxGraph</h2>
     </div>
     <div class="install-box reveal" style="--rd:.1s">
-      <p class="install-sub" data-i18n="install.sub">Скопируй текст, вставь своему агенту, и он всё поставит и настроит сам.</p>
+      <p class="install-sub" data-i18n="install.sub">Скопируй текст и вставь своему агенту — он всё поставит и настроит сам.</p>
       <div class="prompt-label" data-i18n="install.label">Промпт для агента</div>
-      <div class="prompt" id="promptText" data-i18n="install.prompt">Установи MaxGraph — память для нашей работы: https://github.com/RuMemory/maxgraph — добавь MCP-сервер, запусти дашборд и скажи, когда всё будет готово.</div>
+      <div class="prompt" id="promptText" data-i18n="install.prompt">Установи MaxGraph (память для нашей работы): https://github.com/RuMemory/maxgraph. Добавь MCP-сервер, запусти дашборд и скажи, когда всё будет готово.</div>
       <div class="install-actions">
         <button type="button" class="btn btn-amber" data-copy="install" data-i18n="install.copy">Скопировать промпт</button>
-        <span class="install-hint" data-i18n="install.hint">Понадобится Docker. Триал на 7 дней включится сам при первом запуске, карта не нужна.</span>
+        <span class="install-hint" data-i18n="install.hint">От тебя — только вставить промпт. Всё нужное, включая Docker, агент поставит сам. Триал на 7 дней включится при первом запуске, карта не нужна.</span>
       </div>
     </div>
   </div>
@@ -802,12 +824,12 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
           <li><span class="fnum">02</span><span><span class="fname" data-i18n="pr.f2t">Память.</span> <span class="fdesc" data-i18n="pr.f2">Агент сам запоминает решения, баги, задачи и договорённости.</span></span></li>
           <li><span class="fnum">03</span><span><span class="fname" data-i18n="pr.f3t">Поиск.</span> <span class="fdesc" data-i18n="pr.f3">Находит нужное за секунды, даже то, о чём говорили неделю назад.</span></span></li>
           <li><span class="fnum">04</span><span><span class="fname" data-i18n="pr.f4t">Экспорт.</span> <span class="fdesc" data-i18n="pr.f4">Все данные в NDJSON в одну кнопку, ничто не заперто.</span></span></li>
-          <li><span class="fnum">05</span><span><span class="fname" data-i18n="pr.f5t">Воспоминания.</span> <span class="fdesc" data-i18n="pr.f5">Лента записей: что и когда запомнено, всегда можно заглянуть.</span></span></li>
+          <li><span class="fnum">05</span><span><span class="fname" data-i18n="pr.f5t">Лента.</span> <span class="fdesc" data-i18n="pr.f5">Лента записей: что и когда запомнено, всегда можно заглянуть.</span></span></li>
         </ul>
       </div>
       <div class="plan-terms">
         <div class="terms-label" data-i18n="pr.termlabel">Срок</div>
-        <div class="terms-list" role="group" aria-label="Срок подписки" data-i18n-aria="pr.termgroup">
+        <div class="terms-list" role="group" aria-label="Срок лицензии" data-i18n-aria="pr.termgroup">
           <button type="button" class="term" data-term="m1" aria-pressed="false">
             <span data-i18n="pr.t1">1 месяц</span>
             <span class="tprice"><span class="tp" data-i18n="pr.p1">149&nbsp;₽</span></span>
@@ -845,39 +867,7 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
   </div>
 </section>
 
-<!-- ═══ 7. Активация резервного кода ═══ -->
-<section class="section" id="redeem">
-  <div class="container">
-    <div class="redeem-card reveal">
-      <p class="sec-tag" data-i18n="redeem.tag">Есть код?</p>
-      <p class="redeem-title" data-i18n="redeem.title">Получи ключ активации</p>
-      <p class="redeem-sub" data-i18n="redeem.sub">Введи резервный код из письма об оплате и email активации.</p>
-      <div id="redeemForm">
-        <div class="redeem-fields">
-          <input type="text" id="redeemCode" class="rcode" autocapitalize="characters" spellcheck="false" autocomplete="off"
-                 placeholder="MG-XXXX-XXXX-XXXX" aria-label="Резервный код"
-                 data-i18n-attr="placeholder:redeem.codeph,aria-label:redeem.codelabel">
-          <input type="email" id="redeemEmail" autocomplete="email"
-                 placeholder="твой@email" aria-label="Email активации"
-                 data-i18n-attr="placeholder:redeem.emailph,aria-label:redeem.emaillabel">
-        </div>
-        <button type="button" class="btn btn-amber redeem-go" id="redeemGo" data-i18n="redeem.go">Получить ключ</button>
-        <p class="form-err" id="redeemErr" role="alert"></p>
-      </div>
-      <p class="redeem-selfhost" id="redeemSelfhost" hidden><a href="https://rezon-ai.ru/#redeem" data-i18n="redeem.selfhost">Активировать код на rezon-ai.ru</a></p>
-      <div class="redeem-ok" id="redeemOk" hidden>
-        <p class="redeem-keylabel" data-i18n="redeem.keylabel">Ключ активации</p>
-        <div class="redeem-keyrow">
-          <code id="redeemKey"></code>
-          <button type="button" class="btn btn-ghost redeem-copy" id="redeemCopy" data-i18n="redeem.copy">Копировать</button>
-        </div>
-        <p class="redeem-where" data-i18n="redeem.where">Вставь ключ в дашборде MaxGraph: шестерёнка «Система», «Лицензия», «Активировать».</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ═══ 8. FAQ ═══ -->
+<!-- ═══ 7. FAQ ═══ -->
 <section class="section" id="faq">
   <div class="container">
     <div class="sec-head reveal" style="margin-bottom:8px">
@@ -887,11 +877,11 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
     <div class="faq reveal" style="--rd:.08s">
       <div class="faq-item">
         <button type="button" class="faq-q" aria-expanded="false"><span data-i18n="faq.q1">Что такое MaxGraph?</span><span class="faq-ic" aria-hidden="true">+</span></button>
-        <div class="faq-a"><div class="faq-a-in"><p data-i18n="faq.a1">Память для работы с нейросетью. MaxGraph запоминает, что вы с агентом решали и делали, и находит это в следующих сессиях. Всё живёт на твоей машине, каждую запись видно в дашборде.</p></div></div>
+        <div class="faq-a"><div class="faq-a-in"><p data-i18n="faq.a1">Память для AI-агентов. MaxGraph запоминает, что ты с агентом решал и делал, и находит это в следующих сессиях. Всё живёт на твоей машине, каждую запись видно в дашборде.</p></div></div>
       </div>
       <div class="faq-item">
         <button type="button" class="faq-q" aria-expanded="false"><span data-i18n="faq.q2">С какими агентами работает?</span><span class="faq-ic" aria-hidden="true">+</span></button>
-        <div class="faq-a"><div class="faq-a-in"><p data-i18n="faq.a2">ChatGPT, Claude, Gemini, Copilot, Cursor, Kimi, DeepSeek Harness и любой клиент с поддержкой MCP. Подключение занимает один промпт из блока установки.</p></div></div>
+        <div class="faq-a"><div class="faq-a-in"><p data-i18n="faq.a2">ChatGPT, Claude, Gemini, Copilot, Cursor, Kimi, DeepSeek Harness и любой клиент с поддержкой MCP. Подключается одним промптом — скопируй его из блока «Установка» выше.</p></div></div>
       </div>
       <div class="faq-item">
         <button type="button" class="faq-q" aria-expanded="false"><span data-i18n="faq.q3">Где лежат мои данные?</span><span class="faq-ic" aria-hidden="true">+</span></button>
@@ -907,7 +897,28 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
       </div>
       <div class="faq-item">
         <button type="button" class="faq-q" aria-expanded="false"><span data-i18n="faq.q6">Поиск отправляет мои тексты наружу?</span><span class="faq-ic" aria-hidden="true">+</span></button>
-        <div class="faq-a"><div class="faq-a-in"><p data-i18n="faq.a6">Нет. Смысловой поиск считает твой собственный MaxGraph на твоей машине, тексты никуда не уходят и не сохраняются. Поиск можно отключить совсем.</p></div></div>
+        <div class="faq-a"><div class="faq-a-in"><p data-i18n="faq.a6">Нет. Поиск работает внутри твоего MaxGraph, на твоей машине — тексты наружу не уходят. Поиск можно отключить совсем.</p></div></div>
+      </div>
+      <div class="faq-item">
+        <button type="button" class="faq-q" aria-expanded="false"><span data-i18n="faq.q7">Чем MaxGraph отличается от встроенной памяти ChatGPT?</span><span class="faq-ic" aria-hidden="true">+</span></button>
+        <div class="faq-a"><div class="faq-a-in"><p data-i18n="faq.a7">Встроенная память привязана к одному сервису и живёт на его серверах. MaxGraph работает с любым агентом, а записи лежат на твоей машине и читаются хоть блокнотом.</p></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ 8. Финальный CTA ═══ -->
+<section class="section" id="go">
+  <div class="container">
+    <div class="sec-head reveal">
+      <p class="sec-tag" data-i18n="go.tag">Попробовать</p>
+      <h2 data-i18n="go.h2">Дальше агент сделает сам</h2>
+      <p class="sec-sub" data-i18n="go.sub">Скопируй промпт и вставь своему агенту. 7 дней бесплатно, карта не нужна. Записи останутся с тобой, даже если не продлишь.</p>
+    </div>
+    <div class="install-box reveal" style="--rd:.1s">
+      <div class="install-actions" style="justify-content:center;margin-top:0">
+        <button type="button" class="btn btn-amber" data-copy="go" data-i18n="go.cta">Скопировать промпт установки</button>
+        <a class="btn btn-ghost" href="#pricing" data-i18n="go.pricing">Посмотреть цены</a>
       </div>
     </div>
   </div>
@@ -920,11 +931,11 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
       <p class="sec-tag" data-i18n="don.tag">Поддержка</p>
       <p class="redeem-title" data-i18n="don.title">MaxGraph живёт на поддержку пользователей</p>
       <p class="redeem-sub" data-i18n="don.sub">Если проект оказался полезным — можно просто сказать спасибо. Разовый перевод, без подписки и автосписаний.</p>
-      <div class="terms-list" role="group" aria-label="Сумма поддержки" data-i18n-aria="don.group"
-           style="display:flex;flex-direction:row;gap:10px;justify-content:center;flex-wrap:wrap;margin:18px 0 4px">
-        <button type="button" class="term don-chip" data-donate="donate99"><span class="tprice"><span class="tp" data-i18n="don.p1">99&nbsp;₽</span></span></button>
-        <button type="button" class="term don-chip" data-donate="donate249"><span class="tprice"><span class="tp" data-i18n="don.p2">249&nbsp;₽</span></span></button>
-        <button type="button" class="term don-chip" data-donate="donate499"><span class="tprice"><span class="tp" data-i18n="don.p3">499&nbsp;₽</span></span></button>
+      <div role="group" aria-label="Сумма поддержки" data-i18n-aria="don.group"
+           style="display:flex;flex-direction:row;gap:18px;justify-content:center;flex-wrap:wrap;margin:14px 0 2px">
+        <button type="button" class="don-plain" data-donate="donate99"><span data-i18n="don.p1">99&nbsp;₽</span></button>
+        <button type="button" class="don-plain" data-donate="donate249"><span data-i18n="don.p2">249&nbsp;₽</span></button>
+        <button type="button" class="don-plain" data-donate="donate499"><span data-i18n="don.p3">499&nbsp;₽</span></button>
       </div>
       <div class="buy-row" id="donRow" hidden>
         <input type="email" id="donEmail" autocomplete="email" placeholder="твой@email"
@@ -950,7 +961,7 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
         </svg>
         <span class="brand-word">MaxGraph</span>
       </a>
-      <p data-i18n="foot.brand">Память для работы с нейросетью. Живёт на твоей машине.</p>
+      <p data-i18n="foot.brand">Память для AI-агентов. Живёт на твоей машине.</p>
     </div>
     <div class="foot-links">
       <a href="#memory" data-i18n="nav.memory">Память</a>
@@ -959,6 +970,7 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
       <a href="#pricing" data-i18n="nav.pricing">Цены</a>
       <a href="#faq" data-i18n="nav.faq">Вопросы</a>
       <a href="/blog/" data-i18n="nav.blog" data-i18n-attr="href:nav.blogurl">Блог</a>
+      <a href="https://t.me/maxgraph_mcp" target="_blank" rel="noopener">Telegram</a>
     </div>
     <div class="foot-note">© 2026 MaxGraph<br><span data-i18n="foot.note">Почта:</span> help@rezon-ai.ru</div>
   </div>
@@ -966,8 +978,9 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
     <div class="foot-legal">
       <a href="/offer" data-i18n="foot.offer">Оферта</a>
       <a href="/privacy" data-i18n="foot.privacy">Политика конфиденциальности</a>
-      <a href="mailto:help@rezon-ai.ru">help@rezon-ai.ru</a>
+      <a href="https://rezon-ai.ru/redeem/" data-i18n="foot.redeem">Активация кода</a>
       <a href="https://github.com/RuMemory/maxgraph" target="_blank" rel="noopener">GitHub</a>
+      <!--LiveInternet counter--><a class="li-counter" href="https://www.liveinternet.ru/click" target="_blank" rel="noopener"><img id="licntD266" width="88" height="15" style="border:0" title="LiveInternet: показано число посетителей за сегодня" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAEALAAAAAABAAEAAAIBTAA7" alt=""/></a><script>(function(d,s){d.getElementById("licntD266").src="https://counter.yadro.ru/hit?t26.6;r"+escape(d.referrer)+((typeof(s)=="undefined")?"":";s"+s.width+"*"+s.height+"*"+(s.colorDepth?s.colorDepth:s.pixelDepth))+";u"+escape(d.URL)+";h"+escape(d.title.substring(0,150))+";"+Math.random()})(document,screen)</script><!--/LiveInternet-->
     </div>
   </div>
 </footer>
@@ -979,14 +992,15 @@ var RM = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 /* ═══ RU/EN словари ═══ */
 var I18N = {
 ru:{
-  'meta.title':'MaxGraph: хватит объяснять нейросети всё сначала',
-  'meta.desc':'MaxGraph: память для работы с нейросетью. Агент помнит проект между сессиями, данные лежат на твоей машине, триал 7 дней без карты.',
+  'meta.title':'MaxGraph — память для AI-агентов. Перестань объяснять проект с нуля',
+  'meta.desc':'MaxGraph — память для AI-агентов. Агент помнит проект между сессиями, данные лежат на твоей машине. Триал 7 дней, карта не нужна.',
   'nav.how':'Как работает','nav.memory':'Память','nav.demo':'Демо','nav.install':'Установка','nav.pricing':'Цены','nav.faq':'Вопросы','nav.blog':'Блог','nav.blogurl':'/blog/',
   'nav.copy':'Скопировать промпт','nav.short':'Промпт',
-  'hero.tag':'Память для работы с нейросетью',
-  'hero.h1':'Хватит объяснять<br>нейросети<br>всё сначала.',
-  'hero.sub':'MaxGraph запоминает твой проект: что решили, что сломали, что пообещали. Агент находит это сам и начинает там, где вы закончили.',
+  'hero.tag':'Память для AI-агентов',
+  'hero.h1':'Перестань объяснять<br>ИИ проект<br>с нуля.',
+  'hero.sub':'MaxGraph запоминает твой проект: что решили, что сломали, что пообещали. Агент находит это сам и начинает там, где ты закончил.',
   'hero.cta':'Скопировать промпт установки','hero.demo':'Сначала посмотреть демо',
+  'hero.note':'Это текст для твоего агента: вставь его в чат — агент сам скачает, установит и включит память.',
   'hero.fact':'Экономия токенов примерно <b>43&nbsp;%</b> при работе с MaxGraph.',
   'feed.title':'Память пишется',
   'feed.k1':'решение','feed.v1':'<b>Офлайн-first</b>, синхронизация потом',
@@ -999,35 +1013,36 @@ ru:{
   'how.tag':'Как работает','how.h2':'Ничего нового учить не придётся',
   'how.sub':'Ты работаешь с агентом как обычно. Память появляется сама, в фоне.',
   'how.s1t':'Работаешь как обычно',
-  'how.s1':'Ничего в привычках менять не нужно. Агент сам запоминает важное из вашей работы: решения, баги, договорённости.',
-  'how.s2t':'Память на твоём ПК',
-  'how.s2':'Вся память лежит на твоём ПК. Открой дашборд и проверь любой факт глазами.',
-  'how.s3t':'Начал новую сессию',
+  'how.s1':'Агент сам запоминает важное из твоей работы: решения, баги, договорённости.',
+  'how.s2t':'Память лежит у тебя',
+  'how.s2':'Вся память лежит на твоей машине. Открой дашборд и проверь любой факт глазами.',
+  'how.s3t':'Начинаешь новую сессию',
   'how.s3':'Агент уже помнит проект. Он сам находит нужное и не делает одну и ту же работу дважды.',
   'mem.tag':'Память','mem.h2':'Преимущества MaxGraph',
   'mem.f1t':'Записи живут отдельно от чата',
   'mem.f1':'Чат можно закрыть, сжать или удалить. Записи это не заденет: они лежат отдельно от диалога, на твоей машине, и переживут сколько угодно сжатий и новых сессий.',
-  'mem.f2t':'Записывает в момент, когда факт прозвучал',
+  'mem.f2t':'Записывает факт в тот же момент',
   'mem.f2':'Факт попадает в память сразу, как прозвучал. Оборвись диалог хоть через минуту, записанное уже на месте.',
   'mem.f3t':'Свежая выжимка в начале каждой сессии',
-  'mem.f3':'Выжимка собирается заново из записей при каждом старте: твои решения дословно, открытые баги, итоги прошлых сессий. Формулировки не плывут, потому что их никто не пересказывает, и наверху всегда то, что актуально именно сейчас.',
+  'mem.f3':'Выжимка собирается заново из записей при каждом старте: твои решения дословно, открытые баги, итоги прошлых сессий. Формулировки не плывут, потому что их никто не пересказывает. Наверху — то, что актуально сейчас.',
   'mem.f4t':'Незаконченные дела всплывают сами',
-  'mem.f4':'Открытая задача сама всплывёт в начале следующей сессии. Напоминать о ней специально не нужно.',
+  'mem.f4':'Открытая задача сама всплывёт в начале следующей сессии — напоминать не надо.',
   'mem.f5t':'Всегда видно, что происходило',
-  'mem.f5':'Все записи идут в общий журнал с датами. Диалог может быть сжат до неузнаваемости, по журналу ты всё равно восстановишь ход работы.',
+  'mem.f5':'Все записи идут в общий журнал с датами. Диалог могут сжать до неузнаваемости — по журналу ты всё равно восстановишь ход работы.',
   'mem.f6t':'Чат заполняется медленнее',
   'mem.f6':'Историю проекта больше не таскают за собой в каждом сообщении, поэтому окно дольше остаётся чистым и сжатие наступает позже. Экономия токенов примерно 43&nbsp;% при работе с MaxGraph.',
-  'demo.tag':'Демо','demo.h2':'Понятный и удобный интерфейс',
-  'demo.alt':'Живой дашборд MaxGraph: карта памяти проекта Ритм, свежие воспоминания и лента памяти',
+  'demo.tag':'Демо','demo.h2':'Вот как это выглядит',
+  'demo.alt':'Дашборд MaxGraph: карта памяти проекта Ритм, лента записей и поиск',
   'demo.n1':'Ритм','demo.n2':'Офлайн-first','demo.n3':'Экран статистики','demo.n4':'Билд 0.9 в TestFlight',
   'demo.n5':'12 окт, утро','demo.n6':'Краш на Xiaomi','demo.n7':'Иконка приложения','demo.n8':'Шаблоны привычек',
-  'demo.kpi1':'воспоминаний','demo.kpi2':'связей','demo.kpi3':'фактов',
+  'demo.kpi1':'записей','demo.kpi2':'связей','demo.kpi3':'фактов',
+  'demo.cap':'Это дашборд — окно в память агента. Каждая точка на карте — запись: решение, баг или задача из твоих чатов. Сюда можно заглянуть в любой момент и проверить, что он запомнил.',
   'a11y.nav':'Основная','a11y.top':'MaxGraph, наверх','a11y.lang':'Язык','a11y.feed':'Пример живой памяти',
   'install.tag':'Установка','install.h2':'Просто попроси своего агента установить MaxGraph',
-  'install.sub':'Скопируй текст, вставь своему агенту, и он всё поставит и настроит сам.',
+  'install.sub':'Скопируй текст и вставь своему агенту — он всё поставит и настроит сам.',
   'install.label':'Промпт для агента','install.copy':'Скопировать промпт',
-  'install.prompt':'Установи MaxGraph — память для нашей работы: https://github.com/RuMemory/maxgraph — добавь MCP-сервер, запусти дашборд и скажи, когда всё будет готово.',
-  'install.hint':'Понадобится Docker. Триал на 7 дней включится сам при первом запуске, карта не нужна.',
+  'install.prompt':'Установи MaxGraph (память для нашей работы): https://github.com/RuMemory/maxgraph. Добавь MCP-сервер, запусти дашборд и скажи, когда всё будет готово.',
+  'install.hint':'От тебя — только вставить промпт. Всё нужное, включая Docker, агент поставит сам. Триал на 7 дней включится при первом запуске, карта не нужна.',
   'copied':'Скопировано',
   'pr.tag':'Цены','pr.h2':'Один тариф, всё включено',
   'pr.trial':'<b>7 дней бесплатно, без карты.</b> Триал встроен и включается сам при первом запуске.',
@@ -1036,24 +1051,24 @@ ru:{
   'pr.f2t':'Память.','pr.f2':'Агент сам запоминает решения, баги, задачи и договорённости.',
   'pr.f3t':'Поиск.','pr.f3':'Находит нужное за секунды, даже то, о чём говорили неделю назад.',
   'pr.f4t':'Экспорт.','pr.f4':'Все данные в NDJSON в одну кнопку, ничто не заперто.',
-  'pr.f5t':'Воспоминания.','pr.f5':'Лента записей: что и когда запомнено, всегда можно заглянуть.',
-  'pr.termlabel':'Срок','pr.termgroup':'Срок подписки',
+  'pr.f5t':'Лента.','pr.f5':'Лента записей: что и когда запомнено, всегда можно заглянуть.',
+  'pr.termlabel':'Срок','pr.termgroup':'Срок лицензии',
   'pr.t1':'1 месяц','pr.t3':'3 месяца','pr.t6':'6 месяцев','pr.t12':'12 месяцев',
   'buy.emailph':'твой@email','buy.aria':'Email для чека и ключа',
   'buy.go':'Перейти к оплате','buy.wait':'Создаю платёж…',
-  'buy.err.email':'Введи корректный email','buy.err.net':'Ошибка сети, попробуй ещё раз',
-  'buy.err.url':'Платёжная ссылка не прошла проверку, попробуй позже',
+  'buy.err.email':'Проверь email — похоже, опечатка','buy.err.net':'Ошибка сети, попробуй ещё раз',
+  'buy.err.url':'Не получилось создать платёж. Попробуй ещё раз или напиши нам: help@rezon-ai.ru',
   'buy.promo':'Есть промокод?','buy.promoph':'XXXX-XXXX','buy.promoaria':'Промокод',
   'buy.refnote':'Цена со скидкой −20%',
   'redeem.tag':'Есть код?','redeem.title':'Получи ключ активации',
-  'redeem.sub':'Введи резервный код из письма об оплате и email активации.',
+  'redeem.sub':'Введи код из письма об оплате и свой email.',
   'redeem.codeph':'MG-XXXX-XXXX-XXXX','redeem.emailph':'твой@email',
-  'redeem.codelabel':'Резервный код','redeem.emaillabel':'Email активации',
+  'redeem.codelabel':'Код из письма об оплате','redeem.emaillabel':'Твой email',
   'redeem.go':'Получить ключ','redeem.wait':'Проверяю…',
   'redeem.keylabel':'Ключ активации','redeem.copy':'Копировать','redeem.copied':'Скопировано',
   'redeem.where':'Вставь ключ в дашборде MaxGraph: шестерёнка «Система», «Лицензия», «Активировать».',
   'redeem.sent':'Код уже активирован, новый ключ отправлен на email',
-  'redeem.err.code':'Формат кода: MG-XXXX-XXXX-XXXX','redeem.err.email':'Введи корректный email',
+  'redeem.err.code':'Формат кода: MG-XXXX-XXXX-XXXX','redeem.err.email':'Проверь email — похоже, опечатка',
   'redeem.err.net':'Ошибка сети, попробуй ещё раз',
   'redeem.selfhost':'Активировать код на rezon-ai.ru',
   'don.tag':'Поддержка','don.title':'MaxGraph живёт на поддержку пользователей',
@@ -1065,9 +1080,9 @@ ru:{
   'don.pick':'Сначала выбери сумму',
   'faq.tag':'Вопросы','faq.h2':'Коротко о важном',
   'faq.q1':'Что такое MaxGraph?',
-  'faq.a1':'Память для работы с нейросетью. MaxGraph запоминает, что вы с агентом решали и делали, и находит это в следующих сессиях. Всё живёт на твоей машине, каждую запись видно в дашборде.',
+  'faq.a1':'Память для AI-агентов. MaxGraph запоминает, что ты с агентом решал и делал, и находит это в следующих сессиях. Всё живёт на твоей машине, каждую запись видно в дашборде.',
   'faq.q2':'С какими агентами работает?',
-  'faq.a2':'ChatGPT, Claude, Gemini, Copilot, Cursor, Kimi, DeepSeek Harness и любой клиент с поддержкой MCP. Подключение занимает один промпт из блока установки.',
+  'faq.a2':'ChatGPT, Claude, Gemini, Copilot, Cursor, Kimi, DeepSeek Harness и любой клиент с поддержкой MCP. Подключается одним промптом — скопируй его из блока «Установка» выше.',
   'faq.q3':'Где лежат мои данные?',
   'faq.a3':'На твоей машине. Твои записи наружу не уходят. Интернет нужен один раз для активации, дальше всё работает автономно.',
   'faq.q4':'Что будет после триала?',
@@ -1075,22 +1090,28 @@ ru:{
   'faq.q5':'Как забрать данные, если решу уйти?',
   'faq.a5':'Выгрузка в NDJSON одной кнопкой из дашборда. Это обычный текстовый формат, он читается хоть блокнотом.',
   'faq.q6':'Поиск отправляет мои тексты наружу?',
-  'faq.a6':'Нет. Смысловой поиск считает твой собственный MaxGraph на твоей машине, тексты никуда не уходят и не сохраняются. Поиск можно отключить совсем.',
-  'foot.brand':'Память для работы с нейросетью. Живёт на твоей машине.',
+  'faq.a6':'Нет. Поиск работает внутри твоего MaxGraph, на твоей машине — тексты наружу не уходят. Поиск можно отключить совсем.',
+  'faq.q7':'Чем MaxGraph отличается от встроенной памяти ChatGPT?',
+  'faq.a7':'Встроенная память привязана к одному сервису и живёт на его серверах. MaxGraph работает с любым агентом, а записи лежат на твоей машине и читаются хоть блокнотом.',
+  'go.tag':'Попробовать','go.h2':'Дальше агент сделает сам',
+  'go.sub':'Скопируй промпт и вставь своему агенту. 7 дней бесплатно, карта не нужна. Записи останутся с тобой, даже если не продлишь.',
+  'go.cta':'Скопировать промпт установки','go.pricing':'Посмотреть цены',
+  'foot.brand':'Память для AI-агентов. Живёт на твоей машине.',
   'foot.note':'Почта:',
-  'foot.offer':'Оферта','foot.privacy':'Политика конфиденциальности'
+  'foot.offer':'Оферта','foot.privacy':'Политика конфиденциальности','foot.redeem':'Активация кода'
 },
 en:{
-  'meta.title':'MaxGraph: stop explaining everything to the AI from scratch',
-  'meta.desc':'MaxGraph: memory for working with AI. The agent remembers the project between sessions, data stays on your machine, 7-day trial without a card.',
+  'meta.title':'MaxGraph — memory for AI agents. Stop explaining the project from scratch',
+  'meta.desc':'MaxGraph is a memory MCP server for AI agents: your agent remembers decisions, bugs and tasks between sessions. Data stays on your machine. 7-day trial, no card.',
   'nav.how':'How it works','nav.memory':'Memory','nav.demo':'Demo','nav.install':'Install','nav.pricing':'Pricing','nav.faq':'FAQ','nav.blog':'Blog','nav.blogurl':'/en/blog/',
   'nav.copy':'Copy prompt','nav.short':'Prompt',
-  'hero.tag':'Memory for working with AI',
-  'hero.h1':'Stop explaining<br>everything to the AI<br>from scratch.',
+  'hero.tag':'Memory for AI agents',
+  'hero.h1':'Stop explaining<br>everything to your AI<br>from&nbsp;scratch.',
   'hero.sub':'MaxGraph remembers your project: what you decided, what broke, what was promised. The agent finds it on its own and picks up where you left off.',
   'hero.cta':'Copy the install prompt','hero.demo':'Watch the demo first',
+  'hero.note':'It’s a text for your agent: paste it into the chat — the agent downloads, installs, and turns memory on by itself.',
   'hero.fact':'Working with MaxGraph saves about <b>43%</b> of tokens.',
-  'feed.title':'Memory is being written',
+  'feed.title':'Recording…',
   'feed.k1':'decision','feed.v1':'<b>Offline-first</b>, sync later',
   'feed.k2':'bug closed','feed.v2':'Crash on Xiaomi when swiping',
   'feed.k3':'task','feed.v3':'Statistics screen, waiting for icons',
@@ -1101,9 +1122,9 @@ en:{
   'how.tag':'How it works','how.h2':'Nothing new to learn',
   'how.sub':'You work with your agent as usual. Memory appears on its own, in the background.',
   'how.s1t':'Work as usual',
-  'how.s1':'No habits need to change. The agent remembers the important parts of your work on its own: decisions, bugs, agreements.',
-  'how.s2t':'Memory stays on your PC',
-  'how.s2':'All memory lives on your PC. Open the dashboard and check any fact with your own eyes.',
+  'how.s1':'You don’t have to change a thing. The agent remembers the important parts of your work on its own: decisions, bugs, agreements.',
+  'how.s2t':'Memory stays on your machine',
+  'how.s2':'All memory lives on your machine. Open the dashboard and check any fact with your own eyes.',
   'how.s3t':'Start a new session',
   'how.s3':'The agent already remembers the project. It finds what it needs on its own and never does the same work twice.',
   'mem.tag':'Memory','mem.h2':'MaxGraph advantages',
@@ -1112,24 +1133,25 @@ en:{
   'mem.f2t':'Writes facts down the moment they are said',
   'mem.f2':'A fact lands in memory the moment it is said. Even if the conversation breaks a minute later, what was recorded is already in place.',
   'mem.f3t':'A fresh digest at the start of every session',
-  'mem.f3':'The digest is rebuilt from records at every start: your decisions verbatim, open bugs, outcomes of past sessions. Wording does not drift, because nobody retells it, and the top always holds what matters right now.',
+  'mem.f3':'The digest is rebuilt from records at every start: your decisions verbatim, open bugs, outcomes of past sessions. Wording does not drift, because nobody retells it. The top holds what matters right now.',
   'mem.f4t':'Unfinished work floats up on its own',
   'mem.f4':'An open task surfaces by itself at the start of the next session. No special reminders needed.',
   'mem.f5t':'You can always see what happened',
-  'mem.f5':'Every record goes into a shared journal with dates. The conversation may be compressed beyond recognition, yet the journal still lets you retrace the work.',
+  'mem.f5':'Every record goes into a shared journal with dates. The conversation may be compressed beyond recognition — the journal still lets you retrace the work.',
   'mem.f6t':'The chat fills up more slowly',
   'mem.f6':'Project history no longer rides along in every message, so the window stays clean longer and compression comes later. Working with MaxGraph saves about 43% of tokens.',
-  'demo.tag':'Demo','demo.h2':'A clear and convenient interface',
-  'demo.alt':'Live MaxGraph dashboard: memory map of the Ritm project, recent memories and the memory feed',
+  'demo.tag':'Demo','demo.h2':'See your project’s memory',
+  'demo.alt':'MaxGraph dashboard: memory map of the Ritm project, record feed and search',
   'demo.n1':'Rhythm','demo.n2':'Offline-first','demo.n3':'Stats screen','demo.n4':'Build 0.9 in TestFlight',
   'demo.n5':'Oct 12, morning','demo.n6':'Crash on Xiaomi','demo.n7':'App icon','demo.n8':'Habit templates',
-  'demo.kpi1':'memories','demo.kpi2':'links','demo.kpi3':'facts',
+  'demo.kpi1':'records','demo.kpi2':'links','demo.kpi3':'facts',
+  'demo.cap':'This is the dashboard — a window into your agent’s memory. Every dot on the map is a record: a decision, a bug, or a task from your chats. Look inside any time to check what it remembered.',
   'a11y.nav':'Primary','a11y.top':'MaxGraph, back to top','a11y.lang':'Language','a11y.feed':'Live memory example',
   'install.tag':'Install','install.h2':'Just ask your agent to install MaxGraph',
-  'install.sub':'Copy the text, paste it to your agent, and it will install and set up everything itself.',
+  'install.sub':'Copy the text and paste it into your agent’s chat — it will set up everything itself.',
   'install.label':'Prompt for your agent','install.copy':'Copy prompt',
-  'install.prompt':'Install MaxGraph — memory for our work together: https://github.com/RuMemory/maxgraph — add the MCP server, start the dashboard, and tell me when everything is ready.',
-  'install.hint':'Docker is required. The 7-day trial turns on by itself on first launch, no card needed.',
+  'install.prompt':'Install MaxGraph (memory for our work together): https://github.com/RuMemory/maxgraph. Add the MCP server, start the dashboard, and tell me when everything is ready.',
+  'install.hint':'You don’t need to install anything by hand — your agent sets up everything, including Docker. The 7-day trial turns on by itself on first launch, no card needed.',
   'copied':'Copied',
   'pr.tag':'Pricing','pr.h2':'One plan, everything included',
   'pr.trial':'<b>7 days free, no card.</b> The trial is built in and turns on by itself on first launch.',
@@ -1138,28 +1160,28 @@ en:{
   'pr.f2t':'Memory.','pr.f2':'The agent remembers decisions, bugs, tasks, and agreements on its own.',
   'pr.f3t':'Search.','pr.f3':'Finds what you need in seconds, even what was discussed a week ago.',
   'pr.f4t':'Export.','pr.f4':'All data in NDJSON in one click, nothing is locked in.',
-  'pr.f5t':'Memories.','pr.f5':'A feed of records: what was remembered and when, always open to look inside.',
+  'pr.f5t':'Feed.','pr.f5':'A feed of records: what was saved and when. Always there to check.',
   'pr.termlabel':'Term','pr.termgroup':'License term',
   'pr.t1':'1 month','pr.t3':'3 months','pr.t6':'6 months','pr.t12':'12 months',
   'buy.emailph':'your@email','buy.aria':'Email for the receipt and key',
   'buy.go':'Go to payment','buy.wait':'Creating payment…',
-  'buy.err.email':'Enter a valid email','buy.err.net':'Network error, please try again',
-  'buy.err.url':'Payment link failed verification, please try later',
+  'buy.err.email':'Check your email — looks like a typo','buy.err.net':'Network error, please try again',
+  'buy.err.url':'Couldn’t create the payment. Please try again, or write to help@rezon-ai.ru',
   'buy.promo':'Have a promo code?','buy.promoph':'XXXX-XXXX','buy.promoaria':'Promo code',
   'buy.refnote':'Price with a −20% discount',
   'redeem.tag':'Got a code?','redeem.title':'Get your activation key',
-  'redeem.sub':'Enter the backup code from the payment email and the activation email.',
+  'redeem.sub':'Enter the code from the payment email, and your email address.',
   'redeem.codeph':'MG-XXXX-XXXX-XXXX','redeem.emailph':'your@email',
-  'redeem.codelabel':'Backup code','redeem.emaillabel':'Activation email',
+  'redeem.codelabel':'Code from the payment email','redeem.emaillabel':'Your email',
   'redeem.go':'Get key','redeem.wait':'Checking…',
   'redeem.keylabel':'Activation key','redeem.copy':'Copy','redeem.copied':'Copied',
   'redeem.where':'Paste the key in your MaxGraph dashboard: the “System” gear icon, “License”, “Activate”.',
   'redeem.sent':'The code is already activated, a new key has been sent to the activation email',
-  'redeem.err.code':'Code format: MG-XXXX-XXXX-XXXX','redeem.err.email':'Enter a valid email',
+  'redeem.err.code':'Code format: MG-XXXX-XXXX-XXXX','redeem.err.email':'Check your email — looks like a typo',
   'redeem.err.net':'Network error, please try again',
   'redeem.selfhost':'Activate your code at rezon-ai.ru',
   'don.tag':'Support','don.title':'MaxGraph runs on user support',
-  'don.sub':'If the project has been useful, you can simply say thanks. One-time payment, no subscription, no auto-renewal.',
+  'don.sub':'If the project has been useful, you can simply say thanks. One-time payment, no auto-renewal.',
   'don.group':'Support amount',
   'don.p1':'$0.99','don.p2':'$2.49','don.p3':'$4.99',
   'don.emailph':'your@email','don.aria':'Email for the receipt',
@@ -1167,20 +1189,25 @@ en:{
   'don.pick':'Pick an amount first',
   'faq.tag':'FAQ','faq.h2':'The essentials, briefly',
   'faq.q1':'What is MaxGraph?',
-  'faq.a1':'Memory for working with AI. MaxGraph remembers what you and your agent decided and did, and finds it in later sessions. Everything lives on your machine, and every record is visible in the dashboard.',
+  'faq.a1':'Memory for AI agents. MaxGraph remembers what you and your agent decided and did, and finds it in later sessions. Everything lives on your machine, and every record is visible in the dashboard.',
   'faq.q2':'Which agents does it work with?',
-  'faq.a2':'ChatGPT, Claude, Gemini, Copilot, Cursor, Kimi, DeepSeek Harness, and any client with MCP support. Connecting takes one prompt from the install block.',
+  'faq.a2':'ChatGPT, Claude, Gemini, Copilot, Cursor, Kimi, DeepSeek Harness, and any client with MCP support. Connecting takes one prompt — copy it from the Install section above.',
   'faq.q3':'Where is my data stored?',
   'faq.a3':'On your machine. Your records never leave it. Internet is needed once for activation; after that everything works offline.',
   'faq.q4':'What happens after the trial?',
   'faq.a4':'Recording new facts will stop. The dashboard, search, and export stay available with no time limit: the memory you accumulated stays with you.',
   'faq.q5':'How do I take my data if I leave?',
-  'faq.a5':'Export to NDJSON with one button in the dashboard. It is a plain text format that opens in any notepad.',
+  'faq.a5':'Export to NDJSON with one button in the dashboard. It’s a plain text format — any text editor opens it.',
   'faq.q6':'Does search send my texts outside?',
-  'faq.a6':'No. Semantic search runs inside your own MaxGraph on your machine; texts never leave it and are not stored. Search can be turned off completely.',
-  'foot.brand':'Memory for working with AI. Lives on your machine.',
+  'faq.a6':'No. Search runs inside your MaxGraph, on your machine — texts never leave it. You can turn search off completely.',
+  'faq.q7':'How is MaxGraph different from ChatGPT’s built-in memory?',
+  'faq.a7':'Built-in memory is tied to one service and lives on its servers. MaxGraph works with any agent, and your records stay on your machine, readable in any text editor.',
+  'go.tag':'Try it','go.h2':'Your agent takes it from here',
+  'go.sub':'Copy the prompt and paste it into your agent’s chat. 7 days free, no card. Your records stay with you even if you don’t renew.',
+  'go.cta':'Copy the install prompt','go.pricing':'See pricing',
+  'foot.brand':'Memory for AI agents. Lives on your machine.',
   'foot.note':'Email:',
-  'foot.offer':'Terms','foot.privacy':'Privacy'
+  'foot.offer':'Terms','foot.privacy':'Privacy','foot.redeem':'Activate code'
 }};
 
 /* Цены по срокам и языкам; tper: тихие помесячные пометки */
@@ -1198,7 +1225,16 @@ var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 var TERM_PLAN = { m1:'pro1', m3:'pro3', m6:'pro6', m12:'pro12' };
 
 var curLang = 'ru';
-try{ curLang = (localStorage.getItem('mg_lang') === 'en') ? 'en' : 'ru'; }catch(e){}
+/* На сторе язык закреплён за страницей: /en/ = EN, остальные пути = RU.
+   На self-hosted (нет /en/) — сохранённый выбор из localStorage. */
+if(location.pathname.indexOf('/en/') === 0){
+  curLang = 'en';
+  try{ localStorage.setItem('mg_lang','en'); }catch(e){}
+}else if(MG_STORE){
+  try{ localStorage.setItem('mg_lang','ru'); }catch(e){}
+}else{
+  try{ curLang = (localStorage.getItem('mg_lang') === 'en') ? 'en' : 'ru'; }catch(e){}
+}
 var selectedTerm = 'm12';
 var buyBtn = document.getElementById('buyBtn');
 
@@ -1258,7 +1294,9 @@ function applyLang(lang){
   seg.addEventListener('click', function(e){
     var b = e.target.closest('button'); if(!b) return;
     var lang = b.getAttribute('data-lang');
-    if(lang && lang !== curLang) applyLang(lang);
+    if(!lang || lang === curLang) return;
+    if(MG_STORE){ location.href = lang === 'en' ? '/en/' : '/'; return; }  /* на сторе язык = отдельная страница */
+    applyLang(lang);
   });
 });
 
@@ -1579,7 +1617,7 @@ if(RM || !('IntersectionObserver' in window)){
     form.hidden = true;
     var sh = document.getElementById('redeemSelfhost');
     var shA = sh.querySelector('a');
-    shA.setAttribute('href', MG_STORE_URL + '/#redeem');
+    shA.setAttribute('href', MG_STORE_URL + '/redeem/');
     shA.setAttribute('target', '_blank');
     shA.setAttribute('rel', 'noopener');
     sh.hidden = false;
