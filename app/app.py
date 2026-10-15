@@ -3213,6 +3213,85 @@ def _save_installs(data: dict):
     tmp.replace(INSTALLS_FILE)
 
 
+_ghost_gc_day = ""  # UTC-дата последнего ghost-GC (раз в сутки, на install-ping)
+_GHOST_TTL_SEC = 90 * 86400  # ghost-якорь живёт 90д (атака «копия data/ → сутки →
+                             # вернул» не сбрасывает триал), потом стирается
+
+
+def _gc_ghost_fps(data: dict, now: float) -> tuple:
+    """Ghost-tombstone (v0.41.1): trials-fp, чьи ВСЕ install_id уже ушли на другой
+    fp (installs[iid].fp != fp) — доказуемый дрейф контейнерного fingerprint эпохи
+    до HOST_FP: контейнер пересоздавался (автообновление) → fp новый, старый мёртв.
+    НЕ удаляем мгновенно (security M-1): помечаем ghost+ghost_since — якорь триала
+    переживает атаку копией data/; стираем после _GHOST_TTL_SEC тишины.
+    Настоящий «поставил и забыл» (fp == текущему fp его install_id) и недоказуемые
+    (install вытеснен капом) не трогаем. Вернувшийся fp воскресает в хендлере.
+    Зовётся под _installs_lock ДО _save_installs. → (marked [(fp,[live…])], deleted)."""
+    installs = data.get("installs") or {}
+    trials = data.get("trials") or {}
+    marked, deleted = [], []
+    for fp in list(trials):
+        t = trials[fp]
+        if t.get("ghost"):
+            if now - _safe_int(t.get("ghost_since"), now) > _GHOST_TTL_SEC:
+                deleted.append(fp)
+                del trials[fp]
+            continue
+        iids = t.get("installs") or []
+        if not iids:
+            continue
+        lives = set()
+        provable = True
+        for iid in iids:
+            rec = installs.get(iid)
+            cur = (rec or {}).get("fp")
+            if rec is None or not cur or cur == fp:
+                provable = False  # жив или недоказуем — не трогаем
+                break
+            lives.add(cur)
+        if provable:
+            t["ghost"] = True
+            t["ghost_since"] = _safe_int(t.get("ghost_since"), now) or now
+            marked.append((fp, sorted(lives)))
+    return marked, deleted
+
+
+def _rebind_ghost_licenses(ghosts) -> int:
+    """Привязки ключей к ghost-fp переносит на живой fp той же машины — иначе
+    tombstone сиротил бы лицензию (1 ключ = 1 машина: слот мёртвого ghost держал
+    бы machine_limit). Однозначность: перепривязываем только ghost с ровно одним
+    живым fp. Зовётся ПОСЛЕ снятия _installs_lock (без вложенности локов;
+    _machines_lock берётся тут). Fail-safe: любая битость → пропуск, ping не ломается.
+    Возвращает число перепривязанных fp."""
+    ghost2live = {g: lives[0] for g, lives in ghosts if len(lives) == 1}
+    if not ghost2live:
+        return 0
+    try:
+        with _machines_lock:
+            mdata = _load_machines()
+            moved = 0
+            changed = False
+            for rec in (mdata.get("machines") or {}).values():
+                if not isinstance(rec, dict):
+                    continue
+                fps = rec.get("fps") or []
+                new = []
+                for fp in fps:
+                    live = ghost2live.get(fp, fp)
+                    if live not in new:
+                        new.append(live)
+                moved += sum(1 for a, b in zip(fps, new) if a != b)
+                if new != fps:  # включая dedup-only (legacy 2-слота) — LOW-1: сохраняем
+                    rec["fps"] = new
+                    changed = True
+            if changed:
+                _save_machines(mdata)
+            return moved
+    except Exception:
+        log.exception("ghost-rebind: сбой — лицензии не тронуты, до завтра")
+        return 0
+
+
 # --- host-fp: реестр привязок license key → machine fingerprints (2 слота) ----
 # Платный ключ живёт максимум на 2 машинах (решение владельца, переноса нет —
 # отвязка только владельцем через /admin). Ключи храним как sha256 (как
@@ -3868,7 +3947,10 @@ async def api_telemetry_install(request: Request):
     """Анонимный install-ping self-hosted копий (v0.14; v0.41.0 — всегда ON,
     оптаута TELEMETRY=0 больше нет).
     install_id + версия + install_flavor (v0.39.0) + опциональный fp (sha256-хеш
-    машины, v0.16.3) — ни email, ни контента памяти, ни IP-логирования.
+    машины, v0.16.3) — ни email, ни контента памяти. IP не логируется, но с
+    v0.41.1 участвует в анти-фарм капе новых якорей (≤3 fp/сутки/IP; счётчик
+    anchor_ip в installs.json живёт до конца UTC-дня, в events попадает только
+    при срабатывании капа).
     По fp ведём реестр начала триалов (trials в installs.json) и отвечаем якорем
     started_at: снос data/ у клиента
     триал не сбрасывает. Защита от случайного сброса, не от целенаправленного
@@ -3896,6 +3978,10 @@ async def api_telemetry_install(request: Request):
     flavor = str(body.get("install_flavor") or "")[:16]  # v0.39.0
     now = time.time()
     trial_ts = None
+    marked = []
+    deleted = []
+    capped = False
+    today = time.strftime("%Y-%m-%d", time.gmtime(now))
     with _installs_lock:
         data = _load_installs()
         if data is None:  # битый installs.json — fail-open без записи (не затираем)
@@ -3916,9 +4002,27 @@ async def api_telemetry_install(request: Request):
         if fp:
             trials = data.setdefault("trials", {})
             t = trials.get(fp)
+            if t is not None and t.get("ghost"):
+                # fp вернулся (копия data/ вернулась на исходный хост) — воскрес,
+                # якорь не тронут: tombstone и убил атаку «копия → сутки → возврат»
+                t.pop("ghost", None)
+                t.pop("ghost_since", None)
             if t is None:
                 if len(trials) < _TRIALS_CAP:
-                    t = trials[fp] = {"started_at": now, "reinstalls": 0, "installs": [iid]}
+                    # v0.41.1: анти-фарм — ≤3 новых якоря с IP в сутки (код открыт,
+                    # fp подделываем; сверх капа пинг ок, якоря нет до завтра).
+                    # IP — через _client_ip: на проде TRUST_PROXY=1 требует nginx
+                    # $proxy_add_x_forwarded_for (иначе кап глобален на IP прокси)
+                    anchor_ip = data.setdefault("anchor_ip", {})
+                    akey = f"{ip}|{today}"
+                    if _safe_int(anchor_ip.get(akey)) < 3:
+                        t = trials[fp] = {"started_at": now, "reinstalls": 0, "installs": [iid]}
+                        anchor_ip[akey] = _safe_int(anchor_ip.get(akey)) + 1
+                        # вчерашние счётчики не тащим
+                        data["anchor_ip"] = {k: v for k, v in anchor_ip.items()
+                                             if k.endswith("|" + today)}
+                    else:
+                        capped = True
             else:
                 seen = t.setdefault("installs", [])
                 if iid not in seen:  # новый install_id для этого fp = переустановка
@@ -3927,7 +4031,24 @@ async def api_telemetry_install(request: Request):
                         seen.append(iid)
             if t is not None:
                 trial_ts = t["started_at"]  # якорь НИКОГДА не двигается вперёд
+        # v0.41.1: ghost-GC (tombstone) раз в UTC-день, до save — персистится тем же файлом
+        global _ghost_gc_day
+        if _ghost_gc_day != today:
+            _ghost_gc_day = today
+            try:
+                marked, deleted = _gc_ghost_fps(data, now)
+            except Exception:
+                marked, deleted = [], []  # GC не должен ломать ping
+                log.exception("ghost-GC: сбой — пропущен до завтра")
         _save_installs(data)
+    if marked or deleted:
+        _event("trials_ghost_gc", "",
+               f"ghost помечено: {len(marked)}, стёрто после {_GHOST_TTL_SEC // 86400}д: {len(deleted)}")
+        n = _rebind_ghost_licenses(marked)
+        if n:
+            _event("license_ghost_rebind", "", f"fp перепривязано к живым: {n}")
+    if capped:
+        _event("trial_anchor_capped", ip, "свыше 3 новых fp за сутки — якорь не создан")
     if first and fp:
         # событие только для fp-анкоренных установок — анонимный флуд
         # uuid'ами не засоряет таймлайн админки (fp флудеру вычислять лень)
@@ -4271,7 +4392,8 @@ async def api_installs_list(request: Request):
         return _admin_401()
     data = _load_installs() or {"installs": {}}  # битый файл → пустой список, не 500
     installs = data["installs"]
-    trials = data.get("trials") or {}
+    # v0.41.1: ghost-tombstone'ы (доказанный дрейф fp) из витрины скрыты — якоря их живут
+    trials = {k: v for k, v in (data.get("trials") or {}).items() if not v.get("ghost")}
     fp2kh = {}
     try:  # fp → key_hash из machines.json (лицензионные привязки)
         for kh, rec in (_load_machines().get("machines") or {}).items():
