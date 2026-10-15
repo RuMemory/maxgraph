@@ -4543,6 +4543,18 @@ def _send_recovery_email(email: str, key: str):
                             html=billing.recovery_html(key))
 
 
+def _send_redeem_email(email: str, key: str, code: str):
+    """Первая активация кода (v0.43.0): ключ + инструкция «что дальше» письмом.
+    Сбой НЕ роняет выдачу (ключ уже показан на экране) — ловится вызывающим."""
+    billing.send_email_smtp(email, "MaxGraph — твой ключ активации",
+                            billing.redeem_text(key, code),
+                            {"host": os.environ.get("SMTP_HOST"), "port": os.environ.get("SMTP_PORT"),
+                             "user": os.environ.get("SMTP_USER"), "password": os.environ.get("SMTP_PASS"),
+                             "sender": os.environ.get("SMTP_FROM") or os.environ.get("SMTP_USER"),
+                             "starttls": os.environ.get("SMTP_STARTTLS")},
+                            html=billing.redeem_html(key, code))
+
+
 @mcp.custom_route("/api/codes/redeem", methods=["POST"])
 async def api_codes_redeem(request: Request):
     import secrets
@@ -4660,7 +4672,9 @@ async def api_codes_redeem(request: Request):
         try:
             await asyncio.to_thread(_send_recovery_email, r_email, r_lic)
         except Exception as e:
-            log.error("recovery email failed for tenant %s: %s", r_tid, e)  # без email в логах (PII)
+            # type+code, НЕ str(e): SMTPRecipientsRefused тащит dict получателей (PII)
+            log.error("recovery email failed for tenant %s: %s code=%s",
+                      r_tid, type(e).__name__, getattr(e, "smtp_code", None))
             return JSONResponse({"ok": False, "already": True,
                                  "error": "Письмо не ушло (SMTP). Напиши в поддержку: help@rezon-ai.ru"},
                                 status_code=503, headers=_NOCACHE)
@@ -4694,9 +4708,21 @@ async def api_codes_redeem(request: Request):
                code if r_old else f"{code} · mint без прежней лицензии")  # аудит ручных кодов
         return JSONResponse({"ok": True, "already": True, "sent": "email",
                              "message": "Новый ключ отправлен на email активации."}, headers=_NOCACHE)
+    emailed = False
+    if email and billing and os.environ.get("SMTP_HOST"):  # billing=None на self-hosted витрине
+        # v0.43.0: ключ дублируется письмом с инструкцией. Сбой SMTP НЕ роняет выдачу —
+        # активация уже закоммичена, ключ показан на экране (страница скажет про письмо).
+        import asyncio
+        try:
+            await asyncio.to_thread(_send_redeem_email, email, lic, code)
+            emailed = True
+        except Exception as e:
+            # type+code, НЕ str(e): SMTPRecipientsRefused тащит dict получателей (PII)
+            log.error("redeem key email failed for tenant %s: %s code=%s",
+                      tenant_id, type(e).__name__, getattr(e, "smtp_code", None))
     _event("code_activated", tenant_id, f'{rec["tier"]} · {code}')
-    return JSONResponse({"ok": True, "tier": rec["tier"], "token": token, "licenseKey": lic},
-                        headers=_NOCACHE)
+    return JSONResponse({"ok": True, "tier": rec["tier"], "token": token, "licenseKey": lic,
+                         "emailed": emailed}, headers=_NOCACHE)
 
 
 # --- v0.37.0: реферальная система (SPEC-referral.md) -------------------------
