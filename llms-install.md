@@ -173,6 +173,8 @@ When the user asks to remove MaxGraph — full cleanup, no leftovers:
    **Memory data is kept by default — ask the user FIRST:** the knowledge graph,
    license and tokens live in `./data`; deletion is irreversible. Wipe only after
    an explicit "yes" (or pass `--wipe-data` when the user already said it).
+   Tell the user: the trial is anchored to this machine (hardware fingerprint) —
+   wiping data does NOT restart it; a paid license is restored by email.
 2. **Remove the MCP entry** (`maxgraph`) from every client config you touched in
    step 4 (Claude plugin users: `claude plugin remove maxgraph@maxgraph`).
 3. **Remove the rules block** between `<!-- maxgraph:start -->` and
@@ -186,7 +188,7 @@ When the user asks to remove MaxGraph — full cleanup, no leftovers:
    install folder**.
 
 Install folder already deleted? Then: `docker rm -f maxgraph maxgraph-updater`
-(plus `docker volume ls -q --filter name=updater-state | xargs -r docker volume rm`
+(plus `docker volume ls -q | grep -E '(^|_)updater-state$' | xargs -r docker volume rm`
 and `docker rmi` of the built images when the data must go too), then steps 2–4
 by hand. Docker Desktop / Rancher themselves stay installed — other apps may use
 them.

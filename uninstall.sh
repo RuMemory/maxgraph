@@ -49,8 +49,12 @@ OS="$(uname -s)"
 if [ "$WIPE" = 0 ] && [ "$YES" = 0 ]; then
   consent "Delete the MaxGraph MEMORY data too (./data: knowledge graph, license, token — IRREVERSIBLE; default: KEEP)?" && WIPE=1
 fi
-[ "$WIPE" = 1 ] && log "Data will be WIPED (./data + updater backups)." \
-                || log "Data is kept (./data + updater backups)."
+if [ "$WIPE" = 1 ]; then
+  log "Data will be WIPED (./data + updater backups)."
+  log "Note: the trial stays anchored to this machine (hardware fingerprint) — wiping data does NOT restart it; a paid license is restored by email."
+else
+  log "Data is kept (./data + updater backups)."
+fi
 
 # --- docker side --------------------------------------------------------------
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then

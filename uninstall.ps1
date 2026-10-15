@@ -79,7 +79,9 @@ function Remove-Tree([string]$literalPath) {
 if (-not $WipeData -and -not $Yes) {
   if (Consent 'Delete the MaxGraph MEMORY data too (.\data: knowledge graph, license, token — IRREVERSIBLE; default: KEEP)?') { $WipeData = [switch]::Present }
 }
-if ($WipeData) { Log 'Data will be WIPED (.\data + updater backups).' } else { Log 'Data is kept (.\data + updater backups).' }
+if ($WipeData) { Log 'Data will be WIPED (.\data + updater backups).'
+                 Log 'Note: the trial stays anchored to this machine (hardware fingerprint) — wiping data does NOT restart it; a paid license is restored by email.' }
+else { Log 'Data is kept (.\data + updater backups).' }
 
 # --- docker side ---------------------------------------------------------------
 $dockerOk = $false

@@ -171,6 +171,53 @@ curl -H "Authorization: Bearer $T" http://localhost:8787/api/export > backup.jso
       Authorization: Bearer <MEMORY_TOKEN>
 ```
 
+**Cursor** — файл `~/.cursor/mcp.json` (глобально) или `.cursor/mcp.json` в папке проекта:
+
+```json
+{
+  "mcpServers": {
+    "maxgraph": {
+      "url": "http://localhost:8787/mcp",
+      "headers": { "Authorization": "Bearer <MEMORY_TOKEN>" }
+    }
+  }
+}
+```
+
+**Cline** (VS Code) — панель Cline → иконка MCP Servers → Configure → Configure MCP Servers,
+или напрямую файл `~/.cline/data/settings/cline_mcp_settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "maxgraph": {
+      "type": "streamableHttp",
+      "url": "http://localhost:8787/mcp",
+      "headers": { "Authorization": "Bearer <MEMORY_TOKEN>" }
+    }
+  }
+}
+```
+
+Поле `"type": "streamableHttp"` обязательно — без него Cline молча уходит в legacy-режим, с которым MaxGraph не работает.
+
+**Windsurf / Devin Desktop** — файл `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "maxgraph": {
+      "serverUrl": "http://localhost:8787/mcp",
+      "headers": { "Authorization": "Bearer <MEMORY_TOKEN>" }
+    }
+  }
+}
+```
+
+**ChatGPT** — два пути, обоим нужен публичный HTTPS до твоего инстанса (проще всего — Tailscale Funnel): свой GPT с действиями (пошагово — [GPTS.md](GPTS.md)) или chatgpt.com → Plugins → «Add custom MCP server» с тем же HTTPS-URL.
+
+`<MEMORY_TOKEN>` — токен из шага 2 (лежит и в `data/local_token.txt` после первого запуска). После записи конфига — полностью перезапусти хост (не закрыть окно, а выйти) и начни новую сессию.
+
 Перезапусти клиент — у агента появятся инструменты памяти: `create_entities`, `add_observations`, `search_nodes`, `read_graph` и другие (связи, обновления, таймлайн).
 
 ---
