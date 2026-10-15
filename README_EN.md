@@ -4,7 +4,7 @@
 
 🇷🇺 [Русская версия](README.md) · English
 
-![license](https://img.shields.io/badge/license-BSL--1.1-orange) ![docker](https://img.shields.io/badge/docker-ready-38d39f) ![MCP](https://img.shields.io/badge/MCP-streamable--http-ff5bd8)
+![license](https://img.shields.io/badge/license-BSL--1.1-orange) ![docker](https://img.shields.io/badge/docker-ready-38d39f) ![MCP](https://img.shields.io/badge/MCP-streamable--http-ff5bd8) [![MaxGraph on AI Agents Listing](https://aiagentslisting.com/maxgraph/badge.svg?claim=0128507fb17c64bdcb4cc6873e9c029f)](https://aiagentslisting.com/mcp/maxgraph)
 
 ## Stop explaining everything to your AI from scratch
 
