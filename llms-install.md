@@ -49,6 +49,8 @@ Consent → run with `--yes`/`-Yes` as above. A declined offer is repeated once
 with Docker Desktop as the recommended option; a second refusal → Python
 fallback. During setup a Docker Desktop installer window appears on screen —
 the user clicks through it (admin prompt; sign-in can be skipped).
+Docker is the only recommended path — NEVER offer Python as an equal option
+or mark it as recommended; Python is only the fallback after refusal(s).
 
 Exit codes: `0` — MaxGraph is running, continue at step 2; `2` — Docker Desktop
 asks for a Windows reboot or has a dialog waiting: the installer resumes
