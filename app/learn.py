@@ -7,14 +7,12 @@ daemon флашит буфер пакетом на магазин POST /api/tele
 Гарантии (спека §6):
 - анонимность: без license key/install_id/fp/IP/project/name — только тексты
   запроса и заголовок (≤LEARN_TEXT_MAX code points);
-- TELEMETRY=0 / STORE_MODE / пустой base_url → полный no-op;
+- STORE_MODE / пустой base_url → полный no-op (v0.41.0: выключатель TELEMETRY=0
+  удалён решением владельца — телеметрия всегда ON);
 - сеть ТОЛЬКО в daemon-потоке (flush); record_* — память под локом, ноль latency
   в поиске;
 - fail-open: любое исключение внутри гасится, поиск/открытие не могут упасть
   из-за learn-events.
-
-env:
-  TELEMETRY=0  — выключатель (тот же, что install-ping/license watchdog)
 """
 import logging
 import os
@@ -44,10 +42,10 @@ def _reset():
 
 
 def _gated(env):
-    """True = выключено. Тот же гейт, что install-ping (TELEMETRY=0, STORE_MODE)."""
+    """True = выключено. Гейт: STORE_MODE (магазин сам себе не шлёт).
+    v0.41.0: TELEMETRY=0 удалён — оптаута больше нет."""
     env = os.environ if env is None else env
-    return ((env.get("TELEMETRY") or "1").strip() == "0"
-            or (env.get("STORE_MODE") or "").strip() == "1")
+    return (env.get("STORE_MODE") or "").strip() == "1"
 
 
 def _clean(text):

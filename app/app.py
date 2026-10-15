@@ -23,12 +23,12 @@ Env:
                   эндпоинтов вне публичных — полный список в TokenAuth.PUBLIC_PATHS;
                   аутентификации по query нет (удалена в v0.11).
                   Не задан → автогенерация mg_local_* в <data>/local_token.txt (v0.14)
-  TELEMETRY     — TELEMETRY=0 отключает анонимный install-ping (v0.14):
-                  один POST {install_id, version, fp?} на магазин при старте.
-                  fp (v0.16.3) — sha256-хеш machine fingerprint; магазин отвечает
-                  якорем начала триала → снос data/ не сбрасывает 7 дней.
-                  Тот же выключатель гасит learn-events (v0.26.0): анонимный
-                  пакет «запрос → открытый заголовок» раз в 5 мин (W2)
+  Телеметрия (всегда ON, v0.41.0: выключатель TELEMETRY=0 удалён решением владельца):
+                  анонимный install-ping (v0.14) — один POST {install_id, version, fp?}
+                  на магазин при старте. fp (v0.16.3) — sha256-хеш machine fingerprint;
+                  магазин отвечает якорем начала триала → снос data/ не сбрасывает 7 дней.
+                  Сюда же learn-events (v0.26.0): анонимный пакет
+                  «запрос → открытый заголовок» раз в 5 мин (W2)
   INSTALL_FLAVOR — метка способа установки (docker|rancher|python) в install-ping;
                   ставится установщиком (install.sh/install.ps1), пусто →
                   autodetect по маркеру контейнера /.dockerenv (v0.39.0)
@@ -2494,8 +2494,10 @@ _DASH_LOCAL = Path(__file__).with_name("dashboard.html")
 _DASH_DATA = DATA_DIR / "dashboard.html"  # hot-override без пересборки образа
 _PAGES = {"dashboard.html": _DASH_DATA, "landing.html": DATA_DIR / "landing.html",
           "cabinet.html": DATA_DIR / "cabinet.html", "billing.html": DATA_DIR / "billing.html",
-          "admin.html": DATA_DIR / "admin.html",
-          "privacy.html": DATA_DIR / "privacy.html", "offer.html": DATA_DIR / "offer.html"}  # admin: DATA_DIR — hot-override (v0.18.0)
+          "privacy.html": DATA_DIR / "privacy.html", "offer.html": DATA_DIR / "offer.html"}
+# admin.html нет в _PAGES с v0.41.0: страница версионируется в репо (была
+# hot-override-only, master/прод разошлись). DATA_DIR/admin.html на сервере
+# НЕ должен шэдоуить репозиторную — иначе деплой отдаёт старый JS под новый API.
 
 
 def _page_html(name: str) -> str:
@@ -2610,16 +2612,13 @@ async def api_timeline(request: Request):
 
 def _embed_detail():
     """v0.40.0: деталь семантики для дашборда — источник (env=свой endpoint,
-    relay=облако магазина) или причина «выкл». telemetry_off гасит ТОЛЬКО
-    триал-грант: с license key relay живёт и при TELEMETRY=0."""
+    relay=облако магазина) или причина «выкл». v0.41.0: причина telemetry_off
+    удалена — выключателя TELEMETRY=0 больше нет."""
     src = reason = None
     if EMBED_ON:
         src = "env" if (os.environ.get("EMBED_URL") or "").strip() else "relay"
     elif READONLY:
         reason = "readonly"
-    elif (os.environ.get("TELEMETRY") or "1").strip() == "0" \
-            and not licensing.current_key(DATA_DIR, LICENSE_SECRET):
-        reason = "telemetry_off"
     else:
         reason = "no_config"
     return {"on": EMBED_ON, "source": src, "reason": reason}
@@ -3351,13 +3350,13 @@ def _get_json(url: str, timeout: int = 5):
 
 def _telemetry_ping(post=None, env=None, data_dir=None):
     """Анонимный install-ping на магазин: install_id + версия + install_flavor
-    (v0.39.0) + fp (sha256-хеш машины, v0.16.3). TELEMETRY=0 отключает.
-    Магазин отвечает якорем начала триала: started_at РАНЬШЕ локального
-    first_seen → отматываем триал на якорь
+    (v0.39.0) + fp (sha256-хеш машины, v0.16.3). Всегда ON (v0.41.0: выключатель
+    TELEMETRY=0 удалён решением владельца). Магазин отвечает якорем начала триала:
+    started_at РАНЬШЕ локального first_seen → отматываем триал на якорь
     (снос data/ не даёт новые 7 дней); позже/битый ответ — игнор. Best-effort:
     оффлайн/таймаут — молча пропускаем, старт сервера не блокируем (fail-open)."""
     env = env if env is not None else os.environ
-    if STORE_MODE or (env.get("TELEMETRY") or "1").strip() == "0":
+    if STORE_MODE:
         return
     payload = {"install_id": _install_id(data_dir), "version": VERSION,
                # v0.39.0: способ установки (доля python-фолбэков). INSTALL_FLAVOR
@@ -3395,8 +3394,7 @@ def _relay_config_pull(env=None):
 
     v0.28.0: нет ключа, но жив триал — триальный грант {install_id, fp}:
     магазин принимает только известную по install-ping пару с неистёкшим
-    серверным якорем триала. TELEMETRY=0: ping не ходит → fp магазину неизвестен
-    → грант не выдадут (осознанный офлайн = чистый FTS, как и раньше).
+    серверным якорем триала.
 
     Fail-open, как весь watchdog. Провайдера, заданного явно в env (EMBED_URL),
     не трогаем — свой endpoint осознанный opt-in и важнее relay.
@@ -3410,9 +3408,6 @@ def _relay_config_pull(env=None):
         if key:
             payload = {"key": key}
         else:
-            if (env.get("TELEMETRY") or "1").strip() == "0":
-                return  # осознанный офлайн: триальный грант требует install-ping
-                        # (opt-in) — при TELEMETRY=0 install_id/fp не отправляем
             if licensing.status(DATA_DIR, LICENSE_SECRET).get("state") != "trial":
                 return  # expired — без relay (запись и так заблокирована)
             fp = licensing.machine_fingerprint()
@@ -3453,15 +3448,12 @@ def _relay_config_pull(env=None):
         log.warning("relay: конфиг не получен: %r", e)
 
 
-def _watchdog_iteration(env, telemetry):
+def _watchdog_iteration(env):
     """Один прогон watchdog (v0.27.0: вынесен из цикла для тестов и decouple).
 
-    telemetry=False (TELEMETRY=0): отправка загейчена (license-ревалидация и
-    апдейт-чип молчат), но конфиги ПРОДОЛЖАЮТ приезжать — relay-pull это
-    доставка, а не телеметрия (промис программы, SPEC-rank-config R7)."""
-    if not telemetry:
-        _relay_config_pull(env)
-        return
+    v0.41.0: телеметрия всегда ON (выключатель TELEMETRY=0 удалён) — параметр
+    telemetry упразднён; отправка (ревалидация, апдейт-чип) и доставка
+    relay-конфигов работают всегда."""
     # v0.18.2: апдейт-чип — узнаём свежую версию даже без ключа (триал тоже обновляется)
     try:
         v = _get_json(PUBLIC_BASE_URL + "/api/version", timeout=8)
@@ -3502,17 +3494,16 @@ def _license_watchdog(env=None):
     Магазин сказал «revoked» → licensing.set_revoked(revoked_at сервера) → grace
     72ч на запись, потом expired; «ok» после unrevoke → отметка снимается.
     Строго fail-open: нет сети/ключа/PUBLIC_BASE_URL, STORE_MODE — спим дальше,
-    лицензию не трогаем. TELEMETRY=0: отправка загейчена, но relay-конфиги
-    продолжают приезжать (v0.27.0). Пульс пишем только на переходах.
+    лицензию не трогаем. Пульс пишем только на переходах.
+    v0.41.0: телеметрия всегда ON — выключатель TELEMETRY=0 удалён.
     """
     env = env if env is not None else os.environ
     if STORE_MODE:
         return
-    telemetry = (env.get("TELEMETRY") or "1").strip() != "0"
     time.sleep(300)  # первый прогон через 5 минут после старта
     while True:
         try:
-            _watchdog_iteration(env, telemetry)
+            _watchdog_iteration(env)
         except Exception:
             log.exception("license watchdog: сбой прогона — fail-open, продолжаем")
         time.sleep(86400)
@@ -3751,8 +3742,9 @@ async def cabinet_page(request: Request):
 @mcp.custom_route("/admin", methods=["GET"])
 async def admin_page(request: Request):
     """Кабинет владельца магазина: статистика, ключи, учёт. ТОЛЬКО на инстансе магазина
-    (STORE_MODE=1). С v0.18.0 страница в репо (app/admin.html), DATA_DIR/admin.html —
-    hot-override без пересборки. Self-hosted инстансы → 404.
+    (STORE_MODE=1). Страница — из репо (app/admin.html); с v0.41.0 admin.html
+    версионируется, DATA_DIR-оверрайд убран (шэдоуил новую версию на проде).
+    Self-hosted инстансы → 404.
     Оболочка публичная (gate-форма токена), данные — /api/* по Bearer."""
     if not STORE_MODE:
         return PlainTextResponse("Not Found", status_code=404)
@@ -3873,7 +3865,8 @@ async def api_codes_list(request: Request):
 
 @mcp.custom_route("/api/telemetry/install", methods=["POST"])
 async def api_telemetry_install(request: Request):
-    """Анонимный install-ping self-hosted копий (v0.14; opt-out TELEMETRY=0).
+    """Анонимный install-ping self-hosted копий (v0.14; v0.41.0 — всегда ON,
+    оптаута TELEMETRY=0 больше нет).
     install_id + версия + install_flavor (v0.39.0) + опциональный fp (sha256-хеш
     машины, v0.16.3) — ни email, ни контента памяти, ни IP-логирования.
     По fp ведём реестр начала триалов (trials в installs.json) и отвечаем якорем
@@ -4000,9 +3993,9 @@ def _learn_prune(now):
 
 @mcp.custom_route("/api/telemetry/learn", methods=["POST"])
 async def api_telemetry_learn(request: Request):
-    """Анонимные learn-events «запрос → открытый заголовок» (W2, opt-out
-    TELEMETRY=0 на клиенте). Без license key/install_id/fp/IP — только тексты
-    запроса (≤200) и заголовок (≤200) + счётчик. ts ставит СЕРВЕР (часам
+    """Анонимные learn-events «запрос → открытый заголовок» (W2; v0.41.0 — без
+    оптаута, телеметрия всегда ON). Без license key/install_id/fp/IP — только
+    тексты запроса (≤200) и заголовок (≤200) + счётчик. ts ставит СЕРВЕР (часам
     клиента не верим). Хранение: learn_events.jsonl, retention 90 дней.
     Пер-событийная валидация: битое событие пропускаем, весь пакет битый → 400."""
     ip = _client_ip(request)
@@ -4110,6 +4103,12 @@ def _rank_config_compute(now):
         vmtime = 0.0
     version = int(max(mtime, vmtime) * 1000)  # мс-разрешение: вето в ту же
                                               # секунду всё равно бампит версию
+    # монотонность: mtime квантуется (NTFS ~15.6мс) — вето в пределах кванта
+    # давало ТУ ЖЕ версию, клиент отклонял пересчёт как «старый»
+    # (флаки test_version_bumps_on_veto на быстрых машинах)
+    prev = _rank_cache["cfg"].get("version") or 0
+    if version <= prev:
+        version = prev + 1
     stats = {}  # (qs, ts) -> {count, days:set, surf_q:Counter, surf_t:Counter}
     try:
         lines = LEARN_EVENTS_FILE.read_text(encoding="utf-8").splitlines()
@@ -4260,16 +4259,69 @@ async def api_admin_synonyms_veto(request: Request):
 
 @mcp.custom_route("/api/installs", methods=["GET"])
 async def api_installs_list(request: Request):
-    """Установки для админки: id, версия, first/last_seen, число стартов (свежие первыми)."""
+    """Машины для админки (v0.41.0, заменило плоский список установок):
+    группировка installs по fp + trials-реестр (якорь, reinstalls) + джойн
+    лицензий (machines.json key_hash → tenants/payments → email/tier/key).
+    Установки без fp — отдельная группа unknown_installs (машина неизвестна).
+    Битые побочные реестры (machines/codes) не роняют выдачу — джойн best-effort."""
     g = _store_gate()
     if g:
         return g
     if not _admin_auth(request):
         return _admin_401()
     data = _load_installs() or {"installs": {}}  # битый файл → пустой список, не 500
-    rows = sorted(data["installs"].items(),
-                  key=lambda kv: kv[1].get("last_seen", 0), reverse=True)
-    return JSONResponse({"installs": [{"install_id": k, **v} for k, v in rows[:500]]},
+    installs = data["installs"]
+    trials = data.get("trials") or {}
+    fp2kh = {}
+    try:  # fp → key_hash из machines.json (лицензионные привязки)
+        for kh, rec in (_load_machines().get("machines") or {}).items():
+            for fp in rec.get("fps") or []:
+                fp2kh[fp] = kh
+    except Exception:
+        pass  # битый machines.json — машины без лицензионного статуса
+    kh2lic = {}
+    try:  # key_hash → {email, tier, key, revoked}: tenants (активации), платежи — фолбэк
+        codes = _load_codes()
+        for p in codes.get("payments", []):
+            k = p.get("licenseKey")
+            if k:
+                kh2lic[_key_hash(k)] = {"email": p.get("email") or "",
+                                        "tier": p.get("plan") or "", "key": k,
+                                        "revoked": bool(_is_revoked(codes, k))}
+        for tn in codes.get("tenants", []):  # перезаписывают платёж: активация точнее
+            k = tn.get("licenseKey")
+            if k:
+                kh2lic[_key_hash(k)] = {"email": tn.get("email") or "",
+                                        "tier": tn.get("tier") or "", "key": k,
+                                        "revoked": bool(_is_revoked(codes, k))}
+    except Exception:
+        pass
+    by_fp = {}
+    unknown = []
+    for iid, rec in installs.items():
+        fp = rec.get("fp")
+        if fp:
+            by_fp.setdefault(fp, []).append({"install_id": iid, **rec})
+        else:
+            unknown.append({"install_id": iid, **rec})
+    machines = []
+    for fp in set(by_fp) | set(trials) | set(fp2kh):
+        t = trials.get(fp) or {}
+        all_rows = by_fp.get(fp, [])
+        last = max([r.get("last_seen", 0) for r in all_rows] or [0])
+        rows = sorted(all_rows,
+                      key=lambda r: r.get("last_seen", 0), reverse=True)[:50]  # кап на машину
+        machines.append({"fp": fp,
+                         "started_at": t.get("started_at"),
+                         "reinstalls": _safe_int(t.get("reinstalls")),
+                         "installs": rows,
+                         "license": kh2lic.get(fp2kh.get(fp) or ""),
+                         "last_seen": last})
+    machines.sort(key=lambda m: m["last_seen"], reverse=True)
+    unknown.sort(key=lambda r: r.get("last_seen", 0), reverse=True)
+    return JSONResponse({"machines": machines[:500],
+                         "unknown_installs": unknown[:500],
+                         "kpi": {"machines": len(machines), "installs": len(installs)}},
                         headers=_NOCACHE)
 
 
