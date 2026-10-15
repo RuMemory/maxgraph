@@ -147,6 +147,43 @@ Client-specific locations:
 Besides Docker containers and `data/`: a Rancher Desktop defaults profile (moby engine,
 Kubernetes off) at `HKLM\SOFTWARE\Policies\Rancher Desktop\Defaults` (Windows) or
 `~/Library/Preferences/io.rancherdesktop.profile.defaults.plist` (macOS), and
-`install.log` / `install-state.json` in the repo folder. Remove those when uninstalling.
+`install.log` / `install-state.json` in the repo folder. The uninstaller (next section) removes them.
 Note (Windows): the post-reboot auto-resume lives in HKLM RunOnce — it fires at the
 first logon of ANY user; if someone else logs in first, re-run `install.ps1` manually.
+
+## Uninstall
+
+When the user asks to remove MaxGraph — full cleanup, no leftovers:
+
+1. **Run the uninstaller** from the install folder — it removes the containers and
+   images (`maxgraph`, `maxgraph-updater`), the Rancher defaults profile, the Windows
+   RunOnce resume key and `~/.maxgraph` (session-hook spool):
+   - macOS/Linux: `bash uninstall.sh`
+   - Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1`
+
+   Flags: `--dry-run` shows what would be removed without touching anything;
+   `--yes` answers the prompts for the user (you already asked them in chat);
+   `--wipe-data` also deletes `./data` and the updater's backup volume.
+   **Memory data is kept by default — ask the user FIRST:** the knowledge graph,
+   license and tokens live in `./data`; deletion is irreversible. Wipe only after
+   an explicit "yes" (or pass `--wipe-data` when the user already said it).
+2. **Remove the MCP entry** (`maxgraph`) from every client config you touched in
+   step 4 (Claude plugin users: `claude plugin remove maxgraph@maxgraph`).
+3. **Remove the rules block** between `<!-- maxgraph:start -->` and
+   `<!-- maxgraph:end -->` from the project's `AGENTS.md`. In the agent's GLOBAL
+   rules file: show the user any maxgraph lines you find and remove only
+   install-made blocks after their explicit "yes".
+4. **Data kept (default)?** Move `./data` out of the install folder BEFORE
+   deleting it (or delete everything except `data/`) — the folder removal must
+   not take the memory with it. Deleting `data/` is allowed only after the
+   user's explicit wipe decision. Then confirm with the user and **delete the
+   install folder**.
+
+Install folder already deleted? Then: `docker rm -f maxgraph maxgraph-updater`
+(plus `docker volume ls -q --filter name=updater-state | xargs -r docker volume rm`
+and `docker rmi` of the built images when the data must go too), then steps 2–4
+by hand. Docker/Rancher themselves stay installed — other apps may use them.
+Leftovers the uninstaller deliberately leaves: on Linux the user stays in the
+`docker` group (root-equivalent; remove it by hand if MaxGraph was the only
+reason: `sudo gpasswd -d <user> docker`), on Windows the WSL2 features stay
+enabled.

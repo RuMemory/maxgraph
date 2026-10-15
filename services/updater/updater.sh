@@ -6,8 +6,8 @@
 #
 # Цикл: раз в CHECK_INTERVAL секунд спрашивает у магазина $STORE_URL/api/version.
 # Если версия новее текущей и AUTO_UPDATE=1:
-#   1) скачать tarball релиза + sha256 + sig с магазина (репо приватный —
-#      канал только магазин), кап 256 МБ ДО verify (pkeyutl -rawin читает в RAM);
+#   1) скачать tarball релиза + sha256 + sig с магазина, кап 256 МБ ДО verify
+#      (pkeyutl -rawin читает в RAM);
 #   2) сверить sha256 и ed25519-подпись (trust anchor — вшитый в образ pubkey);
 #   3) проверить пути и ТИПЫ entries архива (только файлы/каталоги, без
 #      symlink/hardlink/device и абсолютных/.. путей);
@@ -19,16 +19,13 @@
 #      возвращается, данные — из бэкапа);
 #   8) при успехе — self-update updater'а через одноразовый helper-контейнер
 #      (recreate изнутри собственного контейнера мёртв: stop убивает PID-
-#      namespace вместе с нашим CLI — ревью N1, доказано E2E на проде).
+#      namespace вместе с нашим CLI).
 # Итог пишется в /state/update_state.json (named volume updater-state).
 #
-# Безопасность (принятая модель доверия, решение владельца): tarball доверен
-# ровно настолько, насколько TLS до магазина + подпись ed25519 (ключ подписи —
-# только на сервере). Docker socket = контроль над Docker хоста (как
-# watchtower) — поэтому отключение предусмотрено: AUTO_UPDATE=0 в .env.
-# Trust anchor: pubkey вшит в образ при установке, НО self-update берёт новый
-# pubkey из подписанного tarball'а — это осознанная ротация ключа (и цена:
-# компрометация ключа подписи навсегда захватывает канал обновлений).
+# Безопасность: tarball доверен ровно настолько, насколько TLS до магазина +
+# подпись ed25519. Docker socket = контроль над Docker хоста (как watchtower) —
+# отключение: AUTO_UPDATE=0 в .env. Self-update берёт новый pubkey из
+# подписанного tarball'а (ротация через подписанный канал).
 umask 077
 set -u
 
@@ -463,7 +460,7 @@ while :; do
     waited=0
     while [ "$waited" -lt "$CHECK_INTERVAL" ]; do
         if take_trigger; then
-            case "$STORE_URL" in  # FORCE не отменяет https-гард (security-ревью 0.35.0)
+            case "$STORE_URL" in  # FORCE не отменяет https-гард
                 https://*) FORCE=1; log "триггер из дашборда — проверяю сейчас" ;;
                 *) log "триггер из дашборда отклонён: STORE_URL не https" ;;
             esac

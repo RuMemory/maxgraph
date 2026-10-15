@@ -206,11 +206,11 @@ EMBED_STATE_FILE = DATA_DIR / "embed.state.json"   # В2.2: дневной ка�
 ACCESS_FILE = DATA_DIR / "access.json"  # В2.3: ACT-R счётчики обращений {name: {"n","t"}}
 LICENSE_SECRET = licensing.get_secret(DATA_DIR)  # env LICENSE_HMAC_SECRET или DATA_DIR/.hmac_key
 LICENSE_SUB_DAYS = 31  # легаси-fallback (digiseller без суммы); реальный срок = PLANS[plan]["days"]
-EXTEND_DISCOUNT = 0.9  # продление −10% (решение владельца 2026-10-13) — применяется серверно в /api/billing/pay
+EXTEND_DISCOUNT = 0.9  # продление −10% — применяется серверно в /api/billing/pay
 # --- v0.37.0: реферальная система (SPEC-referral.md) ---
 # Секрет деривации реф-кодов (HMAC от install_id). Прод — строго env; дефолт — только
 # для тестов/dev (compose подставляет пустую строку → `or`, не get(default)).
-REF_HMAC_SECRET = os.environ.get("REF_HMAC_SECRET") or "dev-only-ref-secret"  # dev-дефолт только для локалки
+REF_HMAC_SECRET = (os.environ.get("REF_HMAC_SECRET") or "").strip() or "dev-only-ref-secret"  # dev-дефолт только для локалки
 REF_DISCOUNT = 0.8   # −20% приглашённому на первый платёж тарифа (только Platega-контур)
 REF_STACK_CAP = 4    # +10 п.п. за покупку приглашённого; кап 4 → продление до −50% (стек включает базу −10%)
 PORT = int(os.environ.get("PORT", "8787"))
@@ -221,10 +221,11 @@ EVENTS_CAP = 10000  # максимум строк в events.jsonl
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("maxgraph")
 
-# L7: на магазине без явного секрета коды вычислимы офлайн по install_id — орём при старте
-# (после log=…: warn до этого места = NameError при импорте, ре-ревизия N1)
+# На магазине без явного секрета коды вычислимы офлайн по install_id — не стартуем
+# (импортное время: raise до uvicorn.run, процесса не будет вовсе)
 if STORE_MODE and REF_HMAC_SECRET == "dev-only-ref-secret":
-    log.warning("REF_HMAC_SECRET не задан в .env — реф-коды вычислимы офлайн; задай секрет!")
+    # fail-fast: магазин с dev-дефолтом выдаёт офлайн-вычислимые реф-коды — не стартуем
+    raise SystemExit("REF_HMAC_SECRET не задан в .env — задай секрет (магазин без него не стартует)")
 
 _lock = threading.RLock()
 
@@ -312,7 +313,7 @@ def _shard_of_entity(e: dict) -> str:
 def _partition_shards(entities: dict, relations: list) -> dict:
     """→ {slug: текст шарда}; "" = плоский memory.json (пишется всегда — иначе
     опустевший граф не очистил бы файл). Связь — в шард проекта, только если ОБА
-    конца в нём; иначе плоская (правило «по концам», гриллинг владельца)."""
+    конца в нём; иначе плоская (правило «по концам»)."""
     buckets = {"": []}
     for e in entities.values():
         buckets.setdefault(_shard_of_entity(e), []).append({"type": "entity", **e})
@@ -3292,14 +3293,14 @@ def _rebind_ghost_licenses(ghosts) -> int:
         return 0
 
 
-# --- host-fp: реестр привязок license key → machine fingerprints (2 слота) ----
-# Платный ключ живёт максимум на 2 машинах (решение владельца, переноса нет —
-# отвязка только владельцем через /admin). Ключи храним как sha256 (как
+# --- host-fp: реестр привязок license key → machine fingerprints ----
+# Платный ключ привязан к одной машине; переноса нет — отвязка только
+# владельцем магазина через /admin. Ключи храним как sha256 (как
 # revoke-реестр), fp — sha256-хеши машин (сырое железо никогда не уходит).
 
 MACHINES_FILE = DATA_DIR / "machines.json"
 _machines_lock = threading.Lock()
-_MACHINES_MAX_FP = 1      # 1 ключ = 1 машина (решение владельца 2026-10-13, заменило «2 машины»)
+_MACHINES_MAX_FP = 1      # 1 ключ = 1 машина
 _MACHINES_CAP = 10000     # потолок ключей в реестре; вытеснение самых старых по updated
 
 
@@ -3355,7 +3356,7 @@ def _save_machines(data: dict):
 def _machine_bind(data: dict, key: str, fp: str, now: float) -> str:
     """Привязать fp к ключу (зовётся под _machines_lock) → "known"|"bound"|"limit".
     known — fp уже привязан; bound — свободный слот был, привязали; limit — слоты заняты.
-    Legacy (ключ без единой привязки) принимает первый fp — решение владельца №5."""
+    Legacy (ключ без единой привязки) принимает первый fp."""
     h = _key_hash(key)
     rec = data["machines"].get(h)
     if rec and fp in (rec.get("fps") or []):
@@ -3723,7 +3724,11 @@ async def landing(request: Request):
     # Магазин: лендинг строго на '/', отдельного /landing нет (магазин = лендинг + /admin).
     if STORE_MODE:
         return PlainTextResponse("Not Found", status_code=404)
-    return await _landing_page(request)
+    try:
+        return await _landing_page(request)
+    except FileNotFoundError:
+        # покупательская сборка без landing.html (витрина без лендинга, 2026-10-15)
+        return PlainTextResponse("Not Found", status_code=404)
 
 
 async def _landing_page(request: Request):
@@ -3818,9 +3823,8 @@ async def admin_page(request: Request):
     (STORE_MODE=1). Страница — из репо (app/admin.html); с v0.41.0 admin.html
     версионируется, DATA_DIR-оверрайд убран (шэдоуил новую версию на проде).
     Self-hosted инстансы → 404.
-    REA-аудит 2026-10-15 (баг admin-html-publicly-served): без валидной сессии
-    отдаётся минимальная gate-страница _ADMIN_GATE_HTML — полная админка (карта
-    admin-API, схемы, комментарии) больше не раздаётся анонимно."""
+    Без валидной сессии отдаётся минимальная gate-страница _ADMIN_GATE_HTML —
+    полная админка анонимно не раздаётся."""
     if not STORE_MODE:
         return PlainTextResponse("Not Found", status_code=404)
     if not _admin_auth(request):
@@ -3841,6 +3845,15 @@ _OG_FILE = Path(__file__).with_name("og.png")  # social-preview, копируе�
 
 _FONTS_DIR = Path(__file__).with_name("static") / "fonts"
 _FONT_RE = re.compile(r"[a-z0-9-]+\.woff2")
+
+
+@mcp.custom_route("/.well-known/security.txt", methods=["GET"])
+async def security_txt(request: Request):
+    """RFC 9116: точка контакта для security-репортов. Публичная, статичная."""
+    return PlainTextResponse("Contact: mailto:help@rezon-ai.ru\n"
+                             "Expires: 2027-12-31T23:59:59Z\n"
+                             "Preferred-Languages: ru, en\n",
+                             media_type="text/plain", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @mcp.custom_route("/static/fonts/{fname}", methods=["GET"])
@@ -4631,7 +4644,6 @@ async def api_codes_redeem(request: Request):
                                     status_code=409, headers=_NOCACHE)
             if not lic:
                 # ручной код (/api/codes/generate): лицензии нет — выпускаем бессрочную
-                # (v0.22.3; решение владельца — убить всегда можно через revoke)
                 lic = licensing.generate_key(LICENSE_SECRET, email or "buyer@unknown",
                                              rec["tier"], 0)
             rec["licenseKey"] = lic  # no-op, если лицензия уже была своя; бэкфилл из платежа
@@ -5326,21 +5338,16 @@ async def api_license_activate(request: Request):
 
 
 def _activate_key(key: str) -> dict:
-    """Активация — ТОЛЬКО онлайн-валидация на сервере магазина (verify-only,
-    решение владельца 2026-10-15, decision-licensing-verify-only).
+    """Активация — ТОЛЬКО онлайн-валидация на сервере магазина (verify-only).
 
-    До v0.42.0: сначала локальный приём своим секретом (licensing.activate) —
-    покупатель минтил ключ своим же data/.hmac_key и инстанс принимал без сети
-    (баг licensing-scheme-and-keygen-shipped). Локального приёма больше нет:
-    сминченный ключ умирает на verify_key магазина (bad signature). Ключи
-    магазина локально НЕ проверялись и раньше (чужой секрет, by design) —
-    для честных покупателей ничего не меняется: онлайн-активация обязательна
-    была и остаётся; после активации лицензия снова полностью офлайн
-    (license.json + watchdog раз в сутки, revoke → grace 72ч).
+    Локального приёма нет: без ok магазина ключ не активируется. Ключи магазина
+    локально не проверяются (чужой секрет, by design). После активации лицензия
+    полностью офлайн (license.json + watchdog раз в сутки, revoke → grace 72ч).
+    Блокирующий сетевой вызов — вызывать в thread.
 
-    host-fp: с ключом передаём fp машины (магазин: 2 слота на ключ). Ответ
-    403 machine_limit — НЕ «ключ невалиден» (решение владельца №6): локальный
-    state не трогаем, наружу отдаём machine_limit=True + понятный message.
+    host-fp: с ключом передаём fp машины (1 ключ = 1 машина). Ответ
+    403 machine_limit — НЕ «ключ невалиден»: локальный state не трогаем,
+    наружу отдаём machine_limit=True + понятный message.
     """
     if not PUBLIC_BASE_URL:
         return {"ok": False, "error": "активация требует связи с сервером магазина"}
@@ -5762,8 +5769,13 @@ async def api_admin_me(request: Request):
     if g:
         return g
     cfg = _admin_cfg()
-    return JSONResponse({"configured": cfg is None or bool(cfg.get("pass_hash")),
-                         "authed": _admin_auth(request)}, headers=_NOCACHE)
+    configured = cfg is None or bool(cfg.get("pass_hash"))
+    authed = _admin_auth(request)
+    if not authed and configured:
+        # без сессии не раскрываем даже факт настроенности (скрытие поверхности);
+        # первичная настройка (configured=false) отвечает — иначе enrollment не пройти
+        return PlainTextResponse("Not Found", status_code=404)
+    return JSONResponse({"configured": configured, "authed": authed}, headers=_NOCACHE)
 
 
 @mcp.custom_route("/api/admin/setup", methods=["POST"])
@@ -5976,8 +5988,8 @@ async def api_admin_machines(request: Request):
 
 @mcp.custom_route("/api/admin/machines/unbind", methods=["POST"])
 async def api_admin_machines_unbind(request: Request):
-    """Отвязка машины от ключа — ТОЛЬКО владельцем (переноса самообслуживанием нет,
-    решение владельца №4). {key, fp} → удалить fp из привязок ключа. Мутация
+    """Отвязка машины от ключа — ТОЛЬКО владельцем (переноса самообслуживанием
+    нет). {key, fp} → удалить fp из привязок ключа. Мутация
     только POST (SameSite=Lax кука на кросс-сайт POST fetch не едет — CSRF-паттерн
     как у /api/codes/export mark=1). Подпись ключа проверяем, как в revoke."""
     g = _store_gate()
@@ -6681,6 +6693,7 @@ class TokenAuth:
 
     PUBLIC_PATHS = {"/healthz", "/", "/admin", "/app", "/landing", "/og.png",
                     "/privacy", "/offer",  # правовые страницы лендинга
+                    "/.well-known/security.txt",  # RFC 9116: контакт для security-репортов
                     "/api/codes/redeem", "/api/codes/trial", "/api/plans",
                     "/api/billing/pay", "/api/billing/status", "/billing/result", "/billing/webhook/platega",
                     "/billing/create", "/billing/success", "/api/license/validate",

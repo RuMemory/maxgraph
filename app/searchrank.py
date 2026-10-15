@@ -175,27 +175,33 @@ def _idf(tok, df, n_docs):
     return math.log(1.0 + (n_docs - df.get(tok, 0) + 0.5) / (df.get(tok, 0) + 0.5))
 
 
-def _recency_bonus(updated_at):
-    """0.10 * exp(-age_days/30); битый/пустой updatedAt → 0 (штрафа нет)."""
+def _recency_bonus(updated_at, now=None):
+    """0.10 * exp(-age_days/30); битый/пустой updatedAt → 0 (штрафа нет).
+    now — фиксированное «сейчас» на весь вызов rank(): иначе каждая сущность
+    меряется по своему time.time() и равные по контенту скоры разъезжаются
+    на ~1e-13 — тай-брейк по имени переставал работать."""
     if not updated_at:
         return 0.0
+    if now is None:
+        now = time.time()
     try:
         dt = datetime.fromisoformat(str(updated_at))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        age_days = max(0.0, (time.time() - dt.timestamp()) / 86400.0)
+        age_days = max(0.0, (now - dt.timestamp()) / 86400.0)
     except (ValueError, OverflowError, OSError):
         return 0.0
     return RECENCY_MAX_BONUS * math.exp(-age_days / RECENCY_DECAY_DAYS)
 
 
-def score(query_tokens, entity, *, df=None, n_docs=0, avg_lens=None):
+def score(query_tokens, entity, *, df=None, n_docs=0, avg_lens=None, now=None):
     """BM25-подобный скор сущности: Σ по токенам запроса и полям
     idf·(tf·(k1+1)/(tf + k1·(1−b+b·len/avg)))·вес поля, плюс фразовый бонус
     (≥2 токена запроса целиком в поле, по стемам — один раз, по самому сильному
     полю), в конце — recency-множитель (≤+10%). Нет совпадений → 0.0.
     df/n_docs/avg_lens подаёт rank(); без них idf=1, нормировка по длине самого
-    поля (юнит-режим)."""
+    поля (юнит-режим). now — фиксированное время запроса для recency (rank()
+    передаёт одно на всех)."""
     toks = [t for t in query_tokens if t]
     if not toks:
         return 0.0
@@ -222,7 +228,7 @@ def score(query_tokens, entity, *, df=None, n_docs=0, avg_lens=None):
             if phrase in prep["padded"][fname]:
                 total += weight * avg_idf
                 break
-    return total * (1.0 + _recency_bonus(entity.get("updatedAt")))
+    return total * (1.0 + _recency_bonus(entity.get("updatedAt"), now))
 
 
 def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=None,
@@ -281,10 +287,11 @@ def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=N
             sums[f] += prep["lens"][f]
     avg = {f: (sums[f] / n) or 1.0 for f in FIELD_WEIGHTS}
     scored = []
+    now = time.time()  # единое «сейчас» для recency всех кандидатов запроса
     for e, prep in preps:
         if prep["stems"].isdisjoint(qset):
             continue
-        s = score(qts, e, df=df, n_docs=n, avg_lens=avg)
+        s = score(qts, e, df=df, n_docs=n, avg_lens=avg, now=now)
         if s > 0.0:
             scored.append((s, e))
     # python sort стабилен → многоуровневый ключ тремя проходами

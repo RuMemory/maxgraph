@@ -282,7 +282,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
 .buy-veil{position:fixed;inset:0;background:rgba(10,8,6,.6);z-index:90;display:none;align-items:center;justify-content:center;padding:16px;overflow-y:auto}
 .buy-veil.on{display:flex}
 /* margin:auto вместо align-items:center: карточка выше вьюпорта центрируется
-   И прокручивается целиком (голова не уходит за верх — ревизия P3) */
+   И прокручивается целиком (голова не уходит за верх) */
 .buy-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:22px 24px;width:390px;max-width:100%;margin:auto;box-shadow:0 24px 64px rgba(0,0,0,.55)}
 .buy-card h2{font-size:16px;font-weight:600;letter-spacing:-.02em}
 .buy-card .sub{font-size:12px;color:var(--ink-3);line-height:1.5;margin:4px 0 14px}
@@ -825,7 +825,7 @@ function buyShow(st){$('#buyChoose').style.display=st==='choose'?'':'none';$('#b
 async function buyOpen(){buyOpener=document.activeElement;$('#buyPop').classList.add('on');buyShow('choose');await loadPlans();$('#buyExtend').value=(licInfo&&licInfo.key)||'';$('#buyEmail').classList.remove('err');$('#buyEmail').removeAttribute('aria-invalid');renderPlans();updPayBtn();const f=document.querySelector('#buyPlans .plan-row.sel');if(f)f.focus();}
 function buyClose(){$('#buyPop').classList.remove('on');if(buyTimer){clearInterval(buyTimer);buyTimer=null;}if(buyOpener&&buyOpener.focus)buyOpener.focus();buyOpener=null;}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#buyPop').classList.contains('on'))buyClose();});
-// Focus trap: aria-modal диалог держит Tab внутри карточки (ревизия P3)
+// Focus trap: aria-modal диалог держит Tab внутри карточки
 document.addEventListener('keydown',e=>{
   if(e.key!=='Tab'||!$('#buyPop').classList.contains('on'))return;
   const els=[...$('#buyPop').querySelectorAll('button,[href],input,[tabindex]')]

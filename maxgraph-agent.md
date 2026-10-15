@@ -28,6 +28,21 @@ search_nodes по запросу.
 КОНЕЦ СЕССИИ: создай сущность session-YYYY-MM-DD с итогами разговора
 (entityType: "session") и свяжи её связью "discussed" с затронутыми сущностями.
 
+УДАЛЕНИЕ MAXGRAPH по просьбе пользователя — полный порядок, без хвостов:
+1) в папке установки запусти uninstall.sh (macOS/Linux) / uninstall.ps1 (Windows) —
+   снимает контейнеры/образы и служебные остатки; данные памяти (./data) по
+   умолчанию СОХРАНЯЮТСЯ, полное стирание — только после явного «да» пользователя
+   или с флагом --wipe-data;
+2) удали запись "maxgraph" из конфигов MCP-клиентов;
+3) удали этот блок (между <!-- maxgraph:start --> и <!-- maxgraph:end -->) из
+   AGENTS.md; в ГЛОБАЛЬНЫХ правилах агента — покажи пользователю найденные строки
+   про maxgraph и удаляй только установочные блоки после его явного «да»;
+4) если данные сохранялись — ПЕРЕНЕСИ ./data из папки установки до её удаления
+   (или удали всё, кроме data/): удаление папки не должно унести память.
+   Папку удаляй после подтверждения пользователя.
+Папка установки уже удалена? Тогда: docker rm -f maxgraph maxgraph-updater,
+потом шаги 2–4 вручную.
+
 Полный протокол: https://github.com/RuMemory/maxgraph/blob/master/docs/PROTOCOL.md
 ```
 
@@ -43,6 +58,20 @@ new durable fact about an existing entity → add_observations (one observation 
 dependencies → create_relations in active voice ("uses", "depends on", "configured by").
 Session end: create a session-YYYY-MM-DD entity with the outcomes, linked with "discussed"
 to every entity the conversation touched.
+
+UNINSTALL on the user's request — full cleanup, no leftovers:
+1) run uninstall.sh (macOS/Linux) / uninstall.ps1 (Windows) in the install folder —
+   removes containers/images and leftovers; memory data (./data) is KEPT by default,
+   wipe only after the user's explicit "yes" or with --wipe-data;
+2) remove the "maxgraph" entry from MCP client configs;
+3) remove this block (between <!-- maxgraph:start --> and <!-- maxgraph:end -->)
+   from AGENTS.md; in the agent's GLOBAL rules — show the user any maxgraph
+   lines found and remove only install-made blocks after their explicit "yes";
+4) if data was kept — MOVE ./data out of the install folder BEFORE deleting it
+   (or delete everything except data/): removing the folder must not take the
+   memory with it. Delete the folder after the user's confirmation.
+Install folder already gone? Then: docker rm -f maxgraph maxgraph-updater,
+then steps 2–4 by hand.
 
 Full protocol: https://github.com/RuMemory/maxgraph/blob/master/docs/PROTOCOL.md
 ```

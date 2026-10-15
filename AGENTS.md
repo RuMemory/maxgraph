@@ -40,6 +40,12 @@
 
 **EN — final step (mandatory):** Tell the user explicitly: "Restart the host (quit the IDE/CLI fully, not just close the window) and start a NEW session in the project folder" — the MCP connection and the `./AGENTS.md` rules are picked up only at session start. Without this the user keeps the old session and concludes memory doesn't work.
 
+## Удаление / Uninstall
+
+Пользователь просит удалить MaxGraph → полный порядок в `llms-install.md` (раздел «Uninstall»): запусти `uninstall.sh` / `uninstall.ps1` из папки установки (данные памяти по умолчанию СОХРАНЯЮТСЯ; стирание — только после явного согласия пользователя или с флагом `--wipe-data`), затем удали MCP-запись `maxgraph` из конфигов клиентов и блок `<!-- maxgraph:start -->…<!-- maxgraph:end -->` из AGENTS.md проекта (в глобальных правилах агента — покажи пользователю найденные строки, удаляй только установочные блоки после его «да»). Данные сохранялись → ПЕРЕНЕСИ `./data` из папки ДО её удаления. Папка уже удалена → `docker rm -f maxgraph maxgraph-updater` + остальные шаги вручную.
+
+**EN:** The user asks to remove MaxGraph → full procedure in `llms-install.md`, "Uninstall": run `uninstall.sh` / `uninstall.ps1` from the install folder (memory data is KEPT by default; wipe only after the user's explicit consent or with `--wipe-data`), then remove the `maxgraph` MCP entry from client configs and the `<!-- maxgraph:start -->…<!-- maxgraph:end -->` block from the project AGENTS.md (in the agent's global rules — show the user the lines found, remove only install-made blocks after their "yes"). Data kept → MOVE `./data` out of the folder BEFORE deleting it. Folder already deleted → `docker rm -f maxgraph maxgraph-updater` + the remaining steps by hand.
+
 ## О продукте
 
 Память полного сохранения контекста: MCP (streamable-http, stateless) + REST + дашборд в одном Docker-контейнере.
