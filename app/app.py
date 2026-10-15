@@ -2493,7 +2493,7 @@ def session_close(summary: str = "", done: list[str] | None = None,
 _DASH_LOCAL = Path(__file__).with_name("dashboard.html")
 _DASH_DATA = DATA_DIR / "dashboard.html"  # hot-override без пересборки образа
 _PAGES = {"dashboard.html": _DASH_DATA, "landing.html": DATA_DIR / "landing.html",
-          "cabinet.html": DATA_DIR / "cabinet.html", "billing.html": DATA_DIR / "billing.html",
+          "billing.html": DATA_DIR / "billing.html",
           "privacy.html": DATA_DIR / "privacy.html", "offer.html": DATA_DIR / "offer.html"}
 # admin.html нет в _PAGES с v0.41.0: страница версионируется в репо (была
 # hot-override-only, master/прод разошлись). DATA_DIR/admin.html на сервере
@@ -3608,45 +3608,14 @@ def _license_for_code(data: dict, code: str):
 # --- tenant-токены: в codes.json только sha256 ---
 
 def _token_hash(token: str) -> str:
-    """sha256 токена кабинета: файл хранит хеш, сам токен показывается клиенту один раз."""
+    """sha256 токена: файл хранит хеш, сам токен показывается клиенту один раз."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def verify_tenant(key: str):
-    """Тенант по токену кабинета (Bearer): sha256(key) == token_hash. Tenant dict или None.
-
-    Легаси-записи с plaintext-полем `token` — lazy-миграция: при первой успешной
-    верификации пишем token_hash и удаляем plaintext (перечитываем под _codes_lock,
-    чтобы не затереть конкурентную запись).
-    """
-    if not key:
-        return None
-    import secrets
-    data = _load_codes()
-    h = _token_hash(key)
-    t = next((x for x in data["tenants"] if x.get("token_hash") == h), None)
-    if t:
-        return t
-    kb = key.encode("utf-8", "ignore")
-    t = next((x for x in data["tenants"]
-              if secrets.compare_digest(str(x.get("token") or "").encode("utf-8", "ignore"), kb)), None)
-    if not t:
-        return None
-    with _codes_lock:
-        data = _load_codes()
-        t2 = next((x for x in data["tenants"] if x.get("id") == t.get("id")), None)
-        if t2 and not t2.get("token_hash") and t2.get("token") == key:
-            t2["token_hash"] = h
-            del t2["token"]
-            _save_codes(data)
-    return t
 
 
 def migrate_token_hashes() -> int:
     """Одноразовая миграция: легаси-тенанты с plaintext `token` → `token_hash` (№6).
 
-    Вызывается при старте сервера (plaintext известен из файла); страховка для
-    записей, всплывших позже — lazy-upgrade внутри verify_tenant. Возвращает число
+    Вызывается при старте сервера (plaintext известен из файла). Возвращает число
     мигрированных записей.
     """
     n = 0
@@ -3807,15 +3776,40 @@ async def dashboard_app(request: Request):
     return HTMLResponse(_page_html("dashboard.html"), headers=_NOCACHE_DASH)
 
 
-@mcp.custom_route("/cabinet", methods=["GET"])
-async def cabinet_page(request: Request):
-    # Кабинет покупателя ОТМЕНЁН (решение владельца 2026-10-11): mg_-ключ вводится
-    # локально в дашборде, магазин только verify. На STORE_MODE — 404 (как /app):
-    # данных покупателя на магазине в браузере быть не должно. У self-hosted
-    # инстансов страница остаётся (своя локальная копия).
-    if STORE_MODE:
-        return PlainTextResponse("Not Found", status_code=404)
-    return HTMLResponse(_page_html("cabinet.html"), headers=_NOCACHE)
+_ADMIN_GATE_HTML = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Вход</title>
+<style>body{font:14px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif;background:#f6f5f2;color:#17161a;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
+.card{background:#fff;border:1px solid #e3e1dc;border-radius:12px;padding:32px;width:min(360px,calc(100vw - 24px))}
+h1{font-size:17px;margin:0 0 4px}p{font-size:12px;color:#666;margin:0 0 16px}
+input{width:100%;box-sizing:border-box;padding:11px 12px;margin:0 0 12px;border:1px solid #d5d2cb;border-radius:8px;font:inherit}
+input:focus-visible{outline:2px solid #17161a;outline-offset:1px}
+button{width:100%;padding:12px;border:0;border-radius:8px;background:#17161a;color:#fff;font:inherit;cursor:pointer}
+button:hover{background:#2c2a31}
+button:focus-visible{outline:2px solid #17161a;outline-offset:2px}
+.err{color:#b3261e;font-size:12px;min-height:16px;margin:0 0 8px}</style></head>
+<body><form class="card" id="f"><h1>Вход</h1><p id="hint">Для владельца магазина.</p>
+<input id="u" autocomplete="username" placeholder="Логин" aria-label="Логин" required>
+<input id="p" type="password" autocomplete="current-password" placeholder="Пароль" aria-label="Пароль" required>
+<div id="setup" style="display:none">
+<input id="p2" type="password" autocomplete="new-password" placeholder="Пароль ещё раз" aria-label="Пароль ещё раз">
+<input id="mt" type="password" autocomplete="off" placeholder="Master-токен (один раз)" aria-label="Master-токен (один раз)">
+</div>
+<div class="err" id="e"></div><button id="btn">Войти</button></form>
+<script>
+var setup=false;
+fetch('/api/admin/me').then(function(r){return r.json()}).then(function(j){setup=!j.configured;
+ if(setup){document.getElementById('setup').style.display='';document.getElementById('hint').textContent='Первичная настройка.';document.getElementById('btn').textContent='Настроить';document.querySelector('h1').textContent='Настройка';}}).catch(function(){});
+document.getElementById('f').onsubmit=async function(ev){ev.preventDefault();
+ var u=document.getElementById('u').value.trim(),p=document.getElementById('p').value,e=document.getElementById('e');
+ e.textContent='';
+ if(setup){if(p!==document.getElementById('p2').value){e.textContent='пароли не совпадают';return;}
+  var mt=document.getElementById('mt').value.trim();if(!mt){e.textContent='нужен master-токен';return;}
+  var rs=await fetch('/api/admin/setup',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+mt},body:JSON.stringify({user:u,password:p})});
+  if(!rs.ok){e.textContent='ошибка настройки';return;}}
+ var r=await fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({user:u,password:p})});
+ if(!r.ok){e.textContent=r.status===429?'слишком много попыток — подожди 15 минут':'ошибка входа';return;}
+ location.reload();};
+</script></body></html>"""
 
 
 @mcp.custom_route("/admin", methods=["GET"])
@@ -3824,9 +3818,13 @@ async def admin_page(request: Request):
     (STORE_MODE=1). Страница — из репо (app/admin.html); с v0.41.0 admin.html
     версионируется, DATA_DIR-оверрайд убран (шэдоуил новую версию на проде).
     Self-hosted инстансы → 404.
-    Оболочка публичная (gate-форма токена), данные — /api/* по Bearer."""
+    REA-аудит 2026-10-15 (баг admin-html-publicly-served): без валидной сессии
+    отдаётся минимальная gate-страница _ADMIN_GATE_HTML — полная админка (карта
+    admin-API, схемы, комментарии) больше не раздаётся анонимно."""
     if not STORE_MODE:
         return PlainTextResponse("Not Found", status_code=404)
+    if not _admin_auth(request):
+        return HTMLResponse(_ADMIN_GATE_HTML, headers=_NOCACHE)
     return HTMLResponse(_page_html("admin.html"), headers=_NOCACHE)
 
 
@@ -4685,15 +4683,14 @@ async def api_codes_redeem(request: Request):
         return JSONResponse({"ok": True, "already": True, "sent": "email",
                              "message": "Новый ключ отправлен на email активации."}, headers=_NOCACHE)
     _event("code_activated", tenant_id, f'{rec["tier"]} · {code}')
-    return JSONResponse({"ok": True, "tier": rec["tier"], "token": token, "licenseKey": lic,
-                         "cabinet": f"/cabinet?key={token}"}, headers=_NOCACHE)
+    return JSONResponse({"ok": True, "tier": rec["tier"], "token": token, "licenseKey": lic},
+                        headers=_NOCACHE)
 
 
-# --- cloud trial (v0.8): email → кабинет, без оплаты. License key НЕ выдаётся ---
+# --- cloud trial (v0.8): email → trial-код. License key НЕ выдаётся ---
 # (self-hosted триал 7 дней — отдельно, см. licensing.py). Абьюз-лимиты:
-# 2/сутки с IP + глобальный потолок 500 trial-кодов. Email обязателен: кабинет
-# привязан к почте; повторная регистрация на тот же email → 409 (вход по
-# email-ссылке — после настройки SMTP-релея).
+# 2/сутки с IP + глобальный потолок 500 trial-кодов. Email обязателен;
+# повторная регистрация на тот же email → 409.
 _TRIAL_MAX_TOTAL = 500
 
 
@@ -4736,46 +4733,7 @@ async def api_codes_trial(request: Request):
                                 "createdAt": now_iso(), "code": code, "email": email})
         _save_codes(data)
     _event("trial_activated", tenant_id, f"{code} · {email}")
-    return JSONResponse({"ok": True, "code": code, "token": token,
-                         "cabinet": f"/cabinet?key={token}"}, headers=_NOCACHE)
-
-
-@mcp.custom_route("/api/cabinet", methods=["GET"])
-async def api_cabinet(request: Request):
-    ip = _client_ip(request)
-    if _rate_limited(ip, "cabinet", 30, 60):
-        return JSONResponse({"error": "too_many_attempts"}, status_code=429)
-    auth = request.headers.get("authorization", "")
-    key = auth.removeprefix("Bearer ").strip()[:128]  # ?key= удалён (v0.12.2): токен не должен жить в access-логах; кабинет шлёт Bearer (cabinet.html)
-    if not key:
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    tenant = verify_tenant(key)
-    if not tenant:
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    # Ленивый бэкфилл: кабинеты, активированные до привязки licenseKey к тенанту
-    # (digiseller-коды несли лицензию в записи кода, в тенант не копировалась)
-    if not tenant.get("licenseKey") and tenant.get("code"):
-        with _codes_lock:
-            data = _load_codes()
-            t = next((x for x in data["tenants"] if x.get("id") == tenant["id"]), None)
-            lic, rec = _license_for_code(data, tenant["code"])
-            if t is not None and lic:
-                t["licenseKey"] = lic
-                t.setdefault("paidAt", (rec or {}).get("activatedAt") or now_iso())
-                _save_codes(data)
-                tenant = t
-    paid_until = 0  # срок подписки: exp из license key (0 = нет/бессрочно)
-    if tenant.get("licenseKey"):
-        payload, _err = licensing.verify_key(LICENSE_SECRET, tenant["licenseKey"])
-        paid_until = int((payload or {}).get("exp") or 0)
-    return JSONResponse({"id": tenant["id"], "tier": tenant["tier"],
-                         "tierLabel": _TIERS.get(tenant["tier"], {}).get("label", tenant["tier"]),
-                         "createdAt": tenant["createdAt"], "code": tenant["code"],
-                         "email": tenant.get("email"),
-                         "paid": bool(tenant.get("licenseKey")),
-                         "licenseKey": tenant.get("licenseKey"),
-                         "paidAt": tenant.get("paidAt"),
-                         "paidUntil": paid_until}, headers=_NOCACHE)
+    return JSONResponse({"ok": True, "code": code, "token": token}, headers=_NOCACHE)
 
 
 # --- v0.37.0: реферальная система (SPEC-referral.md) -------------------------
@@ -5368,21 +5326,24 @@ async def api_license_activate(request: Request):
 
 
 def _activate_key(key: str) -> dict:
-    """Активация: локально, а если подпись чужая — онлайн-валидация на сервере магазина.
+    """Активация — ТОЛЬКО онлайн-валидация на сервере магазина (verify-only,
+    решение владельца 2026-10-15, decision-licensing-verify-only).
 
-    Ключи магазина подписаны серверным LICENSE_HMAC_SECRET — self-hosted установка
-    локально их не проверит (свой секрет). Тогда: POST {PUBLIC_BASE_URL}/api/license/validate
-    → сервер подтверждает → локальный grant. Блокирующий сетевой вызов — вызывать в thread.
+    До v0.42.0: сначала локальный приём своим секретом (licensing.activate) —
+    покупатель минтил ключ своим же data/.hmac_key и инстанс принимал без сети
+    (баг licensing-scheme-and-keygen-shipped). Локального приёма больше нет:
+    сминченный ключ умирает на verify_key магазина (bad signature). Ключи
+    магазина локально НЕ проверялись и раньше (чужой секрет, by design) —
+    для честных покупателей ничего не меняется: онлайн-активация обязательна
+    была и остаётся; после активации лицензия снова полностью офлайн
+    (license.json + watchdog раз в сутки, revoke → grace 72ч).
 
     host-fp: с ключом передаём fp машины (магазин: 2 слота на ключ). Ответ
     403 machine_limit — НЕ «ключ невалиден» (решение владельца №6): локальный
     state не трогаем, наружу отдаём machine_limit=True + понятный message.
     """
-    res = licensing.activate(DATA_DIR, LICENSE_SECRET, key)
-    if res.get("ok") or "signature" not in str(res.get("error", "")):
-        return res
     if not PUBLIC_BASE_URL:
-        return res
+        return {"ok": False, "error": "активация требует связи с сервером магазина"}
     payload = {"key": key}
     fp = licensing.machine_fingerprint()
     if fp:
@@ -5393,9 +5354,11 @@ def _activate_key(key: str) -> dict:
     except Exception as e:
         j = _http_error_json(e)  # штатный отказ с телом (403 machine_limit)
         if j is None:
-            return {"ok": False, "error": f"ключ магазина требует онлайн-активации, сервер недоступен: {e}"}
+            return {"ok": False, "error": f"сервер магазина недоступен — активация требует онлайн: {e}"}
     if not isinstance(j, dict):
         return {"ok": False, "error": "сервер магазина ответил не-JSON — активация отклонена"}
+    if j.get("revoked"):  # defense-in-depth: отсечь даже битый {ok:true, revoked:true} магазина
+        return {"ok": False, "error": "license revoked"}
     if not j.get("ok"):
         if j.get("error") == "machine_limit":
             return {"ok": False, "error": j.get("message") or _MACHINE_LIMIT_MSG,
@@ -6086,14 +6049,6 @@ async def billing_create(request: Request):
     email = _valid_email(body.get("email")) or ""
     if not plan_id:
         return JSONResponse({"error": "plan must be pro1|pro3|pro6|pro12|donate99|donate249|donate499"}, status_code=400)
-    # опциональная привязка к кабинету: key = токен кабинета (mg_…) → платёж за тенантом
-    tenant = None
-    key = str(body.get("key") or "")[:128]
-    if key:
-        tenant = verify_tenant(key)
-        if not tenant:
-            return JSONResponse({"error": "unknown cabinet key"}, status_code=403)
-        email = tenant.get("email") or email  # email кабинета авторитетнее
     if not email:
         return JSONResponse({"error": "valid email required"}, status_code=400)
     # v0.37.0: промокод рефералки (кука mg_ref → buybox шлёт body.ref) — −20% на
@@ -6126,8 +6081,6 @@ async def billing_create(request: Request):
         if ref_code:
             rec["ref_code"] = ref_code
             rec["amount"] = amount  # ожидание для сверки суммы в вебхуке
-        if tenant:
-            rec["tenant"] = tenant["id"]
         data["payments"].append(rec)
         _save_codes(data)
     _event("payment_created", ref, f"{plan_id} · {email}")
@@ -6162,7 +6115,7 @@ def _success_page(pid: str) -> str:
         body = f"""
 <h1>✨ Оплата прошла</h1>
 <p class="dim">Maxgraph {tier} — сохрани оба значения, они больше нигде не показываются разом:</p>
-<div class="lbl">Код кабинета</div><div class="code">{code}</div>
+<div class="lbl">Резервный код</div><div class="code">{code}</div>
 <div class="lbl">Ключ активации</div><div class="code small">{lic}</div>
 <p class="dim">Ключ → дашборд MaxGraph → статус лицензии вверху → «Активировать»
 (при покупке из дашборда ключ активируется сам).<br>
@@ -6322,8 +6275,9 @@ async def billing_webhook_platega(request: Request):
                     _add_revoked(data, ext, "superseded: продление")
                 if email:
                     payment["email"] = email
-                # покупка из кабинета (платёж привязан к тенанту) → код сразу активирован,
-                # license key закреплён за кабинетом (виден в /api/cabinet)
+                # легаси: платёж, привязанный к тенанту (покупка из кабинета, кабинет
+                # отменён v0.22.2 — для новых платежей tenant не выставляется) → код
+                # сразу активирован, license key закреплён за тенантом
                 tenant_id = payment.get("tenant")
                 if tenant_id:
                     t = next((x for x in data["tenants"] if x.get("id") == tenant_id), None)
@@ -6335,7 +6289,7 @@ async def billing_webhook_platega(request: Request):
                         t["tier"] = "pro"
                         t["licenseKey"] = lic_key
                         t["paidAt"] = now_iso()
-                        _event("cabinet_paid", tenant_id, f"{plan_id} · {code}")
+                        _event("cabinet_paid", tenant_id, f"{plan_id} · {code}")  # имя события — история, не трогаем
                 delivery = (code, lic_key, "pro", email, payment.get("ref") or pid)
                 _event("payment", pid, f"{plan_id} · {amount}{currency} · код {code}")
                 result["code"] = code
@@ -6525,7 +6479,8 @@ async def billing_digiseller_gen(request: Request):
     # иначе их движок не сопоставляет ответ заказу и товар не выдаётся.
     ok_id = params.get("id") or digiseller.product_id_of(params) or str(DIGISELLER_PRODUCT_ID or "")
     ok_inv = params.get("inv") or res["order"]
-    return _dg_response(code=res["code"], fmt=fmt, product_id=ok_id, inv=ok_inv)
+    # товар = код + пошаговая инструкция (голый код терял покупателя, 2026-10-15)
+    return _dg_response(code=digiseller.goods_text(res["code"]), fmt=fmt, product_id=ok_id, inv=ok_inv)
 
 
 # --- digiseller уведомления (v0.9.1): sale/message → webhooks.jsonl + Telegram ---
@@ -6714,21 +6669,19 @@ def actr_loop(cfg: dict):
 
 class TokenAuth:
     """Pure-ASGI bearer-token middleware. Публичные пути — в PUBLIC_PATHS ниже
-    (лендинг, оболочки /app и кабинета, redeem/trial, биллинг, вебхуки, /healthz).
+    (лендинг, оболочка /app, redeem/trial, биллинг, вебхуки, /healthz).
 
     Master-токен — ТОЛЬКО точное совпадение `Authorization: Bearer <MEMORY_TOKEN>`:
     аутентификации по query нет — `?token=` удалён в v0.11: токен не должен
     жить в access-логах uvicorn/nginx.
 
-    Токен кабинета (mg_…) проверяет сам хендлер /api/cabinet — ТОЛЬКО Bearer
-    (legacy-вход `?key=` удалён в v0.12.2: токены не живут в access-логах);
-    это НЕ master-токен и не зона middleware. /admin — HTML-оболочка только на инстансе магазина (STORE_MODE=1,
+    /admin — HTML-оболочка только на инстансе магазина (STORE_MODE=1,
     иначе 404); её данные идут через непубличные /api/* под Bearer.
     """
 
-    PUBLIC_PATHS = {"/healthz", "/", "/cabinet", "/admin", "/app", "/landing", "/og.png",
+    PUBLIC_PATHS = {"/healthz", "/", "/admin", "/app", "/landing", "/og.png",
                     "/privacy", "/offer",  # правовые страницы лендинга
-                    "/api/codes/redeem", "/api/codes/trial", "/api/cabinet", "/api/plans",
+                    "/api/codes/redeem", "/api/codes/trial", "/api/plans",
                     "/api/billing/pay", "/api/billing/status", "/billing/result", "/billing/webhook/platega",
                     "/billing/create", "/billing/success", "/api/license/validate",
                     "/api/telemetry/install",  # v0.14: анонимный install-ping
@@ -6811,7 +6764,7 @@ def main():
         learn.start_learn_loop(post=_post_json, base_url=PUBLIC_BASE_URL)  # W2 (v0.26.0)
     rankcfg.load(RANK_CONFIG_FILE)  # W3 (v0.27.0): last-good словарь синонимов
     env_key = os.environ.get("LICENSE_KEY", "").strip()  # лицензия из env (self-hosted pro)
-    if env_key and st.get("state") != "licensed":
+    if env_key and not STORE_MODE and st.get("state") != "licensed":  # на магазине self-activation не нужен (LOW-1)
         res = _activate_key(env_key)
         log.info("LICENSE_KEY: %s", f"ok ({res.get('tier')} · {res.get('email')})" if res.get("ok")
                                    else f"отклонён: {res.get('error')}")

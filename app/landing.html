@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MaxGraph — память для AI-агентов. Перестань объяснять проект с нуля</title>
-<meta name="description" content="MaxGraph — память для AI-агентов. Агент помнит проект между сессиями, данные лежат на твоей машине. Триал 7 дней, карта не нужна.">
+<title>MaxGraph — настоящая долговременная память для ИИ-агентов</title>
+<meta name="description" content="MaxGraph — локальная графовая база памяти с живым визуальным интерфейсом. Агенты запоминают архитектуру проектов, решения и задачи навсегда. Триал 7 дней, карта не нужна.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://rezon-ai.ru/">
-<meta property="og:title" content="MaxGraph — память для AI-агентов. Перестань объяснять проект с нуля">
-<meta property="og:description" content="MaxGraph — память для AI-агентов. Агент помнит проект между сессиями, данные лежат на твоей машине. Триал 7 дней, карта не нужна.">
+<meta property="og:title" content="MaxGraph — настоящая долговременная память для ИИ-агентов">
+<meta property="og:description" content="MaxGraph — локальная графовая база памяти с живым визуальным интерфейсом. Агенты запоминают архитектуру проектов, решения и задачи навсегда. Триал 7 дней, карта не нужна.">
 <meta property="og:image" content="https://rezon-ai.ru/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -23,7 +23,7 @@
   "@type": "SoftwareApplication",
   "name": "MaxGraph",
   "alternateName": "MAXGRAPH Context Memory",
-  "description": "Память для AI-агентов: записи решений, багов и задач, журнал событий и дашборд в одном Docker-контейнере на твоей машине.",
+  "description": "Локальная графовая база памяти для ИИ-агентов: записи решений, багов и задач, журнал событий и живой визуальный интерфейс в одном Docker-контейнере на твоей машине.",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "Any (Docker)",
   "url": "https://rezon-ai.ru/",
@@ -193,22 +193,21 @@ body::after{
 .btn:disabled{opacity:.6;cursor:wait}
 
 /* ═══════════ Хиро ═══════════ */
-.hero{padding:72px 0 34px}
+.hero{padding:48px 0 34px}
 .hero-in{display:grid;grid-template-columns:1.15fr .85fr;gap:64px;align-items:center}
 .hero-tag{
   font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.14em;
   text-transform:uppercase;color:var(--muted);margin-bottom:22px;
 }
 .hero h1{
-  font-size:clamp(42px,6.4vw,76px);font-weight:800;line-height:1.04;
-  letter-spacing:-.022em;max-width:13ch;
+  font-size:clamp(40px,5.8vw,64px);font-weight:800;line-height:1.04;
+  letter-spacing:-.022em;max-width:17ch;
 }
-.hero-sub{margin-top:22px;font-size:18px;line-height:1.55;color:var(--muted);max-width:44ch}
-.hero-cta{margin-top:34px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
-.hero-note{margin-top:14px;color:var(--dim);font-size:13.5px;max-width:52ch}
-.hero-fact{
-  margin-top:22px;font-family:var(--mono);font-size:12.5px;color:var(--dim);max-width:60ch;
-}
+.hero h1 .h1-b{display:block;margin-top:18px;font-size:clamp(17px,1.6vw,20px);
+  font-weight:500;line-height:1.5;letter-spacing:0;color:var(--muted);max-width:46ch}
+.hero-sub{margin-top:16px;font-size:18px;line-height:1.55;color:var(--muted);max-width:44ch}
+.hero-cta{margin-top:26px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+
 .hero-fact b{color:var(--ink);font-weight:500}
 
 /* Правая колонка хиро: живая лента памяти */
@@ -249,9 +248,9 @@ html.js:not(.rm) .feed-list li.fresh.in{opacity:1;transform:none;transition:opac
 
 /* ═══════════ Лента «работает с» ═══════════ */
 .strip{border-top:1px solid var(--hairline-soft);border-bottom:1px solid var(--hairline-soft);padding:18px 0;margin:26px 0 0}
-.strip-in{display:flex;gap:26px;align-items:center;flex-wrap:wrap}
+.strip-in{display:flex;flex-direction:column;gap:14px;align-items:center}
 .strip-label{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
-.strip-agents{display:flex;gap:10px;flex-wrap:wrap}
+.strip-agents{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
 .agent-chip{
   font-family:var(--mono);font-size:12px;color:var(--muted);
   border:1px solid var(--hairline);border-radius:999px;padding:5px 13px;
@@ -286,7 +285,17 @@ h2{font-size:clamp(28px,4.2vw,42px);font-weight:800;letter-spacing:-.02em;line-h
 .steps h3{font-size:19px;font-weight:600;letter-spacing:-.01em}
 .steps p{margin-top:6px;color:var(--muted);font-size:15.5px;max-width:64ch}
 
-/* ═══════════ Преимущества MaxGraph: 6 фактов ═══════════ */
+/* ═══════════ Что такое MaxGraph: карточка-определение ═══════════ */
+.about-card{max-width:1040px;margin:0 auto;background:var(--panel);
+  border:1px solid var(--hairline);border-radius:6px;padding:46px 52px 48px;
+  text-align:center}
+.about-card .sec-tag{margin-bottom:14px}
+.about-card h2{margin-bottom:18px}
+.about-text{font-size:19px;line-height:1.65;color:var(--ink);max-width:62ch;margin:0 auto}
+.about-text b{color:var(--amber);font-weight:600}
+@media (max-width:768px){.about-card{padding:30px 22px 32px}.about-text{font-size:16.5px}}
+
+/* ═══════════ Преимущества MaxGraph: нумерованная сетка 01–06 ═══════════ */
 .facts{list-style:none;max-width:1040px;margin:0 auto;
   display:grid;grid-template-columns:1fr 1fr;column-gap:56px}
 .facts li{
@@ -297,6 +306,26 @@ h2{font-size:clamp(28px,4.2vw,42px);font-weight:800;letter-spacing:-.02em;line-h
 .fdot{width:8px;height:8px;border-radius:50%;background:var(--fc,var(--amber));margin-top:9px}
 .facts h3{font-size:16.5px;font-weight:600;letter-spacing:-.01em}
 .facts p{margin-top:6px;font-size:14.5px;line-height:1.6;color:var(--muted)}
+/* Преимущества: та же сетка фактов, но с номерами 01–06 вместо точек */
+.adv-list li{grid-template-columns:32px 1fr}
+.adv-list .fnum{font-size:13px;color:var(--fc,var(--dim));padding-top:2px}
+
+/* ═══════════ Боковая навигация по блокам (scroll-spy + полоса заполнения) ═══════════ */
+.sidenav{position:fixed;right:26px;top:50%;transform:translateY(-50%);z-index:60;
+  display:flex;flex-direction:column;gap:11px;padding-right:16px}
+.sidenav a{display:flex;align-items:center;justify-content:flex-end;
+  padding:4px 0;
+  text-decoration:none;color:var(--dim);font-family:var(--mono);font-size:11px;
+  letter-spacing:.05em;transition:color .2s var(--ease)}
+.sidenav a:hover{color:var(--ink)}
+.sidenav a.on{color:var(--amber)}
+/* вертикальная полоса: янтарное заполнение по мере скролла (как #progress сверху) */
+.sn-rail{position:absolute;right:0;top:0;bottom:0;width:2px;background:var(--hairline-soft)}
+.sn-rail i{position:absolute;left:0;top:0;width:2px;height:100%;background:var(--amber);
+  transform:scaleY(0);transform-origin:top}
+/* На <1440px подписи наезжали бы на контент (контейнер 1200 + подписи ~75px) —
+   боковая навигация только для широких экранов (дизайн-критик р.2, BLOCKER) */
+@media (max-width:1439px){.sidenav{display:none}}
 
 /* ═══════════ Демо: тёмный скриншот + оживающая карта памяти поверх ═══════════ */
 .demo-wrap{max-width:1120px;margin:0 auto}
@@ -468,6 +497,7 @@ html.js:not(.rm) .shot-wrap:not(.play) .mg-lab{opacity:0}
 .redeem-fields .rcode::placeholder{text-transform:none}
 .redeem-go{width:100%;height:48px}
 .redeem-selfhost{margin-top:6px;font-size:14.5px}
+#donate .redeem-card{max-width:1040px}
 .redeem-selfhost a{color:var(--amber);text-decoration:none;border-bottom:1px solid var(--hairline);transition:border-color .2s var(--ease)}
 .redeem-selfhost a:hover{border-color:var(--amber)}
 .redeem-ok{margin-top:20px;text-align:left}
@@ -601,7 +631,7 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
     </a>
     <div class="nav-links">
       <a href="#how" data-i18n="nav.how">Как работает</a>
-      <a href="#memory" data-i18n="nav.memory">Память</a>
+      <a href="#adv" data-i18n="nav.adv">Преимущества</a>
       <a href="#demo" data-i18n="nav.demo">Демо</a>
       <a href="#install" data-i18n="nav.install">Установка</a>
       <a href="#pricing" data-i18n="nav.pricing">Цены</a>
@@ -623,19 +653,30 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
   </div>
 </nav>
 
+<!-- ═══ Боковая навигация по блокам (scroll-spy) ═══ -->
+<nav class="sidenav" aria-label="Содержание" data-i18n-aria="snav.aria">
+  <span class="sn-rail" aria-hidden="true"><i id="snFill"></i></span>
+  <a href="#about"><span class="sn-label" data-i18n="snav.about">Что это</span></a>
+  <a href="#how"><span class="sn-label" data-i18n="nav.how">Как работает</span></a>
+  <a href="#adv"><span class="sn-label" data-i18n="nav.adv">Преимущества</span></a>
+  <a href="#demo"><span class="sn-label" data-i18n="nav.demo">Демо</span></a>
+  <a href="#install"><span class="sn-label" data-i18n="nav.install">Установка</span></a>
+  <a href="#pricing"><span class="sn-label" data-i18n="nav.pricing">Цены</span></a>
+  <a href="#faq"><span class="sn-label" data-i18n="nav.faq">Вопросы</span></a>
+  <a href="#go"><span class="sn-label" data-i18n="go.tag">Попробовать</span></a>
+  <a href="#donate"><span class="sn-label" data-i18n="don.tag">Поддержка</span></a>
+</nav>
+
 <!-- ═══ 1. Хиро ═══ -->
 <header class="hero" id="top">
   <div class="container hero-in">
     <div class="hero-text">
       <p class="hero-tag" data-i18n="hero.tag">Память для AI-агентов</p>
-      <h1 data-i18n="hero.h1" data-i18n-html>Перестань объяснять<br>ИИ проект<br>с нуля.</h1>
-      <p class="hero-sub" data-i18n="hero.sub">MaxGraph запоминает твой проект: что решили, что сломали, что пообещали. Агент находит это сам и начинает там, где ты закончил.</p>
+      <h1 data-i18n="hero.h1" data-i18n-html>Хватит заново объяснять контекст в&nbsp;каждом новом чате.<br><span class="h1-b">Подари своим ИИ-агентам настоящую долговременную память.</span></h1>
       <div class="hero-cta">
         <button type="button" class="btn btn-amber" data-copy="hero" data-i18n="hero.cta">Скопировать промпт установки</button>
         <a class="btn btn-ghost" href="#demo" data-i18n="hero.demo">Сначала посмотреть демо</a>
       </div>
-      <p class="hero-note" data-i18n="hero.note">Это текст для твоего агента: вставь его в чат — агент сам скачает, установит и включит память.</p>
-      <p class="hero-fact" data-i18n="hero.fact" data-i18n-html>Экономия токенов примерно <b>43&nbsp;%</b> при работе с MaxGraph.</p>
     </div>
     <aside class="hero-feed" aria-label="Пример живой памяти" data-i18n-aria="a11y.feed">
       <div class="feed-head"><span data-i18n="feed.title">Память пишется</span><span class="feed-live"><i></i>LIVE</span></div>
@@ -650,6 +691,17 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
     </aside>
   </div>
 </header>
+
+<!-- ═══ 1б. Что такое MaxGraph ═══ -->
+<section class="section" id="about">
+  <div class="container">
+    <div class="about-card reveal">
+      <p class="sec-tag" data-i18n="about.tag">Что это</p>
+      <h2 data-i18n="about.h2">Что такое MaxGraph</h2>
+      <p class="about-text" data-i18n="about.text" data-i18n-html>MaxGraph — это <b>локальная графовая база памяти</b> с&nbsp;живым визуальным интерфейсом. Твои агенты (Claude, DeepSeek, Kimi, Cursor) запоминают архитектуру проектов, решения и задачи <b>навсегда</b>, подтягивая только нужные факты без сжигания лишних токенов.</p>
+    </div>
+  </div>
+</section>
 
 <!-- ═══ Лента совместимости ═══ -->
 <div class="strip">
@@ -677,54 +729,54 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
     </div>
     <ol class="steps">
       <li><span class="stepnum mono">01</span><div>
-        <h3 data-i18n="how.s1t">Работаешь как обычно</h3>
-        <p data-i18n="how.s1">Агент сам запоминает важное из твоей работы: решения, баги, договорённости.</p>
+        <h3 data-i18n="how.s1t">Ты общаешься, пишешь код — агент записывает</h3>
+        <p data-i18n="how.s1">Решения, баги, факты и текущие задачи из чата попадают в память сразу, без просьбы запомнить.</p>
       </div></li>
       <li><span class="stepnum mono">02</span><div>
-        <h3 data-i18n="how.s2t">Память лежит у тебя</h3>
-        <p data-i18n="how.s2">Вся память лежит на твоей машине. Открой дашборд и проверь любой факт глазами.</p>
+        <h3 data-i18n="how.s2t">Все файлы хранятся на твоём компьютере</h3>
+        <p data-i18n="how.s2">Каждую запись можно открыть и проверить в живом дашборде.</p>
       </div></li>
       <li><span class="stepnum mono">03</span><div>
-        <h3 data-i18n="how.s3t">Начинаешь новую сессию</h3>
-        <p data-i18n="how.s3">Агент уже помнит проект. Он сам находит нужное и не делает одну и ту же работу дважды.</p>
+        <h3 data-i18n="how.s3t">Начал новый чат? Заново объяснять не придётся</h3>
+        <p data-i18n="how.s3">Агент сам получит выжимку контекста: все твои решения, открытые задачи, итоги прошлых сессий. Начнёте там, где закончили.</p>
       </div></li>
     </ol>
   </div>
 </section>
 
 <!-- ═══ 3. Преимущества MaxGraph ═══ -->
-<section class="section" id="memory">
+<section class="section" id="adv">
   <div class="container">
     <div class="sec-head reveal">
-      <p class="sec-tag" data-i18n="mem.tag">Память</p>
-      <h2 data-i18n="mem.h2">Преимущества MaxGraph</h2>
+      <p class="sec-tag" data-i18n="adv.tag">Преимущества</p>
+      <h2 data-i18n="adv.h2">Преимущества MaxGraph</h2>
     </div>
-    <ul class="facts reveal" style="--rd:.1s">
-      <li style="--fc:#7DA2E8"><span class="fdot" aria-hidden="true"></span><div>
-        <h3 data-i18n="mem.f1t">Записи живут отдельно от чата</h3>
-        <p data-i18n="mem.f1">Чат можно закрыть, сжать или удалить. Записи это не заденет: они лежат отдельно от диалога, на твоей машине, и переживут сколько угодно сжатий и новых сессий.</p>
+    <ol class="facts adv-list reveal" style="--rd:.1s">
+      <li style="--fc:#7DA2E8"><span class="fnum" aria-hidden="true">01</span><div>
+        <h3 data-i18n="adv.a1t">Записи живут отдельно от чата</h3>
+        <p data-i18n="adv.a1">Лежат на твоём ПК — переживут закрытие, удаление и сколько угодно сжатий диалога.</p>
       </div></li>
-      <li style="--fc:#E15A4F"><span class="fdot" aria-hidden="true"></span><div>
-        <h3 data-i18n="mem.f2t">Записывает факт в тот же момент</h3>
-        <p data-i18n="mem.f2">Факт попадает в память сразу, как прозвучал. Оборвись диалог хоть через минуту, записанное уже на месте.</p>
+      <li style="--fc:#E15A4F"><span class="fnum" aria-hidden="true">02</span><div>
+        <h3 data-i18n="adv.a2t">Записывает сразу в момент факта</h3>
+        <p data-i18n="adv.a2">Решения и баги попадают в память мгновенно. Оборвись сессия через минуту — всё уже на месте.</p>
       </div></li>
-      <li style="--fc:#E8B93E"><span class="fdot" aria-hidden="true"></span><div>
-        <h3 data-i18n="mem.f3t">Свежая выжимка в начале каждой сессии</h3>
-        <p data-i18n="mem.f3">Выжимка собирается заново из записей при каждом старте: твои решения дословно, открытые баги, итоги прошлых сессий. Формулировки не плывут, потому что их никто не пересказывает. Наверху — то, что актуально сейчас.</p>
+      <li style="--fc:#E8B93E"><span class="fnum" aria-hidden="true">03</span><div>
+        <h3 data-i18n="adv.a3t">Свежая выжимка на старте сессии</h3>
+        <p data-i18n="adv.a3">Твои решения дословно и актуальные итоги прошлых сессий — формулировки не плывут от пересказов.</p>
       </div></li>
-      <li style="--fc:#5FB87A"><span class="fdot" aria-hidden="true"></span><div>
-        <h3 data-i18n="mem.f4t">Незаконченные дела всплывают сами</h3>
-        <p data-i18n="mem.f4">Открытая задача сама всплывёт в начале следующей сессии — напоминать не надо.</p>
+      <li style="--fc:#5FB87A"><span class="fnum" aria-hidden="true">04</span><div>
+        <h3 data-i18n="adv.a4t">Незаконченные дела всплывают сами</h3>
+        <p data-i18n="adv.a4">Открытые задачи и баги сами напомнят о себе при новом запуске без лишних промптов.</p>
       </div></li>
-      <li style="--fc:#B07DE0"><span class="fdot" aria-hidden="true"></span><div>
-        <h3 data-i18n="mem.f5t">Всегда видно, что происходило</h3>
-        <p data-i18n="mem.f5">Все записи идут в общий журнал с датами. Диалог могут сжать до неузнаваемости — по журналу ты всё равно восстановишь ход работы.</p>
+      <li style="--fc:#B07DE0"><span class="fnum" aria-hidden="true">05</span><div>
+        <h3 data-i18n="adv.a5t">Всегда видно, что происходило</h3>
+        <p data-i18n="adv.a5">Живой дашборд, карта связей и общий журнал с датами для быстрого восстановления хода работы.</p>
       </div></li>
-      <li style="--fc:#D98E32"><span class="fdot" aria-hidden="true"></span><div>
-        <h3 data-i18n="mem.f6t">Чат заполняется медленнее</h3>
-        <p data-i18n="mem.f6">Историю проекта больше не таскают за собой в каждом сообщении, поэтому окно дольше остаётся чистым и сжатие наступает позже. Экономия токенов примерно 43&nbsp;% при работе с MaxGraph.</p>
+      <li style="--fc:#D98E32"><span class="fnum" aria-hidden="true">06</span><div>
+        <h3 data-i18n="adv.a6t">Чат заполняется медленнее (−43% токенов)</h3>
+        <p data-i18n="adv.a6">Историю проекта не нужно таскать в каждом сообщении — окно контекста дольше остаётся чистым.</p>
       </div></li>
-    </ul>
+    </ol>
   </div>
 </section>
 
@@ -818,7 +870,6 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
     <div class="plan-card reveal" style="--rd:.1s">
       <div class="plan-left">
         <div class="plan-name">MaxGraph Pro</div>
-        <div class="plan-sub" data-i18n="pr.sub">Разовый платёж за срок. Без автосписаний.</div>
         <ul class="flist">
           <li><span class="fnum">01</span><span><span class="fname" data-i18n="pr.f1t">Дашборд.</span> <span class="fdesc" data-i18n="pr.f1">Вся память перед глазами: карта, лента, поиск.</span></span></li>
           <li><span class="fnum">02</span><span><span class="fname" data-i18n="pr.f2t">Память.</span> <span class="fdesc" data-i18n="pr.f2">Агент сам запоминает решения, баги, задачи и договорённости.</span></span></li>
@@ -964,7 +1015,7 @@ html.js:not(.rm) .reveal.on{opacity:1;transform:none}
       <p data-i18n="foot.brand">Память для AI-агентов. Живёт на твоей машине.</p>
     </div>
     <div class="foot-links">
-      <a href="#memory" data-i18n="nav.memory">Память</a>
+      <a href="#adv" data-i18n="nav.adv">Преимущества</a>
       <a href="#demo" data-i18n="nav.demo">Демо</a>
       <a href="#install" data-i18n="nav.install">Установка</a>
       <a href="#pricing" data-i18n="nav.pricing">Цены</a>
@@ -993,16 +1044,13 @@ var RM = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 /* ═══ RU/EN словари ═══ */
 var I18N = {
 ru:{
-  'meta.title':'MaxGraph — память для AI-агентов. Перестань объяснять проект с нуля',
-  'meta.desc':'MaxGraph — память для AI-агентов. Агент помнит проект между сессиями, данные лежат на твоей машине. Триал 7 дней, карта не нужна.',
-  'nav.how':'Как работает','nav.memory':'Память','nav.demo':'Демо','nav.install':'Установка','nav.pricing':'Цены','nav.faq':'Вопросы','nav.blog':'Блог','nav.blogurl':'/blog/',
+  'meta.title':'MaxGraph — настоящая долговременная память для ИИ-агентов',
+  'meta.desc':'MaxGraph — локальная графовая база памяти с живым визуальным интерфейсом. Агенты запоминают архитектуру проектов, решения и задачи навсегда. Триал 7 дней, карта не нужна.',
+  'nav.how':'Как работает','nav.adv':'Преимущества','nav.demo':'Демо','nav.install':'Установка','nav.pricing':'Цены','nav.faq':'Вопросы','nav.blog':'Блог','nav.blogurl':'/blog/',
   'nav.copy':'Скопировать промпт','nav.short':'Промпт',
   'hero.tag':'Память для AI-агентов',
-  'hero.h1':'Перестань объяснять<br>ИИ проект<br>с нуля.',
-  'hero.sub':'MaxGraph запоминает твой проект: что решили, что сломали, что пообещали. Агент находит это сам и начинает там, где ты закончил.',
+  'hero.h1':'Хватит заново объяснять контекст в&nbsp;каждом новом чате.<br><span class="h1-b">Подари своим ИИ-агентам настоящую долговременную память.</span>',
   'hero.cta':'Скопировать промпт установки','hero.demo':'Сначала посмотреть демо',
-  'hero.note':'Это текст для твоего агента: вставь его в чат — агент сам скачает, установит и включит память.',
-  'hero.fact':'Экономия токенов примерно <b>43&nbsp;%</b> при работе с MaxGraph.',
   'feed.title':'Память пишется',
   'feed.k1':'решение','feed.v1':'<b>Офлайн-first</b>, синхронизация потом',
   'feed.k2':'баг закрыт','feed.v2':'Краш на Xiaomi при свайпе',
@@ -1013,25 +1061,28 @@ ru:{
   'strip.label':'Работает с твоим агентом',
   'how.tag':'Как работает','how.h2':'Ничего нового учить не придётся',
   'how.sub':'Ты работаешь с агентом как обычно. Память появляется сама, в фоне.',
-  'how.s1t':'Работаешь как обычно',
-  'how.s1':'Агент сам запоминает важное из твоей работы: решения, баги, договорённости.',
-  'how.s2t':'Память лежит у тебя',
-  'how.s2':'Вся память лежит на твоей машине. Открой дашборд и проверь любой факт глазами.',
-  'how.s3t':'Начинаешь новую сессию',
-  'how.s3':'Агент уже помнит проект. Он сам находит нужное и не делает одну и ту же работу дважды.',
-  'mem.tag':'Память','mem.h2':'Преимущества MaxGraph',
-  'mem.f1t':'Записи живут отдельно от чата',
-  'mem.f1':'Чат можно закрыть, сжать или удалить. Записи это не заденет: они лежат отдельно от диалога, на твоей машине, и переживут сколько угодно сжатий и новых сессий.',
-  'mem.f2t':'Записывает факт в тот же момент',
-  'mem.f2':'Факт попадает в память сразу, как прозвучал. Оборвись диалог хоть через минуту, записанное уже на месте.',
-  'mem.f3t':'Свежая выжимка в начале каждой сессии',
-  'mem.f3':'Выжимка собирается заново из записей при каждом старте: твои решения дословно, открытые баги, итоги прошлых сессий. Формулировки не плывут, потому что их никто не пересказывает. Наверху — то, что актуально сейчас.',
-  'mem.f4t':'Незаконченные дела всплывают сами',
-  'mem.f4':'Открытая задача сама всплывёт в начале следующей сессии — напоминать не надо.',
-  'mem.f5t':'Всегда видно, что происходило',
-  'mem.f5':'Все записи идут в общий журнал с датами. Диалог могут сжать до неузнаваемости — по журналу ты всё равно восстановишь ход работы.',
-  'mem.f6t':'Чат заполняется медленнее',
-  'mem.f6':'Историю проекта больше не таскают за собой в каждом сообщении, поэтому окно дольше остаётся чистым и сжатие наступает позже. Экономия токенов примерно 43&nbsp;% при работе с MaxGraph.',
+  'about.tag':'Что это','about.h2':'Что такое MaxGraph',
+  'about.text':'MaxGraph — это <b>локальная графовая база памяти</b> с&nbsp;живым визуальным интерфейсом. Твои агенты (Claude, DeepSeek, Kimi, Cursor) запоминают архитектуру проектов, решения и задачи <b>навсегда</b>, подтягивая только нужные факты без сжигания лишних токенов.',
+  'snav.about':'Что это','snav.aria':'Содержание',
+  'how.s1t':'Ты общаешься, пишешь код — агент записывает',
+  'how.s1':'Решения, баги, факты и текущие задачи из чата попадают в память сразу, без просьбы запомнить.',
+  'how.s2t':'Все файлы хранятся на твоём компьютере',
+  'how.s2':'Каждую запись можно открыть и проверить в живом дашборде.',
+  'how.s3t':'Начал новый чат? Заново объяснять не придётся',
+  'how.s3':'Агент сам получит выжимку контекста: все твои решения, открытые задачи, итоги прошлых сессий. Начнёте там, где закончили.',
+  'adv.tag':'Преимущества','adv.h2':'Преимущества MaxGraph',
+  'adv.a1t':'Записи живут отдельно от чата',
+  'adv.a1':'Лежат на твоём ПК — переживут закрытие, удаление и сколько угодно сжатий диалога.',
+  'adv.a2t':'Записывает сразу в момент факта',
+  'adv.a2':'Решения и баги попадают в память мгновенно. Оборвись сессия через минуту — всё уже на месте.',
+  'adv.a3t':'Свежая выжимка на старте сессии',
+  'adv.a3':'Твои решения дословно и актуальные итоги прошлых сессий — формулировки не плывут от пересказов.',
+  'adv.a4t':'Незаконченные дела всплывают сами',
+  'adv.a4':'Открытые задачи и баги сами напомнят о себе при новом запуске без лишних промптов.',
+  'adv.a5t':'Всегда видно, что происходило',
+  'adv.a5':'Живой дашборд, карта связей и общий журнал с датами для быстрого восстановления хода работы.',
+  'adv.a6t':'Чат заполняется медленнее (−43% токенов)',
+  'adv.a6':'Историю проекта не нужно таскать в каждом сообщении — окно контекста дольше остаётся чистым.',
   'demo.tag':'Демо','demo.h2':'Вот как это выглядит',
   'demo.alt':'Дашборд MaxGraph: карта памяти проекта Ритм, лента записей и поиск',
   'demo.n1':'Ритм','demo.n2':'Офлайн-first','demo.n3':'Экран статистики','demo.n4':'Билд 0.9 в TestFlight',
@@ -1047,7 +1098,6 @@ ru:{
   'copied':'Скопировано',
   'pr.tag':'Цены','pr.h2':'Один тариф, всё включено',
   'pr.trial':'<b>7 дней бесплатно, без карты.</b> Триал встроен и включается сам при первом запуске.',
-  'pr.sub':'Разовый платёж за срок. Без автосписаний.',
   'pr.f1t':'Дашборд.','pr.f1':'Вся память перед глазами: карта, лента, поиск.',
   'pr.f2t':'Память.','pr.f2':'Агент сам запоминает решения, баги, задачи и договорённости.',
   'pr.f3t':'Поиск.','pr.f3':'Находит нужное за секунды, даже то, о чём говорили неделю назад.',
@@ -1102,16 +1152,13 @@ ru:{
   'foot.offer':'Оферта','foot.privacy':'Политика конфиденциальности','foot.redeem':'Активация кода'
 },
 en:{
-  'meta.title':'MaxGraph — memory for AI agents. Stop explaining the project from scratch',
-  'meta.desc':'MaxGraph is a memory MCP server for AI agents: your agent remembers decisions, bugs and tasks between sessions. Data stays on your machine. 7-day trial, no card.',
-  'nav.how':'How it works','nav.memory':'Memory','nav.demo':'Demo','nav.install':'Install','nav.pricing':'Pricing','nav.faq':'FAQ','nav.blog':'Blog','nav.blogurl':'/en/blog/',
+  'meta.title':'MaxGraph — real long-term memory for AI agents',
+  'meta.desc':'MaxGraph is a local graph memory database with a live visual interface. Agents remember project architecture, decisions and tasks forever. 7-day trial, no card.',
+  'nav.how':'How it works','nav.adv':'Advantages','nav.demo':'Demo','nav.install':'Install','nav.pricing':'Pricing','nav.faq':'FAQ','nav.blog':'Blog','nav.blogurl':'/en/blog/',
   'nav.copy':'Copy prompt','nav.short':'Prompt',
   'hero.tag':'Memory for AI agents',
-  'hero.h1':'Stop explaining<br>everything to your AI<br>from&nbsp;scratch.',
-  'hero.sub':'MaxGraph remembers your project: what you decided, what broke, what was promised. The agent finds it on its own and picks up where you left off.',
+  'hero.h1':'Stop re-explaining the context in every new chat.<br><span class="h1-b">Give your AI agents real long-term memory.</span>',
   'hero.cta':'Copy the install prompt','hero.demo':'Watch the demo first',
-  'hero.note':'It’s a text for your agent: paste it into the chat — the agent downloads, installs, and turns memory on by itself.',
-  'hero.fact':'Working with MaxGraph saves about <b>43%</b> of tokens.',
   'feed.title':'Recording…',
   'feed.k1':'decision','feed.v1':'<b>Offline-first</b>, sync later',
   'feed.k2':'bug closed','feed.v2':'Crash on Xiaomi when swiping',
@@ -1122,25 +1169,28 @@ en:{
   'strip.label':'Works with your agent',
   'how.tag':'How it works','how.h2':'Nothing new to learn',
   'how.sub':'You work with your agent as usual. Memory appears on its own, in the background.',
-  'how.s1t':'Work as usual',
-  'how.s1':'You don’t have to change a thing. The agent remembers the important parts of your work on its own: decisions, bugs, agreements.',
-  'how.s2t':'Memory stays on your machine',
-  'how.s2':'All memory lives on your machine. Open the dashboard and check any fact with your own eyes.',
-  'how.s3t':'Start a new session',
-  'how.s3':'The agent already remembers the project. It finds what it needs on its own and never does the same work twice.',
-  'mem.tag':'Memory','mem.h2':'MaxGraph advantages',
-  'mem.f1t':'Records live apart from the chat',
-  'mem.f1':'You can close, compress, or delete the chat. The records stay untouched: they live apart from the conversation, on your machine, and survive any number of compressions and new sessions.',
-  'mem.f2t':'Writes facts down the moment they are said',
-  'mem.f2':'A fact lands in memory the moment it is said. Even if the conversation breaks a minute later, what was recorded is already in place.',
-  'mem.f3t':'A fresh digest at the start of every session',
-  'mem.f3':'The digest is rebuilt from records at every start: your decisions verbatim, open bugs, outcomes of past sessions. Wording does not drift, because nobody retells it. The top holds what matters right now.',
-  'mem.f4t':'Unfinished work floats up on its own',
-  'mem.f4':'An open task surfaces by itself at the start of the next session. No special reminders needed.',
-  'mem.f5t':'You can always see what happened',
-  'mem.f5':'Every record goes into a shared journal with dates. The conversation may be compressed beyond recognition — the journal still lets you retrace the work.',
-  'mem.f6t':'The chat fills up more slowly',
-  'mem.f6':'Project history no longer rides along in every message, so the window stays clean longer and compression comes later. Working with MaxGraph saves about 43% of tokens.',
+  'about.tag':'What it is','about.h2':'What is MaxGraph',
+  'about.text':'MaxGraph is a <b>local graph memory database</b> with a live visual interface. Your agents (Claude, DeepSeek, Kimi, Cursor) remember project architecture, decisions and tasks <b>forever</b> — pulling only the facts they need, without burning extra tokens.',
+  'snav.about':'What it is','snav.aria':'Contents',
+  'how.s1t':'You chat and write code — the agent records',
+  'how.s1':'Decisions, bugs, facts and current tasks from the chat land in memory instantly — no need to ask it to remember.',
+  'how.s2t':'All files stay on your computer',
+  'how.s2':'Every record can be opened and checked in the live dashboard.',
+  'how.s3t':'Started a new chat? No need to explain again',
+  'how.s3':'The agent automatically gets a context brief: your decisions verbatim, open tasks, outcomes of past sessions. You start where you left off.',
+  'adv.tag':'Advantages','adv.h2':'MaxGraph advantages',
+  'adv.a1t':'Records live apart from the chat',
+  'adv.a1':'They stay on your PC — surviving closing, deletion, and any number of context compactions.',
+  'adv.a2t':'Writes the moment a fact happens',
+  'adv.a2':'Decisions and bugs land in memory instantly. If the session dies a minute later — everything is already in place.',
+  'adv.a3t':'A fresh brief at session start',
+  'adv.a3':'Your decisions verbatim and the actual outcomes of past sessions — wording never drifts through retelling.',
+  'adv.a4t':'Unfinished work resurfaces on its own',
+  'adv.a4':'Open tasks and bugs remind you of themselves at the next launch, no extra prompts needed.',
+  'adv.a5t':'You always see what happened',
+  'adv.a5':'A live dashboard, a relation map, and a dated journal to quickly restore the thread of work.',
+  'adv.a6t':'The chat fills up more slowly (~43% token savings)',
+  'adv.a6':'Project history no longer rides in every message — the context window stays clean longer.',
   'demo.tag':'Demo','demo.h2':'See your project’s memory',
   'demo.alt':'MaxGraph dashboard: memory map of the Ritm project, record feed and search',
   'demo.n1':'Rhythm','demo.n2':'Offline-first','demo.n3':'Stats screen','demo.n4':'Build 0.9 in TestFlight',
@@ -1156,7 +1206,6 @@ en:{
   'copied':'Copied',
   'pr.tag':'Pricing','pr.h2':'One plan, everything included',
   'pr.trial':'<b>7 days free, no card.</b> The trial is built in and turns on by itself on first launch.',
-  'pr.sub':'One-time payment per term. No auto-renewal.',
   'pr.f1t':'Dashboard.','pr.f1':'All memory in front of you: map, feed, search.',
   'pr.f2t':'Memory.','pr.f2':'The agent remembers decisions, bugs, tasks, and agreements on its own.',
   'pr.f3t':'Search.','pr.f3':'Finds what you need in seconds, even what was discussed a week ago.',
@@ -1342,6 +1391,26 @@ if(RM || !('IntersectionObserver' in window)){
   revealEls.forEach(function(el){ io.observe(el); });
 }
 
+/* ── Боковая навигация: подсветка раздела у центра экрана ── */
+var snLinks = [].slice.call(document.querySelectorAll('.sidenav a'));
+if(snLinks.length && 'IntersectionObserver' in window){
+  var snMap = {};
+  snLinks.forEach(function(a){ snMap[a.getAttribute('href').slice(1)] = a; });
+  var snIo = new IntersectionObserver(function(es){
+    es.forEach(function(e){
+      if(e.isIntersecting){
+        snLinks.forEach(function(a){ a.classList.remove('on'); });
+        var a = snMap[e.target.id];
+        if(a) a.classList.add('on');
+      }
+    });
+  }, { rootMargin:'-38% 0px -55% 0px' });
+  Object.keys(snMap).forEach(function(id){
+    var el = document.getElementById(id);
+    if(el) snIo.observe(el);
+  });
+}
+
 /* ── Демо: пробуждение рамки + заполнение графа памяти ── */
 var demoFrame = document.querySelector('.demo-frame');
 var shotWrap = document.querySelector('.shot-wrap');
@@ -1428,13 +1497,22 @@ if(heroFeed && !RM){
   }, 5200);
 }else if(heroFeed){ heroFeed.classList.add('go'); }
 
-/* ── Прогресс скролла + рельса «Как работает» ── */
+/* ── Прогресс скролла + рельса «Как работает» + полоса боковой навигации ── */
 var bar = document.getElementById('progress'), ticking = false;
+var snFill = document.getElementById('snFill');
+var snAbout = document.getElementById('about');
 var stepsEl = document.querySelector('.steps');
 function updBar(){
   var h = document.documentElement;
   var max = h.scrollHeight - h.clientHeight;
-  bar.style.transform = 'scaleX(' + (max > 0 ? Math.min(1, h.scrollTop / max) : 0) + ')';
+  var p = max > 0 ? Math.min(1, h.scrollTop / max) : 0;
+  bar.style.transform = 'scaleX(' + p + ')';
+  if(snFill){ snFill.style.transform = 'scaleY(' + p + ')'; }
+  /* hero выше всех наблюдаемых секций: подсветку sidenav снимаем */
+  if(typeof snLinks !== 'undefined' && snLinks.length && snAbout
+     && h.scrollTop + h.clientHeight*0.5 < snAbout.offsetTop){
+    snLinks.forEach(function(a){ a.classList.remove('on'); });
+  }
   if(stepsEl && !RM){
     var r = stepsEl.getBoundingClientRect();
     var probe = window.innerHeight * 0.55;
