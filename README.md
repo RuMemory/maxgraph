@@ -53,7 +53,7 @@ git clone https://github.com/RuMemory/maxgraph && cd maxgraph
 docker compose up -d --build
 ```
 
-Нет Docker? Установщик поставит движок сам (Rancher Desktop на Windows/macOS, Docker Engine на Linux): `bash install.sh` или `powershell -File install.ps1` из папки репозитория. Устанавливает ИИ-агент? Ему — [AGENTS.md](AGENTS.md).
+Нет Docker? Установщик поставит движок сам (официальный Docker Desktop с docker.com на Windows/macOS, Docker Engine на Linux): `bash install.sh` или `powershell -File install.ps1` из папки репозитория. Устанавливает ИИ-агент? Ему — [AGENTS.md](AGENTS.md).
 
 Токен доступа генерируется сам при первом запуске, возьми его из логов:
 

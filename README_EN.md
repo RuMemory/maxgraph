@@ -53,7 +53,7 @@ git clone https://github.com/RuMemory/maxgraph && cd maxgraph
 docker compose up -d --build
 ```
 
-No Docker? The installer sets up an engine itself (Rancher Desktop on Windows/macOS, Docker Engine on Linux): `bash install.sh` or `powershell -File install.ps1` from the repo folder. An AI agent doing the install reads [AGENTS.md](AGENTS.md).
+No Docker? The installer sets up an engine itself (official Docker Desktop from docker.com on Windows/macOS, Docker Engine on Linux): `bash install.sh` or `powershell -File install.ps1` from the repo folder. An AI agent doing the install reads [AGENTS.md](AGENTS.md).
 
 The access token is generated on first launch, take it from the logs:
 

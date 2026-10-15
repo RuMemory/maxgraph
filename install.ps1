@@ -4,16 +4,18 @@ install.ps1 — MaxGraph installer for Windows (macOS/Linux: install.sh).
 Run from the root of the cloned repo:
   powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 [-Yes]
 
-Steps: working Docker? (checked WITHOUT elevation) → if missing, with the user's
-consent: enable WSL2 (may reboot — continues automatically via RunOnce) →
-install Rancher Desktop (free, Docker-compatible; winget or MSI from GitHub,
-verified by sha512 + Authenticode signature) with a machine-wide moby/
-no-kubernetes defaults profile → HOST_FP/INSTALL_FLAVOR into .env →
+Steps: working Docker? (this script never elevates itself) → if missing, with
+the user's consent: download the official Docker Desktop installer from
+docker.com (verified by its Authenticode signature) and run it — Docker's
+installer requests admin rights itself, enables WSL2 and asks for the reboot
+when one is needed; a reboot resumes this installer automatically (HKCU
+RunOnce, only with an unchanged script) → HOST_FP/INSTALL_FLAVOR into .env →
 docker compose up -d --build → wait for healthz.
 
 Exit codes (read by the installing AI agent, see AGENTS.md):
   0 — MaxGraph is running in Docker
-  2 — reboot required/started; the installer continues automatically at logon
+  2 — Docker Desktop needs a reboot or has a dialog waiting: the installer
+      continues automatically at next logon (or re-run install.ps1)
   3 — engine declined or impossible → Python fallback (AGENTS.md, step 3a)
   1 — unexpected error (see install.log)
 #>
@@ -24,7 +26,8 @@ Set-Location $PSScriptRoot
 $StateFile = Join-Path $PSScriptRoot 'install-state.json'
 $script:Flavor = ''
 $script:TranscriptOn = $false
-$RunOnceKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
+$RunOnceKey = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'   # per-user: nothing in this script needs admin
+$DockerDesktopExe = "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
 
 function Log([string]$m) { Write-Host "[maxgraph-install] $m" }
 
@@ -39,7 +42,16 @@ function Write-State([string]$status) {
 
 function Stop-Log { if ($script:TranscriptOn) { try { Stop-Transcript | Out-Null } catch {} } }
 
+function Clear-RunOnce { Remove-ItemProperty $RunOnceKey -Name 'MaxGraphInstall' -ErrorAction SilentlyContinue }
+
+function Arm-RunOnce {  # armed BEFORE Docker's installer runs: a reboot at any point must not strand the install
+  Write-State 'reboot-pending'
+  $cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Yes -Resume"
+  Set-ItemProperty $RunOnceKey -Name 'MaxGraphInstall' -Value $cmd
+}
+
 function Python-Fallback {
+  Clear-RunOnce
   Write-State 'fallback-python'
   Write-Host ''
   Write-Host 'Docker engine was NOT installed (declined or failed).'
@@ -77,58 +89,48 @@ function Wait-Engine([int]$minutes = 10) {
   return $false
 }
 
-function Install-Rancher {
-  if (Get-Command winget -ErrorAction SilentlyContinue) {
-    Log 'Installing Rancher Desktop via winget...'
-    & winget install --id SUSE.RancherDesktop -e --silent `
-      --accept-package-agreements --accept-source-agreements --disable-interactivity
-    if ($LASTEXITCODE -eq 0) { return $true }
-    Log 'winget failed - trying the direct MSI...'
-  }
-  Log 'Resolving the latest Rancher Desktop release...'
-  $rel = Invoke-RestMethod -UseBasicParsing 'https://api.github.com/repos/rancher-sandbox/rancher-desktop/releases/latest'
-  $ver = $rel.tag_name.TrimStart('v')
-  $msi = "Rancher.Desktop.Setup.$ver.msi"
-  $base = "https://github.com/rancher-sandbox/rancher-desktop/releases/download/v$ver"
+function Install-DockerDesktop {
+  $arch = 'amd64'   # PROCESSOR_ARCHITECTURE sees the PROCESS — an x86-emulated PowerShell on an ARM64 box would fetch the wrong installer
+  if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') { $arch = 'arm64' }
+  $url = "https://desktop.docker.com/win/main/$arch/Docker%20Desktop%20Installer.exe"
   # fresh private dir: no predictable path for a local swap between checks
-  $dir = Join-Path $env:TEMP ("mg-rancher-" + [guid]::NewGuid().ToString('N'))
+  $dir = Join-Path $env:TEMP ("mg-docker-" + [guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Path $dir -Force | Out-Null
-  $tmp = Join-Path $dir $msi
+  $tmp = Join-Path $dir 'DockerDesktopInstaller.exe'
   try {
-    Log "Downloading $msi (verified via sha512 + Authenticode)..."
-    Invoke-WebRequest -UseBasicParsing "$base/$msi" -OutFile $tmp
-    $expected = (((Invoke-WebRequest -UseBasicParsing "$base/$msi.sha512sum").Content) -split '\s+')[0].ToLower()
-    $actual = (Get-FileHash $tmp -Algorithm SHA512).Hash.ToLower()
-    if ($actual -ne $expected) { Log "SHA512 mismatch ($actual != $expected) - aborted"; return $false }
-    $sig = Get-AuthenticodeSignature $tmp
-    if ($sig.Status -ne 'Valid' -or "$($sig.SignerCertificate.Subject)" -notmatch 'SUSE|Rancher') {
-      Log "Authenticode check failed ($($sig.Status), $($sig.SignerCertificate.Subject)) - aborted"
+    Log "Downloading the official Docker Desktop installer from docker.com ($arch, ~600 MB)..."
+    try {
+      Invoke-WebRequest -UseBasicParsing $url -OutFile $tmp
+    } catch {
+      Log "Download failed: $($_.Exception.Message)"
       return $false
     }
-    Log 'Installing (msiexec, silent)...'
-    $p = Start-Process msiexec.exe -ArgumentList '/i', "`"$tmp`"", '/qn', '/norestart' -Wait -PassThru
-    return ($p.ExitCode -eq 0)
+    $sig = Get-AuthenticodeSignature $tmp
+    $cn = $null
+    if ($sig.SignerCertificate) {
+      $cn = $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+    }
+    if ($sig.Status -ne 'Valid' -or $cn -notin @('Docker Inc', 'Docker, Inc.')) {
+      Log "Authenticode check failed (status=$($sig.Status), CN=$cn) - aborted"
+      return $false
+    }
+    Arm-RunOnce
+    Log 'Running the official Docker Desktop installer - it requests admin rights itself and enables WSL2. If it offers a reboot, agree: this installer continues automatically after logon.'
+    $p = Start-Process $tmp -Wait -PassThru
+    if ($p.ExitCode -ne 0) {
+      Log "Docker Desktop installer exited with code $($p.ExitCode) - aborted"
+      Clear-RunOnce
+      return $false
+    }
+    return $true
   } finally {
     Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
   }
 }
 
-function Write-RancherProfile {  # skip the first-run GUI dialog: moby engine, kubernetes off.
-  $d = 'HKLM:\SOFTWARE\Policies\Rancher Desktop\Defaults'   # machine-wide: correct hive even when UAC ran under other credentials
-  New-Item -Path $d -Force | Out-Null
-  New-ItemProperty -Path $d -Name 'version' -PropertyType DWord -Value 18 -Force | Out-Null
-  New-Item -Path "$d\containerEngine" -Force | Out-Null
-  New-ItemProperty -Path "$d\containerEngine" -Name 'name' -PropertyType String -Value 'moby' -Force | Out-Null
-  New-Item -Path "$d\kubernetes" -Force | Out-Null
-  New-ItemProperty -Path "$d\kubernetes" -Name 'enabled' -PropertyType DWord -Value 0 -Force | Out-Null
-}
-
-function Find-RancherBin {
-  @("$env:LOCALAPPDATA\Programs\Rancher Desktop\resources\resources\win32\bin",
-    "$env:ProgramFiles\Rancher Desktop\resources\resources\win32\bin",
-    "${env:ProgramFiles(x86)}\Rancher Desktop\resources\resources\win32\bin") |
-    Where-Object { $_ -and (Test-Path (Join-Path $_ 'rdctl.exe')) } |
-    Select-Object -First 1
+function Refresh-DockerPath {  # Docker's installer updates the machine PATH; this session keeps the old one
+  $bin = "$env:ProgramFiles\Docker\Docker\resources\bin"
+  if (Test-Path (Join-Path $bin 'docker.exe')) { $env:PATH = "$bin;$env:PATH" }
 }
 
 function Upsert-Env([string]$key, [string]$val) {
@@ -144,6 +146,7 @@ function Upsert-Env([string]$key, [string]$val) {
 }
 
 function Finish-Install {  # shared final for both engine paths: .env → compose → healthz
+  Clear-RunOnce
   Log 'Writing .env (HOST_FP, INSTALL_FLAVOR)...'
   $guid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -ErrorAction SilentlyContinue).MachineGuid
   if ($guid) {
@@ -180,7 +183,7 @@ function Finish-Install {  # shared final for both engine paths: .env → compos
   exit 0
 }
 
-# --- resume integrity (before elevation): RunOnce resume only with an unchanged script ---
+# --- resume integrity: RunOnce resume only with an unchanged script ---
 if ($Resume) {
   $st = $null
   if (Test-Path $StateFile) { try { $st = Get-Content $StateFile -Raw | ConvertFrom-Json } catch {} }
@@ -188,93 +191,63 @@ if ($Resume) {
   if (-not $st -or $st.status -ne 'reboot-pending' -or $st.script_sha256 -ne $cur) {
     Log 'Resume refused: the installer changed since the reboot (or no pending state).'
     Log 'Re-run install.ps1 manually to continue with fresh consent.'
-    Remove-ItemProperty $RunOnceKey -Name 'MaxGraphInstall' -ErrorAction SilentlyContinue
+    Clear-RunOnce
     exit 1
   }
 }
 
-# --- engine check WITHOUT elevation (the Docker Desktop path needs no admin) ---
-if (Docker-Ok) { $script:Flavor = 'docker' }
-else {
-  $dd = "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
-  if (Test-Path $dd) {
-    Log 'Docker Desktop found but not running - starting it...'
-    Start-Process $dd   # as the user, not as admin
-    if (Wait-Engine 6) { $script:Flavor = 'docker' }
-  }
-}
-
-if ($script:Flavor) { Finish-Install }
-
-# --- from here on admin is required: one UAC prompt, only when an engine is truly missing ---
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
-  ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-  Log 'Elevating (UAC prompt)...'
-  $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"")
-  if ($Yes) { $argList += '-Yes' }
-  if ($Resume) { $argList += '-Resume' }
-  try {
-    $p = Start-Process powershell.exe -Verb RunAs -ArgumentList $argList -Wait -PassThru
-  } catch {
-    Log 'Elevation declined by the user.'
-    exit 3
-  }
-  exit $p.ExitCode
-}
 Start-Transcript -Path (Join-Path $PSScriptRoot 'install.log') -Append | Out-Null
 $script:TranscriptOn = $true
 
 try {
-  if (Docker-Ok) { $script:Flavor = 'docker'; Finish-Install }  # the engine came up while UAC was pending
+  if (Docker-Ok) {
+    $script:Flavor = 'docker'
+    if ($Resume) { $script:Flavor = 'docker-desktop' }   # resume of the install we armed
+    Finish-Install
+  }
 
-  if (-not (Consent 'Docker not found. Install Rancher Desktop (free, Docker-compatible, ~650 MB download; admin rights; a reboot may be required - the installer continues automatically afterwards)?')) {
-    Python-Fallback
-  }
-  if ([Environment]::OSVersion.Version.Build -lt 22000) {
-    Log 'NOTE: Windows 10 detected - Rancher Desktop officially requires Windows 11. Will try; on failure we fall back to Python mode.'
-  }
-  # WSL2 must be enabled BEFORE the Rancher installer; enabling needs a reboot
-  $wsl = Get-WindowsOptionalFeature -Online -FeatureName 'Microsoft-Windows-Subsystem-Linux'
-  $vmp = Get-WindowsOptionalFeature -Online -FeatureName 'VirtualMachinePlatform'
-  if ($wsl.State -ne 'Enabled' -or $vmp.State -ne 'Enabled') {
-    Log 'Enabling WSL2 features...'
-    Enable-WindowsOptionalFeature -Online -FeatureName 'Microsoft-Windows-Subsystem-Linux' -All -NoRestart | Out-Null
-    Enable-WindowsOptionalFeature -Online -FeatureName 'VirtualMachinePlatform' -All -NoRestart | Out-Null
-    Write-State 'reboot-pending'
-    # HKLM RunOnce: fires at the first logon of any user (covers UAC under
-    # a different admin account while the buyer is the one logging in)
-    $cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Yes -Resume"
-    Set-ItemProperty $RunOnceKey -Name 'MaxGraphInstall' -Value $cmd
-    Log 'A REBOOT is required. The installer will continue automatically after you log back in.'
-    if ($Yes -or (Consent 'Reboot now?')) {
-      Log 'Rebooting in 15 seconds - save your work.'
-      & shutdown.exe /r /t 15 /c 'MaxGraph: reboot to enable WSL2; the installation continues automatically after logon.' | Out-Null
-    } else {
-      Log 'Reboot manually when ready, then re-run install.ps1 (auto-resume cancelled).'
-      Remove-ItemProperty $RunOnceKey -Name 'MaxGraphInstall' -ErrorAction SilentlyContinue
+  if (Test-Path $DockerDesktopExe) {
+    Log 'Docker Desktop found but not running - starting it...'
+    Refresh-DockerPath
+    Start-Process $DockerDesktopExe   # as the user, no admin needed
+    if (Wait-Engine 10) {
+      $script:Flavor = 'docker'
+      if ($Resume) { $script:Flavor = 'docker-desktop' }   # resume of the reboot we armed
+      Finish-Install
     }
+    Log 'Docker Desktop is installed but its engine is not up. Finish its first-run dialog (a sign-in offer can be skipped), then re-run install.ps1.'
+    Clear-RunOnce
+    Write-State 'error'; Stop-Log; exit 1
+  }
+
+  if ([Environment]::OSVersion.Version.Build -lt 19044) {
+    Log 'NOTE: Docker Desktop requires Windows 10 21H2+ or Windows 11. Will try; on failure we fall back to Python mode.'
+  }
+
+  for ($attempt = 1; $attempt -le 2; $attempt++) {
+    if ($attempt -eq 1) {
+      $q = 'Docker not found. Download and run the official Docker Desktop installer from docker.com (~600 MB; Docker''s installer requests admin rights itself; one reboot may be needed - this installer continues automatically afterwards)?'
+    } else {
+      $q = 'Docker Desktop is the recommended engine for MaxGraph (the Python fallback loses auto-updates and autostart). Install the official Docker Desktop from docker.com?'
+    }
+    if (-not (Consent $q)) { continue }
+    if (-not (Install-DockerDesktop)) { continue }
+    Refresh-DockerPath
+    if (Test-Path $DockerDesktopExe) {
+      Log 'Starting Docker Desktop (first start can take minutes)...'
+      Start-Process $DockerDesktopExe
+    }
+    if (Wait-Engine 10) { $script:Flavor = 'docker-desktop'; Finish-Install }
+    # Engine not up: Docker's installer asked for a reboot (RunOnce is armed)
+    # or its first-run dialog is still waiting on the user.
+    Log 'If Docker Desktop asked for a reboot - reboot now: this installer continues automatically after logon. Otherwise finish the Docker Desktop dialog, then re-run install.ps1.'
     Stop-Log
     exit 2
   }
-  & wsl.exe --install --no-distribution *> $null  # WSL kernel; no-op if present
-  & wsl.exe --set-default-version 2 *> $null
-  if (-not (Install-Rancher)) { Python-Fallback }
-  $bin = Find-RancherBin
-  if (-not $bin) { Log 'Rancher installed but rdctl not found'; Python-Fallback }
-  Write-RancherProfile
-  & (Join-Path $bin 'rdctl.exe') set --container-engine=moby --kubernetes-enabled=false *> $null  # pre-existing containerd config
-  Log 'Starting Rancher Desktop (first start downloads VM images - can take minutes)...'
-  & (Join-Path $bin 'rdctl.exe') start *> $null
-  $env:PATH = "$bin;$env:PATH"
-  if (-not (Wait-Engine 10)) {
-    Log 'Engine did not come up in 10 minutes (virtualization off in BIOS? needs VT-x/AMD-V).'
-    Python-Fallback
-  }
-  $script:Flavor = 'rancher'
-  Finish-Install
+  Python-Fallback
 } catch {
   Log "ERROR: $($_.Exception.Message)"
+  Clear-RunOnce
   Write-State 'fallback-python'
   Stop-Log
   exit 3

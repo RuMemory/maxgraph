@@ -3,7 +3,7 @@
 # Run from the root of the cloned repo:  bash install.sh [--yes]
 #
 # Steps: working Docker? → if missing, with the user's consent install an engine
-# (macOS → Rancher Desktop, free & Docker-compatible; Linux → official Docker
+# (macOS → official Docker Desktop from docker.com; Linux → official Docker
 # Engine script) → write HOST_FP/INSTALL_FLAVOR into .env →
 # docker compose up -d --build → wait for healthz.
 #
@@ -40,7 +40,7 @@ write_state() {  # status flavor
 
 docker_ok() { $DOCKER info >/dev/null 2>&1 && $DOCKER compose version >/dev/null 2>&1; }
 
-wait_engine() {  # first Rancher start downloads VM images — allow 10 minutes
+wait_engine() {  # first Docker Desktop start installs its helper and VM — allow 10 minutes
   local i
   for i in $(seq 1 120); do
     docker_ok && return 0
@@ -93,51 +93,30 @@ compute_host_fp() {  # sha256 of the stable hardware id; raw id never leaves the
 
 install_engine_macos() {
   if command -v brew >/dev/null 2>&1; then
-    log "Installing Rancher Desktop via Homebrew…"
-    brew install --cask rancher || return 1
+    log "Installing Docker Desktop via Homebrew…"
+    brew install --cask docker || return 1
   else
-    log "Homebrew not found — downloading Rancher Desktop from GitHub releases…"
-    local api ver arch dmg mnt
-    api="$(curl -fsSL https://api.github.com/repos/rancher-sandbox/rancher-desktop/releases/latest)" || return 1
-    ver="$(printf '%s' "$api" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' | head -1)"
-    [ -n "$ver" ] || { log "Could not resolve the latest Rancher version"; return 1; }
-    arch="$(uname -m)"; [ "$arch" = "arm64" ] && arch=aarch64
-    dmg="Rancher.Desktop-${ver}.${arch}.dmg"
-    log "Downloading $dmg (verified against the published sha512)…"
-    ( cd "$TD" && \
-      curl -fsSLO "https://github.com/rancher-sandbox/rancher-desktop/releases/download/v${ver}/${dmg}" && \
-      curl -fsSLO "https://github.com/rancher-sandbox/rancher-desktop/releases/download/v${ver}/${dmg}.sha512sum" && \
-      shasum -a 512 -c "${dmg}.sha512sum" ) || return 1
-    mnt="$(hdiutil attach -nobrowse "$TD/${dmg}" | tail -1 | awk -F'\t' '{print $NF}')"
+    log "Homebrew not found — downloading the official Docker Desktop dmg from docker.com…"
+    local arch mnt
+    arch="$(uname -m)"; [ "$arch" = "arm64" ] || arch=amd64
+    ( cd "$TD" && curl -fsSLo Docker.dmg "https://desktop.docker.com/mac/main/${arch}/Docker.dmg" ) || return 1
+    mnt="$(hdiutil attach -nobrowse "$TD/Docker.dmg" | tail -1 | awk -F'\t' '{print $NF}')"
     [ -n "$mnt" ] || return 1
     # curl sets no quarantine xattr → Gatekeeper stays silent; verify the signature ourselves (fail-closed)
-    if ! codesign --verify --deep --strict "$mnt/Rancher Desktop.app" || ! spctl -a -t exec -vv "$mnt/Rancher Desktop.app"; then
+    if ! codesign --verify --deep --strict "$mnt/Docker.app" || ! spctl -a -t exec -vv "$mnt/Docker.app"; then
       hdiutil detach -quiet "$mnt"
-      log "Signature/Gatekeeper check failed for Rancher Desktop.app"
+      log "Signature/Gatekeeper check failed for Docker.app"
       return 1
     fi
-    cp -R "$mnt/Rancher Desktop.app" /Applications/ 2>/dev/null \
-      || sudo cp -R "$mnt/Rancher Desktop.app" /Applications/ \
+    cp -R "$mnt/Docker.app" /Applications/ 2>/dev/null \
+      || sudo cp -R "$mnt/Docker.app" /Applications/ \
       || { hdiutil detach -quiet "$mnt"; return 1; }
     hdiutil detach -quiet "$mnt"
-    chmod -R a+rX "/Applications/Rancher Desktop.app" 2>/dev/null \
-      || sudo chmod -R a+rX "/Applications/Rancher Desktop.app" 2>/dev/null || true   # umask 077: не запереть .app от других пользователей Mac
+    chmod -R a+rX "/Applications/Docker.app" 2>/dev/null \
+      || sudo chmod -R a+rX "/Applications/Docker.app" 2>/dev/null || true   # umask 077: не запереть .app от других пользователей Mac
   fi
-  # Skip the first-run GUI dialog: moby engine + kubernetes off via a deployment profile
-  cat > "$HOME/Library/Preferences/io.rancherdesktop.profile.defaults.plist" <<'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>version</key><integer>18</integer>
-<key>containerEngine</key><dict><key>name</key><string>moby</string></dict>
-<key>kubernetes</key><dict><key>enabled</key><false/></dict>
-</dict></plist>
-EOF
-  local rd="/Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin"
-  [ -x "$rd/rdctl" ] || { log "rdctl not found after install"; return 1; }
-  "$rd/rdctl" set --container-engine=moby --kubernetes-enabled=false >/dev/null 2>&1 || true  # covers a pre-existing containerd config
-  "$rd/rdctl" start || return 1
-  PATH="$rd:$PATH"
+  log "Starting Docker Desktop (first start asks for the admin password to install its helper)…"
+  open -a Docker
 }
 
 install_engine_linux() {
@@ -169,9 +148,17 @@ else
   fi
   if [ -z "$FLAVOR" ]; then
     if [ "$OS" = "Darwin" ]; then
-      consent "Docker not found. Install Rancher Desktop (free, Docker-compatible, ~650 MB download; admin rights may be requested)?" \
-        || python_fallback
-      install_engine_macos && FLAVOR=rancher
+      attempt=1
+      while [ "$attempt" -le 2 ]; do
+        if [ "$attempt" = 1 ]; then
+          consent "Docker not found. Install the official Docker Desktop from docker.com (~600 MB; on first start Docker asks for your admin password to install its helper)?" || { attempt=2; continue; }
+        else
+          consent "Docker Desktop is the recommended engine for MaxGraph (the Python fallback loses auto-updates and autostart). Install Docker Desktop?" || break
+        fi
+        install_engine_macos && { FLAVOR=docker-desktop; break; }
+        log "Docker Desktop did not finish installing"
+        attempt=$((attempt+1))
+      done
     else
       consent "Docker not found. Install Docker Engine via the official get.docker.com script (sudo required; adds your user to the docker group — permanent root-equivalent rights)?" \
         || python_fallback

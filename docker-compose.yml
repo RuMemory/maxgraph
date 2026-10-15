@@ -11,7 +11,7 @@ services:
     environment:
       MEMORY_TOKEN: ${MEMORY_TOKEN:-}  # пусто → автогенерация mg_local_* в data/local_token.txt (v0.14)
       HOST_FP: ${HOST_FP:-}  # sha256 железа хоста (ставит установщик; стабильный fingerprint машины)
-      INSTALL_FLAVOR: ${INSTALL_FLAVOR:-}  # docker|rancher|python — ставит установщик; метка в install-ping (v0.39.0)
+      INSTALL_FLAVOR: ${INSTALL_FLAVOR:-}  # docker|docker-desktop|python — ставит установщик; метка в install-ping
       STORE_MODE: ${STORE_MODE:-}
       TRUST_PROXY: ${TRUST_PROXY:-}
       PLATEGA_MERCHANT_ID: ${PLATEGA_MERCHANT_ID:-}

@@ -29,9 +29,9 @@ Env:
                   магазин отвечает якорем начала триала → снос data/ не сбрасывает 7 дней.
                   Сюда же learn-events (v0.26.0): анонимный пакет
                   «запрос → открытый заголовок» раз в 5 мин (W2)
-  INSTALL_FLAVOR — метка способа установки (docker|rancher|python) в install-ping;
-                  ставится установщиком (install.sh/install.ps1), пусто →
-                  autodetect по маркеру контейнера /.dockerenv (v0.39.0)
+  INSTALL_FLAVOR — метка способа установки (docker|docker-desktop|python; rancher =
+                  легаси-установки) в install-ping; ставится установщиком
+                  (install.sh/install.ps1), пусто → autodetect по /.dockerenv
   MEMORY_DIR    — каталог данных (default /data)
   PORT          — порт (default 8787)
   READONLY      — READONLY=1: зеркало (resync.py перезаписывает memory.json из прода) —
@@ -3187,7 +3187,7 @@ _INSTALL_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[
 # v0.16.3: серверный якорь триала по machine fingerprint (sha256 hex)
 _FP_RE = re.compile(r"^[0-9a-f]{64}$")
 # v0.39.0: способ установки в install-ping; неизвестное значение не храним
-_INSTALL_FLAVORS = frozenset({"docker", "rancher", "python"})
+_INSTALL_FLAVORS = frozenset({"docker", "docker-desktop", "rancher", "python"})
 _INSTALLS_CAP = 10000   # потолок installs-дикта; вытеснение самых старых по last_seen
 _TRIALS_CAP = 100_000   # потолок fp-реестра; переполнение → ответ без trial-блока (не 5xx)
 
@@ -4697,55 +4697,6 @@ async def api_codes_redeem(request: Request):
     _event("code_activated", tenant_id, f'{rec["tier"]} · {code}')
     return JSONResponse({"ok": True, "tier": rec["tier"], "token": token, "licenseKey": lic},
                         headers=_NOCACHE)
-
-
-# --- cloud trial (v0.8): email → trial-код. License key НЕ выдаётся ---
-# (self-hosted триал 7 дней — отдельно, см. licensing.py). Абьюз-лимиты:
-# 2/сутки с IP + глобальный потолок 500 trial-кодов. Email обязателен;
-# повторная регистрация на тот же email → 409.
-_TRIAL_MAX_TOTAL = 500
-
-
-@mcp.custom_route("/api/codes/trial", methods=["POST"])
-async def api_codes_trial(request: Request):
-    import secrets
-    ip = _client_ip(request)
-    if _rate_limited(ip, "trial", 2, 86400):
-        return JSONResponse({"ok": False, "error": "trial_limit_reached"}, status_code=429)
-    try:
-        raw, _err = await _read_capped(request, 4096)  # кап по факту и тут
-        body = json.loads(raw) if raw and _err is None else {}
-    except Exception:
-        body = {}
-    email = _valid_email(body.get("email") if isinstance(body, dict) else None)
-    if not email:
-        return JSONResponse({"ok": False, "error": "valid_email_required"}, status_code=400)
-    # per-email throttle: ответ email_exists — оракул «зарегистрирован ли этот email»;
-    # 1 запрос/час на email делает массовый перебор непрактичным
-    if _rate_limited(f"em:{email}", "trial_email", 1, 3600):
-        return JSONResponse({"ok": False, "error": "trial_limit_reached"}, status_code=429)
-    with _codes_lock:
-        data = _load_codes()
-        if any(t.get("email") == email for t in data["tenants"]):
-            return JSONResponse({"ok": False, "error": "email_exists"}, status_code=409)
-        trials = sum(1 for c in data["codes"] if (c.get("note") or "").startswith("trial"))
-        if trials >= _TRIAL_MAX_TOTAL:
-            return JSONResponse({"ok": False, "error": "trial_exhausted"}, status_code=503)
-        existing = {c["code"] for c in data["codes"]}
-        code = _new_code()
-        while code in existing:
-            code = _new_code()
-        tenant_id = "t-" + secrets.token_hex(4)
-        token = "mg_" + secrets.token_hex(20)
-        rec = _code_rec(code, "pro", "activated", "trial")
-        rec["activatedAt"] = now_iso()
-        rec["tenant"] = tenant_id
-        data["codes"].append(rec)
-        data["tenants"].append({"id": tenant_id, "token_hash": _token_hash(token), "tier": "pro",
-                                "createdAt": now_iso(), "code": code, "email": email})
-        _save_codes(data)
-    _event("trial_activated", tenant_id, f"{code} · {email}")
-    return JSONResponse({"ok": True, "code": code, "token": token}, headers=_NOCACHE)
 
 
 # --- v0.37.0: реферальная система (SPEC-referral.md) -------------------------
@@ -6694,7 +6645,7 @@ class TokenAuth:
     PUBLIC_PATHS = {"/healthz", "/", "/admin", "/app", "/landing", "/og.png",
                     "/privacy", "/offer",  # правовые страницы лендинга
                     "/.well-known/security.txt",  # RFC 9116: контакт для security-репортов
-                    "/api/codes/redeem", "/api/codes/trial", "/api/plans",
+                    "/api/codes/redeem", "/api/plans",
                     "/api/billing/pay", "/api/billing/status", "/billing/result", "/billing/webhook/platega",
                     "/billing/create", "/billing/success", "/api/license/validate",
                     "/api/telemetry/install",  # v0.14: анонимный install-ping

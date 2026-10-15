@@ -5,9 +5,9 @@ Run from the root of the install folder:
   powershell -NoProfile -ExecutionPolicy Bypass -File uninstall.ps1 [-Yes] [-WipeData] [-DryRun]
 
 Removes: docker containers + images (maxgraph, maxgraph-updater), the
-updater-state volume (only with -WipeData), the Rancher Desktop defaults profile
-values install.ps1 wrote + the RunOnce resume key, ~/.maxgraph (session-hook
-spool).
+updater-state volume (only with -WipeData), the RunOnce resume key (HKCU;
+legacy installs wrote it to HKLM), the Rancher Desktop defaults profile
+values legacy install.ps1 wrote, ~/.maxgraph (session-hook spool).
 NOT removed: Docker/Rancher themselves (shared tools, other apps may use them),
 the MCP entries in client configs and the AGENTS.md rules block (done by the
 agent — llms-install.md, "Uninstall"), and this install folder itself.
@@ -129,7 +129,10 @@ Remove-RegistryKeyIfEmpty "$rd\containerEngine"
 Remove-RegistryKeyIfEmpty "$rd\kubernetes"
 Remove-RegistryKeyIfEmpty $rd
 if (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'MaxGraphInstall' -ErrorAction SilentlyContinue) {
-  Remove-Registry { Remove-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'MaxGraphInstall' -ErrorAction Stop } 'RunOnce MaxGraphInstall'
+  Remove-Registry { Remove-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'MaxGraphInstall' -ErrorAction Stop } 'HKLM RunOnce MaxGraphInstall (legacy)'
+}
+if (Get-ItemProperty 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'MaxGraphInstall' -ErrorAction SilentlyContinue) {
+  Remove-Registry { Remove-ItemProperty 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'MaxGraphInstall' -ErrorAction Stop } 'HKCU RunOnce MaxGraphInstall'
 }
 if (Test-Path -LiteralPath "$HOME\.maxgraph") { Remove-Tree "$HOME\.maxgraph" }   # session-hook spool
 

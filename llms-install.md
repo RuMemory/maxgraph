@@ -19,8 +19,8 @@ first launch and stored in `data/local_token.txt`.
 ## Prerequisites
 
 None required upfront. The installer checks for Docker and, with the user's
-consent, installs an engine itself (Rancher Desktop on Windows/macOS — free,
-Docker-compatible; official Docker Engine on Linux). A Python 3.12+ fallback
+consent, installs an engine itself (official Docker Desktop from docker.com on
+Windows/macOS; official Docker Engine on Linux). A Python 3.12+ fallback
 exists for machines where no engine may be installed.
 
 ## Step 1 — install
@@ -40,17 +40,20 @@ raw id never leaves the host), writes `.env` and runs `docker compose up -d --bu
 - Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes`
 
 **Docker missing → ask the user FIRST** (in their language): "Docker not found.
-The installer will set up Rancher Desktop — a free, Docker-compatible engine
-(on Linux: the official Docker Engine script — it also adds your user to the
-docker group, permanent root-equivalent rights): ~650 MB download, admin rights;
-on Windows a reboot may be required — the installation continues automatically
-afterwards. Proceed?" Consent → run with
-`--yes`/`-Yes` as above.
+The installer will download and run the official Docker Desktop installer from
+docker.com (on Linux: the official Docker Engine script — it also adds your
+user to the docker group, permanent root-equivalent rights): ~600 MB download;
+Docker's installer requests admin rights itself; on Windows one reboot may be
+required — the installation continues automatically afterwards. Proceed?"
+Consent → run with `--yes`/`-Yes` as above. A declined offer is repeated once
+with Docker Desktop as the recommended option; a second refusal → Python
+fallback. During setup a Docker Desktop installer window appears on screen —
+the user clicks through it (admin prompt; sign-in can be skipped).
 
-Exit codes: `0` — MaxGraph is running, continue at step 2; `2` — a Windows reboot
-started, the installer resumes automatically at logon (warn the user); if the user
-declined the reboot at the interactive prompt, auto-resume is cancelled — they
-reboot manually and re-run `install.ps1`; `3` — no
+Exit codes: `0` — MaxGraph is running, continue at step 2; `2` — Docker Desktop
+asks for a Windows reboot or has a dialog waiting: the installer resumes
+automatically at logon (warn the user); if auto-resume did not fire, the user
+finishes the Docker Desktop dialogs and re-runs `install.ps1`; `3` — no
 engine → Python fallback below; `1` — error → read `install.log`.
 
 ### Python fallback (only when Docker is declined or impossible)
@@ -144,20 +147,23 @@ Client-specific locations:
 
 ## What the installer leaves behind
 
-Besides Docker containers and `data/`: a Rancher Desktop defaults profile (moby engine,
-Kubernetes off) at `HKLM\SOFTWARE\Policies\Rancher Desktop\Defaults` (Windows) or
-`~/Library/Preferences/io.rancherdesktop.profile.defaults.plist` (macOS), and
-`install.log` / `install-state.json` in the repo folder. The uninstaller (next section) removes them.
-Note (Windows): the post-reboot auto-resume lives in HKLM RunOnce — it fires at the
-first logon of ANY user; if someone else logs in first, re-run `install.ps1` manually.
+Besides Docker containers and `data/`: `install.log` / `install-state.json` in the
+repo folder, and — only while a reboot is pending — a `MaxGraphInstall` entry in
+the user's `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce` (removed
+automatically on success). The uninstaller (next section) removes them.
+Installations made by MaxGraph 0.39–0.41 may additionally carry a Rancher Desktop
+defaults profile at `HKLM\SOFTWARE\Policies\Rancher Desktop\Defaults` (Windows) or
+`~/Library/Preferences/io.rancherdesktop.profile.defaults.plist` (macOS) — the
+uninstaller removes that too.
 
 ## Uninstall
 
 When the user asks to remove MaxGraph — full cleanup, no leftovers:
 
 1. **Run the uninstaller** from the install folder — it removes the containers and
-   images (`maxgraph`, `maxgraph-updater`), the Rancher defaults profile, the Windows
-   RunOnce resume key and `~/.maxgraph` (session-hook spool):
+   images (`maxgraph`, `maxgraph-updater`), the legacy Rancher defaults profile,
+   the Windows RunOnce resume key (HKCU; HKLM on legacy installs) and
+   `~/.maxgraph` (session-hook spool):
    - macOS/Linux: `bash uninstall.sh`
    - Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1`
 
@@ -182,7 +188,8 @@ When the user asks to remove MaxGraph — full cleanup, no leftovers:
 Install folder already deleted? Then: `docker rm -f maxgraph maxgraph-updater`
 (plus `docker volume ls -q --filter name=updater-state | xargs -r docker volume rm`
 and `docker rmi` of the built images when the data must go too), then steps 2–4
-by hand. Docker/Rancher themselves stay installed — other apps may use them.
+by hand. Docker Desktop / Rancher themselves stay installed — other apps may use
+them.
 Leftovers the uninstaller deliberately leaves: on Linux the user stays in the
 `docker` group (root-equivalent; remove it by hand if MaxGraph was the only
 reason: `sudo gpasswd -d <user> docker`), on Windows the WSL2 features stay
