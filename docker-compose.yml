@@ -1,5 +1,6 @@
 services:
   maxgraph:
+    image: ghcr.io/rumemory/maxgraph:${MG_VERSION:-latest}  # готовый образ быстрее сборки; нет сети до ghcr — соберётся из build. Конвергенция: updater при следующем релизе пересоберёт код из подписанного tarball. НА ПРОДЕ pull ЗАПРЕЩЁН: публичный образ без кода магазина — только локальный --build
     build: .
     container_name: maxgraph
     restart: unless-stopped

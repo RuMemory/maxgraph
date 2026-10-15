@@ -71,7 +71,8 @@ $guid=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography').MachineGuid
 Запуск:
 
 ```bash
-docker compose up -d --build
+docker compose pull   # готовый образ; нет сети до ghcr — пропусти, соберётся локально
+docker compose up -d
 ```
 
 Проверка, что всё живо:

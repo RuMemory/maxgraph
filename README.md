@@ -50,7 +50,8 @@
 
 ```bash
 git clone https://github.com/RuMemory/maxgraph && cd maxgraph
-docker compose up -d --build
+docker compose pull   # готовый образ; нет сети до ghcr — пропусти, соберётся локально
+docker compose up -d
 ```
 
 Нет Docker? Установщик поставит движок сам (официальный Docker Desktop с docker.com на Windows/macOS, Docker Engine на Linux): `bash install.sh` или `powershell -File install.ps1` из папки репозитория. Устанавливает ИИ-агент? Ему — [AGENTS.md](AGENTS.md).

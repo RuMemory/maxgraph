@@ -1,0 +1,54 @@
+name: Docker
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    name: Build and push to GHCR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # master push -> :latest + :sha-<shortsha> + :<VERSION file> (для MCP Registry: пин версии без v)
+      # tag push v*  -> :latest + :<tag>  (e.g. v0.10.0)
+      - name: Compute image tags
+        id: meta
+        run: |
+          IMAGE=ghcr.io/rumemory/maxgraph
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION_TAG="${GITHUB_REF_NAME}"
+            VFILE=$(tr -d '[:space:]' < VERSION)
+          else
+            VERSION_TAG="sha-${GITHUB_SHA::7}"
+            VFILE=$(tr -d '[:space:]' < VERSION)
+          fi
+          echo "tags=${IMAGE}:latest,${IMAGE}:${VERSION_TAG},${IMAGE}:${VFILE}" >> "$GITHUB_OUTPUT"
+          echo "Pushing: ${IMAGE}:latest, ${IMAGE}:${VERSION_TAG} and ${IMAGE}:${VFILE}"
+
+      # push: только из публичной витрины RuMemory/maxgraph — образ собирается из
+      # whitelist-дерева, которое видит покупатель (dev-репо содержит код магазина;
+      # там workflow остаётся build-only проверкой). PR — всегда build-only.
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' && github.repository == 'RuMemory/maxgraph' }}
+          tags: ${{ steps.meta.outputs.tags }}

@@ -4,8 +4,8 @@
 #
 # Steps: working Docker? → if missing, with the user's consent install an engine
 # (macOS → official Docker Desktop from docker.com; Linux → official Docker
-# Engine script) → write HOST_FP/INSTALL_FLAVOR into .env →
-# docker compose up -d --build → wait for healthz.
+# Engine script) → write HOST_FP/INSTALL_FLAVOR into .env → pull the prebuilt
+# GHCR image (local build as fallback) → up -d → wait for healthz.
 #
 # Exit codes (read by the installing AI agent, see AGENTS.md):
 #   0 — MaxGraph is running in Docker
@@ -181,13 +181,36 @@ else
   log "WARN: no machine-id found — HOST_FP not set"
 fi
 upsert_env INSTALL_FLAVOR "$FLAVOR"
+mgv="$(cat VERSION 2>/dev/null || true)"
+if ! printf '%s' "$mgv" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then   # мусор в VERSION не должен отравить ref образа
+  [ -n "$mgv" ] && log "WARN: VERSION is not semver ('$mgv') — MG_VERSION empty (image: latest)"
+  mgv=""
+fi
+upsert_env MG_VERSION "$mgv"   # pin готового образа GHCR; пусто → latest
 chmod 600 .env 2>/dev/null || true
 
-log "Building and starting MaxGraph (docker compose up -d --build)…"
-if ! $DOCKER compose up -d --build; then
-  log "compose failed — see install.log"
-  write_state error "$FLAVOR"
-  exit 1
+running="$($DOCKER exec maxgraph cat /app/VERSION 2>/dev/null || true)"
+printf '%s' "$running" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || running=""   # мусор/чужой контейнер → гвард молчит
+lowest="$(printf '%s\n%s\n' "$running" "$mgv" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)"   # BSD/macOS: sort -V нет
+if [ -n "$running" ] && [ -n "$mgv" ] && [ "$running" != "$mgv" ] \
+   && [ "$lowest" = "$mgv" ]; then
+  upsert_env MG_VERSION "$running"   # автообновлённая установка + старый клон: даунгрейдить нельзя
+  log "Running MaxGraph $running is NEWER than this clone ($mgv) — the clone is stale (git pull for a fresh one). Leaving the running server untouched."
+  write_state done "$FLAVOR"
+  exit 0
+fi
+
+log "Starting MaxGraph (pulling the prebuilt image first; local build is the fallback)…"
+if ! $DOCKER compose pull >/dev/null 2>&1; then
+  log "Prebuilt image unavailable — building locally (a few minutes)…"
+fi
+if ! $DOCKER compose up -d; then
+  log "up failed — retrying with a full local build…"
+  if ! $DOCKER compose up -d --build; then
+    log "compose failed — see install.log"
+    write_state error "$FLAVOR"
+    exit 1
+  fi
 fi
 
 ok=0

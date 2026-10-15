@@ -11,8 +11,13 @@
 ```text
 У тебя есть постоянная память Maxgraph (инструменты maxgraph/*).
 
-СТАРТ СЕССИИ: вызови read_graph — загрузи граф знаний. Нужна конкретная тема —
-search_nodes по запросу.
+ПРОЕКТ = текущая рабочая папка пользователя. Вычисли её slug один раз на сессию
+(kebab-case: git remote → корень git-репозитория → имя папки) и передавай
+параметр project=<slug> КАЖДОМУ вызову maxgraph — так память пишется и читается
+в проекте пользователя, а сам проект появляется в графе автоматически.
+
+СТАРТ СЕССИИ: первым вызови session_start(project=<slug>) — вернётся готовый
+блок контекста проекта. Нужна конкретная тема — search_nodes(query, project=<slug>).
 
 ВО ВРЕМЯ РАБОТЫ — ПИШИ СРАЗУ, не откладывай на конец разговора:
 - новый проект/сервис/файл/инструмент → create_entities (с title, entityType, tags);
@@ -23,10 +28,11 @@ search_nodes по запросу.
 - объект X использует/зависит от Y → create_relations в активном залоге
   ("uses", "depends on", "configured by", "hosted on", "part of" — не "is used by");
 - изменился статус/параметр → add_observations (новый факт с датой),
-  при смене имени — update_entity.
+  при смене имени — update_entity;
+- дело «на потом» → task_add; завершил задачу → task_done.
 
-КОНЕЦ СЕССИИ: создай сущность session-YYYY-MM-DD с итогами разговора
-(entityType: "session") и свяжи её связью "discussed" с затронутыми сущностями.
+КОНЕЦ СЕССИИ: вызови session_close(project=<slug>, summary="...", done=[...]) —
+итоги и связи запишутся сами.
 
 УДАЛЕНИЕ MAXGRAPH по просьбе пользователя — полный порядок, без хвостов:
 1) в папке установки запусти uninstall.sh (macOS/Linux) / uninstall.ps1 (Windows) —
@@ -51,13 +57,20 @@ search_nodes по запросу.
 ```text
 You have persistent memory via Maxgraph (maxgraph/* tools).
 
-Session start: call read_graph; use search_nodes for a specific topic.
+PROJECT = the user's current working folder. Derive its slug once per session
+(kebab-case: git remote → git repo root → folder name) and pass project=<slug>
+to EVERY maxgraph call — memory is then written and read inside the user's
+project, and the project registers in the graph automatically.
+
+Session start: call session_start(project=<slug>) FIRST — it returns a ready
+context block for the project. For a specific topic: search_nodes(query, project=<slug>).
 While working — WRITE IMMEDIATELY, never batch to the end:
 new topic → create_entities (name = kebab-case id, title = human name; search first, don't duplicate);
 new durable fact about an existing entity → add_observations (one observation = one atomic fact, dated when it matters);
 dependencies → create_relations in active voice ("uses", "depends on", "configured by").
-Session end: create a session-YYYY-MM-DD entity with the outcomes, linked with "discussed"
-to every entity the conversation touched.
+Something for later → task_add; finished a task → task_done.
+Session end: call session_close(project=<slug>, summary="...", done=[...]) —
+outcomes and links are recorded for you.
 
 UNINSTALL on the user's request — full cleanup, no leftovers:
 1) run uninstall.sh (macOS/Linux) / uninstall.ps1 (Windows) in the install folder —

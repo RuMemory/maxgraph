@@ -34,7 +34,8 @@ Check Docker: `docker info` answers without errors and `docker compose version` 
 
 Run the installer from the repo root — it installs a missing engine, computes
 `HOST_FP` (sha256 of the host hardware id; never overwrites a non-empty value; the
-raw id never leaves the host), writes `.env` and runs `docker compose up -d --build`:
+raw id never leaves the host), writes `.env` and starts the server (prebuilt GHCR
+image, local build as fallback):
 
 - macOS/Linux: `bash install.sh --yes`
 - Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes`

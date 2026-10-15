@@ -10,7 +10,8 @@ docker.com (verified by its Authenticode signature) and run it — Docker's
 installer requests admin rights itself, enables WSL2 and asks for the reboot
 when one is needed; a reboot resumes this installer automatically (HKCU
 RunOnce, only with an unchanged script) → HOST_FP/INSTALL_FLAVOR into .env →
-docker compose up -d --build → wait for healthz.
+pull the prebuilt GHCR image (local build as fallback) → up -d → wait for
+healthz.
 
 Exit codes (read by the installing AI agent, see AGENTS.md):
   0 — MaxGraph is running in Docker
@@ -22,6 +23,7 @@ Exit codes (read by the installing AI agent, see AGENTS.md):
 param([switch]$Yes, [switch]$Resume)
 
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false   # pwsh 7.4+: упавшие нативные команды не должны бросать (мы читаем $LASTEXITCODE)
 Set-Location $PSScriptRoot
 $StateFile = Join-Path $PSScriptRoot 'install-state.json'
 $script:Flavor = ''
@@ -157,9 +159,32 @@ function Finish-Install {  # shared final for both engine paths: .env → compos
     Log 'WARN: no MachineGuid - HOST_FP not set'
   }
   Upsert-Env 'INSTALL_FLAVOR' $script:Flavor
+  $mgv = ([string](Get-Content (Join-Path $PSScriptRoot 'VERSION') -ErrorAction SilentlyContinue)).Trim()
+  if ($mgv -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {   # мусор в VERSION не должен отравить ref образа
+    if ($mgv) { Log "WARN: VERSION is not semver ('$mgv') - MG_VERSION empty (image: latest)" }
+    $mgv = ''
+  }
+  Upsert-Env 'MG_VERSION' $mgv   # pin of the GHCR image; empty → latest
 
-  Log 'Building and starting MaxGraph (docker compose up -d --build)...'
-  & docker compose up -d --build
+  $running = ([string](& docker exec maxgraph cat /app/VERSION 2>$null)).Trim()
+  if ($running -match '^[0-9]+\.[0-9]+\.[0-9]+$' -and $mgv) {
+    try {
+      if ([version]$running -gt [version]$mgv) {   # автообновлённая установка + старый клон: даунгрейдить нельзя
+        Upsert-Env 'MG_VERSION' $running
+        Log "Running MaxGraph $running is NEWER than this clone ($mgv) - the clone is stale (git pull for a fresh one). Leaving the running server untouched."
+        Write-State 'done'; Stop-Log; exit 0
+      }
+    } catch {}
+  }
+
+  Log 'Starting MaxGraph (pulling the prebuilt image first; local build is the fallback)...'
+  & docker compose pull *> $null
+  if ($LASTEXITCODE -ne 0) { Log 'Prebuilt image unavailable - building locally (a few minutes)...' }
+  & docker compose up -d
+  if ($LASTEXITCODE -ne 0) {
+    Log 'up failed - retrying with a full local build...'
+    & docker compose up -d --build
+  }
   if ($LASTEXITCODE -ne 0) {
     Log 'compose failed - see install.log'
     Write-State 'error'; Stop-Log; exit 1

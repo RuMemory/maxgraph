@@ -50,7 +50,8 @@ All you need is Docker:
 
 ```bash
 git clone https://github.com/RuMemory/maxgraph && cd maxgraph
-docker compose up -d --build
+docker compose pull   # prebuilt image; skip if ghcr is unreachable — it will build locally
+docker compose up -d
 ```
 
 No Docker? The installer sets up an engine itself (official Docker Desktop from docker.com on Windows/macOS, Docker Engine on Linux): `bash install.sh` or `powershell -File install.ps1` from the repo folder. An AI agent doing the install reads [AGENTS.md](AGENTS.md).
