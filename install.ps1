@@ -1,8 +1,8 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 install.ps1 — MaxGraph installer for Windows (macOS/Linux: install.sh).
 Run from the root of the cloned repo:
-  powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 [-Yes]
+  powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 [-Yes] [-ProjectDir <user project root>] [-RulesLang ru|en]
 
 Steps: working Docker? (this script never elevates itself) → if missing, with
 the user's consent: download the official Docker Desktop installer from
@@ -11,20 +11,23 @@ installer requests admin rights itself, enables WSL2 and asks for the reboot
 when one is needed; a reboot resumes this installer automatically (HKCU
 RunOnce, only with an unchanged script) → hostfp.json + HOST_FP/INSTALL_FLAVOR
 into .env → pull the prebuilt GHCR image (local build as fallback) → up -d →
-wait for healthz.
+wait for healthz → print the next-steps package (token + MCP config) for the
+installing AI agent.
+-ProjectDir: the memory rules block is injected into <dir>\AGENTS.md between
+<!-- maxgraph:start/end --> markers (idempotent).
 
 Modes: default = full install; -HostfpOnly = only (re)compute hostfp.json next
 to docker-compose.yml (heals an existing install — no rebuild; apply with
-`docker compose up -d`).
+`docker compose up -d`; no rules injection, no package print).
 
 Exit codes (read by the installing AI agent, see AGENTS.md):
   0 — MaxGraph is running in Docker (or hostfp.json written with -HostfpOnly)
   2 — Docker Desktop needs a reboot or has a dialog waiting: the installer
       continues automatically at next logon (or re-run install.ps1)
-  3 — engine declined or impossible → Python fallback (AGENTS.md, step 3a)
+  3 — engine declined or impossible → Python fallback (AGENTS.md, step 1a)
   1 — unexpected error (see install.log)
 #>
-param([switch]$Yes, [switch]$Resume, [switch]$HostfpOnly)
+param([switch]$Yes, [switch]$Resume, [switch]$HostfpOnly, [string]$ProjectDir, [string]$RulesLang)
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false   # pwsh 7.4+: упавшие нативные команды не должны бросать (мы читаем $LASTEXITCODE)
@@ -77,6 +80,137 @@ function Consent([string]$msg) {
   if ($Yes) { return $true }
   $a = Read-Host "$msg [y/N]"
   return ($a -match '^(y|yes|д|да)$')
+}
+
+# --- memory rules into the user's project (-ProjectDir) ----------------------
+# Injected BEFORE any engine work: only the repo file is needed, and the block
+# must land on every exit path (including the Python fallback). Idempotent:
+# the <!-- maxgraph:start/end --> markers are replaced in place on re-runs.
+$script:RulesInjected = $false
+
+function Get-RulesBlock([string]$lang) {
+  $md = Join-Path $PSScriptRoot 'maxgraph-agent.md'
+  if (-not (Test-Path $md)) { return $null }
+  $text = [System.IO.File]::ReadAllText($md, [System.Text.Encoding]::UTF8)
+  $hdr = if ($lang -eq 'ru') { '## Блок \(RU' } else { '## Блок \(EN' }
+  $m = [regex]::Match($text, $hdr + '[\s\S]*?```text\s*\r?\n([\s\S]*?)\r?\n```')
+  if ($m.Success) { return $m.Groups[1].Value }
+  return $null
+}
+
+function Inject-Rules {
+  if ([string]::IsNullOrWhiteSpace($ProjectDir)) { return }
+  if ($RulesLang -and $RulesLang -notin @('ru','en')) {
+    Log "WARN: -RulesLang '$RulesLang' - expected ru|en; falling back to OS locale"
+    $RulesLang = ''
+  }
+  if (-not (Test-Path $ProjectDir -PathType Container)) { Log "WARN: -ProjectDir '$ProjectDir' does not exist - rules not injected"; return }
+  $canon = (Resolve-Path $ProjectDir).Path.TrimEnd('\')
+  if ($canon -ieq $PSScriptRoot.TrimEnd('\')) {
+    Log 'WARN: -ProjectDir points at the cloned repo itself - rules belong in the USER project root; skipped'
+    return
+  }
+  $lang = if ($RulesLang) { $RulesLang } elseif ((Get-Culture).TwoLetterISOLanguageName -eq 'ru') { 'ru' } else { 'en' }
+  $block = Get-RulesBlock $lang
+  if (-not $block) { Log 'WARN: rules block not found in maxgraph-agent.md'; return }
+  $f = Join-Path $canon 'AGENTS.md'
+  if ((Test-Path $f) -and (Get-Item $f -Force).LinkType) {
+    Log "WARN: $f is a link - refusing to write through it"
+    return
+  }
+  $start = '<!-- maxgraph:start -->'; $end = '<!-- maxgraph:end -->'
+  $utf8 = New-Object System.Text.UTF8Encoding($false)   # no BOM; never Set-Content (PS5.1 writes ANSI)
+  # Кодировка исходного AGENTS.md сохраняется: BOM → UTF-8+BOM; валидный UTF-8 →
+  # UTF-8 без BOM; иначе ANSI (Encoding::Default) — жёсткое чтение UTF-8 портило
+  # CP1251-файлы без BOM (PS5.1 RU-Windows). Если блок в ANSI не кодируется —
+  # апгрейд до UTF-8 с BOM (без потерь), но никогда не кракозябры.
+  $enc = $utf8
+  $cur = ''
+  if (Test-Path $f) {
+    $bytes = [System.IO.File]::ReadAllBytes($f)
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+      $cur = [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
+      $enc = New-Object System.Text.UTF8Encoding($true)
+    } else {
+      $strict = New-Object System.Text.UTF8Encoding($false, $true)
+      try { $cur = $strict.GetString($bytes) }
+      catch { $cur = [System.Text.Encoding]::Default.GetString($bytes); $enc = [System.Text.Encoding]::Default }
+    }
+  }
+  # markers count ONLY on their own line (CRLF tolerated): the rules block
+  # itself mentions them inline (uninstall instructions) — an unanchored match
+  # would tear the file
+  $startRe = '(?m)^' + [regex]::Escape($start) + '\r?$'
+  $endRe = '(?m)^' + [regex]::Escape($end) + '\r?$'
+  # переносы файла наследуются: CRLF-файл → и блок, и соединители в CRLF
+  $eol = "`n"
+  if ($cur.Contains("`r`n")) {
+    $eol = "`r`n"
+    $block = ($block -replace "`r`n", "`n") -replace "`n", "`r`n"
+  }
+  if ($cur -and ([regex]::IsMatch($cur, $startRe)) -and ([regex]::IsMatch($cur, $endRe))) {
+    # паттерн поглощает и перевод строки после end-маркера: иначе хвост \n
+    # остаётся от старого текста и смешивает EOL в CRLF-файле
+    $pat = '(?ms)^' + [regex]::Escape($start) + '\r?\n.*?^' + [regex]::Escape($end) + '(\r?\n)?'
+    $re = New-Object System.Text.RegularExpressions.Regex($pat)
+    if (-not $re.IsMatch($cur)) {   # битая пара (end раньше start) — файл не трогаем
+      Log "WARN: $f - broken marker pair (end before start?) - file untouched"
+      return
+    }
+    $replacement = $start + $eol + $block + $eol + $end + $eol
+    $new = $re.Replace($cur, [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $replacement }, 1)
+  } else {
+    $prefix = if ($cur) { $eol } else { '' }
+    $new = $cur + $prefix + $start + $eol + $block + $eol + $end + $eol
+  }
+  if ($enc -eq [System.Text.Encoding]::Default) {   # блок не должен терять символы
+    $probe = $enc.GetString($enc.GetBytes($new))
+    if ($probe -cne $new) { $enc = New-Object System.Text.UTF8Encoding($true) }
+  }
+  # атомарно: непредсказуемый временный файл + File.Replace (обрыв WriteAllText
+  # усечёт файл пользователя; предсказуемое имя tmp — вектор symlink-подмены).
+  # .NET Framework (PS5.1): backup-аргумент File.Replace не может быть $null.
+  $tmp = Join-Path $canon (".mg-" + [guid]::NewGuid().ToString("N") + ".tmp")
+  $bak = Join-Path $canon (".mg-" + [guid]::NewGuid().ToString("N") + ".bak")
+  try {
+    [System.IO.File]::WriteAllText($tmp, $new, $enc)
+    if ($cur) {
+      try { [System.IO.File]::Replace($tmp, $f, $bak) }
+      catch { [System.IO.File]::Copy($tmp, $f, $true) }   # экзотика ФС — лучше копия, чем отказ
+    } else {
+      [System.IO.File]::Move($tmp, $f)
+    }
+  } finally {
+    Remove-Item $tmp, $bak -Force -ErrorAction SilentlyContinue
+  }
+  Log "Memory rules written into $f (between markers)"
+  $script:RulesInjected = $true
+}
+
+function Show-NextSteps {  # final package for the installing agent (see AGENTS.md)
+  $token = ''
+  $tf = Join-Path $PSScriptRoot 'data\local_token.txt'
+  if (Test-Path $tf) { $token = ([System.IO.File]::ReadAllText($tf)).Trim() }
+  if (-not $token) { $token = '<see data\local_token.txt>' }
+  $cfg = '"url":"http://localhost:8787/mcp","headers":{"Authorization":"Bearer ' + $token + '"}'
+  $rulesText = if ($script:RulesInjected) { "already in the project AGENTS.md ($ProjectDir)" } else { 'NOT injected - paste the block from maxgraph-agent.md between <!-- maxgraph:start --> and <!-- maxgraph:end --> in the project AGENTS.md' }
+  Write-Host ''
+  Write-Host '================ MAXGRAPH - NEXT STEPS (for the agent) ================'
+  Write-Host "1. Connect MCP to the user's host:"
+  Write-Host '   url: http://localhost:8787/mcp'
+  Write-Host "   header: Authorization: Bearer $token"
+  Write-Host "   JSON config (any host): {""mcpServers"":{""maxgraph"":{""type"":""http"",$cfg}}}"
+  Write-Host '   Claude Code: claude plugin marketplace add RuMemory/maxgraph; claude plugin install maxgraph@maxgraph'
+  Write-Host "2. Memory rules: $rulesText"
+  Write-Host '3. Verify memory: create_entities install-check -> search_nodes install-check.'
+  Write-Host '4. Tell the user: fully restart the host and start a NEW session in the project folder.'
+  Write-Host '   Dashboard: http://localhost:8787/app (same token).'
+  Write-Host '======================================================================='
+  $ri = $script:RulesInjected
+  # машиночитаемая строка — через ConvertTo-Json (пути с \ и " ломали ручную сборку);
+  # вызывать ПОСЛЕ Stop-Log: токен не должен попадать в транскрипт install.log
+  $meta = [ordered]@{ mcp_url = 'http://localhost:8787/mcp'; token = $token; rules_injected = $ri; project_dir = $ProjectDir }
+  Write-Host ("MAXGRAPH_NEXT_STEPS=" + ($meta | ConvertTo-Json -Compress))
 }
 
 function Docker-Ok {
@@ -238,7 +372,7 @@ function Finish-Install {  # shared final for both engine paths: .env → compos
       if ([version]$running -gt [version]$mgv) {   # автообновлённая установка + старый клон: даунгрейдить нельзя
         Upsert-Env 'MG_VERSION' $running
         Log "Running MaxGraph $running is NEWER than this clone ($mgv) - the clone is stale (git pull for a fresh one). Leaving the running server untouched."
-        Write-State 'done'; Stop-Log; exit 0
+        Write-State 'done'; Stop-Log; Show-NextSteps; exit 0
       }
     } catch {}
   }
@@ -268,9 +402,8 @@ function Finish-Install {  # shared final for both engine paths: .env → compos
   }
   Write-State 'done'
   Log "MaxGraph is running (engine: $script:Flavor)."
-  Log 'Dashboard: http://localhost:8787/app | MCP: http://localhost:8787/mcp'
-  Log 'Access token: data\local_token.txt'
   Stop-Log
+  Show-NextSteps   # после Stop-Log: токен пакета не попадает в install.log
   exit 0
 }
 
@@ -298,6 +431,8 @@ if ($HostfpOnly) {
   Stop-Log
   if ($okHfp) { exit 0 } else { exit 1 }
 }
+
+try { Inject-Rules } catch { Log "WARN: rules injection failed: $($_.Exception.Message)" }
 
 try {
   if (Docker-Ok) {

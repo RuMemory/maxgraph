@@ -10,7 +10,7 @@ legacy installs wrote it to HKLM), the Rancher Desktop defaults profile
 values legacy install.ps1 wrote, ~/.maxgraph (session-hook spool).
 NOT removed: Docker/Rancher themselves (shared tools, other apps may use them),
 the MCP entries in client configs and the AGENTS.md rules block (done by the
-agent — llms-install.md, "Uninstall"), and this install folder itself.
+agent — AGENTS.md, "Uninstall"), and this install folder itself.
 
 Memory data (.\data + updater backups) is KEPT unless -WipeData or an explicit
 "yes" at the prompt. -Yes alone never wipes data.
@@ -144,7 +144,7 @@ if ($script:Failed -gt 0) {
 } else {
   Log 'Server side removed.'
 }
-Log 'Left for the agent (llms-install.md → Uninstall):'
+Log 'Left for the agent (AGENTS.md → Uninstall):'
 Log '  • remove the "maxgraph" entry from the MCP client config(s)'
 Log '  • remove the block between <!-- maxgraph:start --> and <!-- maxgraph:end -->'
 Log '    from the project AGENTS.md; for global agent rules — SHOW the user any'

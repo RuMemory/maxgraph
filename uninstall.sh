@@ -9,7 +9,7 @@
 # (session-hook spool).
 # NOT removed: Docker/Rancher themselves (shared tools, other apps may use them),
 # the MCP entries in client configs and the AGENTS.md rules block (done by the
-# agent — llms-install.md, "Uninstall"), and this install folder itself.
+# agent — AGENTS.md, "Удаление"/"Uninstall"), and this install folder itself.
 #
 # Memory data (./data + updater backups) is KEPT unless --wipe-data or an
 # explicit "yes" at the prompt. --yes alone never wipes data.
@@ -126,7 +126,7 @@ else
   log "Server side removed."
 fi
 cat <<EOF
-[maxgraph-uninstall] Left for the agent (llms-install.md → Uninstall):
+[maxgraph-uninstall] Left for the agent (AGENTS.md → Uninstall):
   • remove the "maxgraph" entry from the MCP client config(s)
   • remove the block between <!-- maxgraph:start --> and <!-- maxgraph:end -->
     from the project AGENTS.md; for global agent rules — SHOW the user any

@@ -1,67 +1,140 @@
-# Maxgraph — Agent Instructions
+# MaxGraph — установка (инструкция для ИИ-агента)
 
-## 🚀 Ты — агент, и пользователь попросил тебя установить MaxGraph (память)
+Пользователь попросил установить MaxGraph — локальную долговременную память для вашей совместной работы. Делай всё сам, линейно: этот файл самодостаточен, другие документы для установки читать не нужно.
 
-Сделай всё сам, шаг за шагом:
+## 1. Клонируй и запусти установщик
 
-1. **Склонируй репозиторий**: `git clone https://github.com/RuMemory/maxgraph` и перейди в каталог проекта.
-2. **Проверь Docker**: `docker info` отвечает без ошибок и `docker compose version` работает → Docker есть, установщик пойдёт коротким путём. Нет → установщик поставит движок сам (шаг 3).
-3. **Запусти установщик** из корня репозитория — он проверит/поставит движок, вычислит `HOST_FP` (sha256 железа хоста — привязка триала и лицензии; существующий непустой НЕ перезаписывает; сырой идентификатор никуда не отправляется), запишет `.env`, создаст `hostfp.json` рядом с `docker-compose.yml` (тот же отпечаток — только хеши) и поднимет сервер (готовый образ GHCR; при его недоступности — локальная сборка):
-   - macOS/Linux: `bash install.sh --yes`
-   - Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes`
+```bash
+git clone https://github.com/RuMemory/maxgraph.git && cd maxgraph
+```
 
-   **Docker отсутствует → СНАЧАЛА спроси пользователя** (на его языке): «Docker на машине не найден. Установщик скачает с официального сайта docker.com и запустит установщик Docker Desktop (на Linux — официальный Docker Engine + добавление пользователя в группу docker — постоянные права, эквивалентные root): скачивание ~600 МБ; права администратора запросит сам установщик Docker; на Windows возможна одна перезагрузка — после входа установка продолжится автоматически. Ставим?» Согласие → та же команда с `--yes`/`-Yes`. Отказ → установщик предложит Docker Desktop ещё раз как рекомендуемый вариант; повторный отказ → шаг 3a. Python НИКОГДА не предлагай как равноправную опцию и не помечай «рекомендуемым»: рекомендуемый путь — всегда Docker, Python — только фолбэк после отказа(ов). Во время установки на экране появится окно установщика Docker — пользователю нужно пройти его шаги (подтвердить права администратора; вход в аккаунт Docker можно пропустить).
+Запусти установщик из корня клона. `--project-dir` — корень рабочей папки пользователя (твой исходный cwd до клонирования, НЕ папка клона): туда установщик вставит блок правил памяти в `AGENTS.md` (между маркерами, идемпотентно).
 
-   Коды выхода: `0` — MaxGraph запущен, иди к шагу 4; `2` — Docker Desktop просит перезагрузку Windows (или ждёт действий в своём окне): после входа пользователя установка продолжится автоматически (предупреди об этом); если автопродолжение не сработало — пользователь завершает диалоги Docker Desktop и перезапускает `install.ps1`; `3` — движок не установлен → шаг 3a; `1` — ошибка → читай `install.log`.
+- macOS / Linux: `bash install.sh --yes --project-dir "<cwd>"`
+- Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes -ProjectDir "<cwd>"`
 
-   **Рассказывай пользователю прогресс по ходу** (что качается, что ставится, сколько это обычно занимает): первая установка без Docker может занять до часа на медленном интернете — это разовая цена, дальше обновления приходят сами. Молчаливый час ожидания выглядит для пользователя как зависание.
+Установщик сам: проверит Docker (нет — с согласия пользователя поставит официальный движок с docker.com), вычислит отпечаток хоста (с машины уходят только хеши), поднимет сервер, вставит правила в проект и в конце напечатает **пакет следующих шагов**: токен, готовый MCP-конфиг и машиночитаемую строку `MAXGRAPH_NEXT_STEPS={...}`.
 
-3a. **Python-фолбэк** (ТОЛЬКО если Docker отклонён или недоступен; нужен Python 3.12+):
-   1. `pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"` (`mcp<2` обязательно: в 2.x `FastMCP` переименован)
-   2. Вычисли `HOST_FP` и запиши строкой `HOST_FP=<64 hex>` в `.env` (нет файла → создай копией `.env.example`; непустой не перезаписывай); опционально — `hostfp.json` в корень репо повторным запуском установщика с флагом `--hostfp-only` / `-HostfpOnly` (работает без Docker; python-режим читает его из корня репо):
-      - Windows (PowerShell): `$guid=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography').MachineGuid; [BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("$guid"))).Replace('-','').ToLower()`
-      - macOS: `printf %s "$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/{print $4}')" | shasum -a 256 | awk '{print $1}'`
-      - Linux: `tr -d '[:space:]' < /etc/machine-id | sha256sum | awk '{print $1}'`
-   3. Запуск ИЗ КОРНЯ репозитория и обязательно с `MEMORY_DIR=./data` (иначе данные уйдут в `/data` и не подхватятся при будущем переходе на Docker):
-      - Windows: `$env:MEMORY_DIR="./data"; python app/app.py`
-      - macOS/Linux: `MEMORY_DIR=./data python app/app.py`
-   4. **Обязательно скажи пользователю**, что Python-режим теряет: автообновления (только вручную: `git pull` + `pip install -U …`), автозапуск (после перезагрузки сервер надо запускать снова), изоляцию сети (слушает 0.0.0.0 — виден в локальной сети, доступ по токену). Переход на Docker позже: поставить Docker и запустить install-скрипт из папки установки — данные `./data` подхватятся.
-4. **Возьми токен доступа**: он генерируется сам при первом запуске — в файле `data/local_token.txt` (или в логах: `docker compose logs`).
-5. **Подключи MCP к хосту пользователя**: эндпоинт `http://localhost:8787/mcp`, заголовок `Authorization: Bearer <токен>`. Готовые конфиги под Claude Code, Cursor и другие хосты — в `docs/PAIRING.md`.
-6. **Проверь установку**: сохрани тестовый факт (`create_entities`) и прочитай его обратно (`search_nodes`). Сообщи пользователю, что память работает.
-7. **Читай дальше**: `maxgraph-agent.md` (протокол памяти — установи его по шагу 8) и `docs/PROTOCOL.md`. Дашборд с живым графом: `http://localhost:8787/app`.
-8. **Установи правила памяти в проект пользователя** — в КОРЕНЬ текущей рабочей папки проекта (cwd, где запущен ты, агент-установщик; папку проекта пользователь создаёт сам, в произвольном месте):
-   - `./AGENTS.md` уже существует → допиши блок из `maxgraph-agent.md` между маркерами `<!-- maxgraph:start -->` и `<!-- maxgraph:end -->`. Повторная установка заменяет только содержимое между маркерами — остальное содержимое файла не трогай (идемпотентно).
-   - `./AGENTS.md` нет → создай файл с этим блоком между теми же маркерами.
-   - ЗАПРЕЩЕНО класть правила в подпапку установки (`maxgraph/…`) или в папки хоста (IDE/CLI) — агент проекта их там не увидит, и память работать не будет.
-9. **Скажи пользователю явно**: «Перезапусти хост (IDE/CLI полностью, не крестиком в окно) и начни НОВУЮ сессию в папке проекта» — MCP-подключение и правила из `./AGENTS.md` подхватываются только при старте сессии. Без этого шага пользователь продолжит старую сессию и решит, что память не работает.
+**Docker не найден → сначала спроси пользователя** (на его языке): «Docker на машине не найден. Установщик скачает официальный установщик Docker с docker.com (~600 МБ; права администратора запросит сам установщик Docker; на Windows возможна одна перезагрузка — после входа установка продолжится автоматически). Ставим?» Согласие → та же команда. Отказ → спроси ещё раз: Docker — рекомендуемый путь; Python никогда не предлагай как равноправный и не помечай «рекомендуемым». Повторный отказ → шаг 1a.
 
-**EN:** A user asked you to install MaxGraph (memory). Clone the repo → check Docker (`docker info` and `docker compose version` both work) → run the installer from the repo root: `bash install.sh --yes` (macOS/Linux) or `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes` (Windows). The installer installs a missing engine itself (official Docker Desktop from docker.com on Win/mac, official Docker Engine on Linux), computes `HOST_FP` (sha256 of the host hardware id; NEVER overwrites an existing non-empty value; the raw id never leaves the host), writes `.env`, creates `hostfp.json` next to `docker-compose.yml` (same fingerprint — hashes only) and starts the server (prebuilt GHCR image, local build as fallback). **If Docker is missing, ask the user FIRST** (in their language): "Docker not found. The installer will download and run the official Docker Desktop installer from docker.com (on Linux: the official Docker Engine script — it also adds your user to the docker group, permanent root-equivalent rights): ~600 MB download; Docker's installer requests admin rights itself; on Windows one reboot may be required — installation continues automatically afterwards. Proceed?" A declined offer is repeated once with Docker Desktop as the recommended option; a second refusal → step 3a. NEVER offer Python as an equal option or mark it as recommended — Docker is always the recommended path; Python is only the fallback after refusal(s). During setup a Docker Desktop installer window appears on screen — the user clicks through it (admin prompt; sign-in can be skipped). Installer exit codes: `0` = running, continue; `2` = Docker Desktop asks for a Windows reboot or has a dialog waiting — the installer resumes automatically at logon (warn the user; if auto-resume did not fire, the user finishes the Docker Desktop dialogs and re-runs `install.ps1`); `3` = engine declined/impossible → Python fallback (step 3a: `pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"`, write `HOST_FP` per the commands in step 3a, run `MEMORY_DIR=./data python app/app.py` from the repo root — and you MUST tell the user what Python mode loses: no auto-updates, no autostart after reboot, server listens on 0.0.0.0 = visible on the LAN, token required; migrate later by installing Docker and re-running the installer — `./data` is picked up); `1` = error, read `install.log`. **Narrate progress to the user as it happens** (what is downloading or installing, and the usual timings): a first install without Docker can take up to an hour on a slow connection — a one-time cost, updates then arrive by themselves; a silent hour looks like a hang. → take the auto-generated token from `data/local_token.txt` → connect `http://localhost:8787/mcp` with `Authorization: Bearer <token>` (host configs in `docs/PAIRING.md`) → verify by saving and reading back a test fact → then read `maxgraph-agent.md` and `docs/PROTOCOL.md`. Dashboard: `http://localhost:8787/app`.
+Рассказывай пользователю прогресс по ходу: первая установка движка может занять до часа на медленном интернете — молчаливый час выглядит как зависание.
 
-**EN — install destination (mandatory):** Write the memory rules from `maxgraph-agent.md` into `AGENTS.md` in the ROOT of the user's current project directory (your cwd — where you, the installer agent, were launched; the user creates this project folder themselves, anywhere). If `./AGENTS.md` already exists, insert the rules between the markers `<!-- maxgraph:start -->` and `<!-- maxgraph:end -->`; on re-install, replace only the content between the markers and leave the rest of the file untouched (idempotent). If it doesn't exist, create the file with that marked block. NEVER put the rules into the install subfolder (`maxgraph/…`) or into host (IDE/CLI) folders — the project agent won't see them there, and memory will silently not work.
+Коды выхода: `0` — сервер запущен → шаг 2. `2` — Docker Desktop ждёт перезагрузку Windows или свой диалог: после входа установка продолжится автоматически (предупреди об этом); если нет — пользователь завершает диалоги Docker Desktop и повторно запускает install.ps1. `3` — Python-фолбэк → шаг 1a. `1` — ошибка → читай `install.log`.
 
-**EN — final step (mandatory):** Tell the user explicitly: "Restart the host (quit the IDE/CLI fully, not just close the window) and start a NEW session in the project folder" — the MCP connection and the `./AGENTS.md` rules are picked up only at session start. Without this the user keeps the old session and concludes memory doesn't work.
+### 1a. Python-фолбэк (только когда Docker отклонён или невозможен; нужен Python 3.12+)
 
-## Удаление / Uninstall
+```bash
+pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"   # mcp<2 обязательно: в 2.x FastMCP переименован
+```
 
-Пользователь просит удалить MaxGraph → полный порядок в `llms-install.md` (раздел «Uninstall»): запусти `uninstall.sh` / `uninstall.ps1` из папки установки (данные памяти по умолчанию СОХРАНЯЮТСЯ; стирание — только после явного согласия пользователя или с флагом `--wipe-data`), затем удали MCP-запись `maxgraph` из конфигов клиентов и блок `<!-- maxgraph:start -->…<!-- maxgraph:end -->` из AGENTS.md проекта (в глобальных правилах агента — покажи пользователю найденные строки, удаляй только установочные блоки после его «да»). Данные сохранялись → ПЕРЕНЕСИ `./data` из папки ДО её удаления. Папка уже удалена → `docker rm -f maxgraph maxgraph-updater` + остальные шаги вручную.
+Запуск из корня клона и обязательно с `MEMORY_DIR=./data` (иначе данные уйдут в `/data` и не подхватятся при переходе на Docker):
 
-**EN:** The user asks to remove MaxGraph → full procedure in `llms-install.md`, "Uninstall": run `uninstall.sh` / `uninstall.ps1` from the install folder (memory data is KEPT by default; wipe only after the user's explicit consent or with `--wipe-data`), then remove the `maxgraph` MCP entry from client configs and the `<!-- maxgraph:start -->…<!-- maxgraph:end -->` block from the project AGENTS.md (in the agent's global rules — show the user the lines found, remove only install-made blocks after their "yes"). Data kept → MOVE `./data` out of the folder BEFORE deleting it. Folder already deleted → `docker rm -f maxgraph maxgraph-updater` + the remaining steps by hand.
+- Windows: `$env:MEMORY_DIR="./data"; python app/app.py`
+- macOS/Linux: `MEMORY_DIR=./data python app/app.py`
 
-## О продукте
+Честно скажи пользователю, что теряется без Docker: автообновления, автозапуск после перезагрузки, изоляция сети (сервер слушает 0.0.0.0 — виден в локальной сети, доступ по токену). Переход на Docker позже: поставить Docker и перезапустить установщик — `./data` подхватится. Правила в проект уже вставлены установщиком; токен — `data/local_token.txt` после первого запуска → шаг 2.
 
-Память полного сохранения контекста: MCP (streamable-http, stateless) + REST + дашборд в одном Docker-контейнере.
-Публичный репо: github.com/RuMemory/maxgraph. Прод-магазин: https://rezon-ai.ru.
+## 2. Подключи MCP к хосту пользователя
 
-## Правила кода
+Эндпоинт `http://localhost:8787/mcp`, заголовок `Authorization: Bearer <токен>` (токен — в пакете установщика / строке `MAXGRAPH_NEXT_STEPS` / файле `data/local_token.txt`).
 
-- Python 3.12, чистый stdlib в модулях (`billing.py`, `licensing.py`, `digiseller.py`, `webhooks.py`, `tgbot.py`) — каждый тестируется отдельно от сервера (инъекция http/smtp), `app.py` — единственный тяжёлый (mcp/starlette)
-- HTML-страницы — однофайловые, ноль внешних URL, данные сервера только через `textContent` (см. `docs/DESIGN-SYSTEM-v3.md`)
-- Сеть в хендлерах — после снятия `_codes_lock`, никогда внутри лока
-- Секреты — только env (`.env` на сервере), никогда в репо; compose подставляет пустую строку → использовать `or default`, не `os.environ.get(x, default)`
-- Тесты: `python -m unittest discover -s app -p "test_*.py"` (перед коммитом; 88 шт.)
-- Conventional commits: `<type>: <description>`
+- Claude Code: `claude plugin marketplace add RuMemory/maxgraph && claude plugin install maxgraph@maxgraph`
+- Любой хост с JSON-конфигом MCP:
 
-## Agent skills
+```json
+{"mcpServers": {"maxgraph": {"type": "http", "url": "http://localhost:8787/mcp", "headers": {"Authorization": "Bearer <токен>"}}}}
+```
 
-Процессы разработки (триаж issues, доменные документы, ADR) ведутся в приватном репозитории разработки; эта витрина содержит только продукт.
+Другие хосты (deeplinks Cursor/VS Code и т.п.) — `docs/PAIRING.md`, опционально.
+
+## 3. Проверь память
+
+1. `create_entities`: name `install-check`, один факт «MaxGraph установлен <дата>».
+2. `search_nodes("install-check")` — сущность вернулась → память работает. Скажи это пользователю.
+
+## 4. Скажи пользователю явно
+
+«Перезапусти хост полностью (не крестиком в окно) и начни НОВУЮ сессию в папке проекта» — MCP-подключение и правила из `AGENTS.md` подхватываются только на старте сессии. Без этого пользователь продолжит старую сессию и решит, что память не работает.
+
+Дашборд с живым графом: `http://localhost:8787/app` (вход тем же токеном).
+
+## Удаление (по просьбе пользователя)
+
+1. В папке установки: `bash uninstall.sh` / `powershell -File uninstall.ps1` — снимает контейнеры/образы и служебные остатки; данные памяти (`./data`) по умолчанию СОХРАНЯЮТСЯ, полное стирание — только после явного «да» пользователя или с `--wipe-data`.
+2. Удали запись `maxgraph` из MCP-конфигов клиентов.
+3. Удали блок между `<!-- maxgraph:start -->` и `<!-- maxgraph:end -->` из `AGENTS.md` проекта.
+4. Если данные сохранялись — перенеси `./data` из папки установки ДО её удаления; папку удаляй после подтверждения пользователя.
+
+---
+
+# EN — MaxGraph installation (instructions for the AI agent)
+
+The user asked you to install MaxGraph — local persistent memory for your work together. Do everything yourself, top to bottom: this file is self-contained, no other documents are needed for installation.
+
+## 1. Clone and run the installer
+
+```bash
+git clone https://github.com/RuMemory/maxgraph.git && cd maxgraph
+```
+
+Run the installer from the clone root. `--project-dir` is the root of the USER's working folder (your original cwd before cloning, NOT the clone itself): the installer inserts the memory-rules block into its `AGENTS.md` (marker-delimited, idempotent).
+
+- macOS / Linux: `bash install.sh --yes --project-dir "<cwd>"`
+- Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes -ProjectDir "<cwd>"`
+
+The installer itself: checks Docker (if missing — installs the official engine from docker.com, with the user's consent via you), computes the host fingerprint (hashes only leave the machine), starts the server, injects the rules into the project, and prints a **next-steps package**: token, ready MCP config, and a machine-readable line `MAXGRAPH_NEXT_STEPS={...}`.
+
+**Docker missing → ask the user FIRST** (in their language): "Docker not found. The installer will download the official Docker installer from docker.com (~600 MB; Docker's installer requests admin rights itself; on Windows one reboot may be required — the installation continues automatically afterwards). Proceed?" Consent → same command. Refusal → ask once more: Docker is the recommended path; NEVER offer Python as an equal or recommended option. Second refusal → step 1a.
+
+Narrate progress to the user: the first engine install can take up to an hour on slow internet — a silent hour looks like a hang.
+
+Exit codes: `0` — server is running → step 2. `2` — Docker Desktop awaits a Windows reboot or its own dialog: the installer resumes automatically at logon (warn the user); otherwise the user finishes the Docker Desktop dialogs and re-runs install.ps1. `3` — Python fallback → step 1a. `1` — error → read `install.log`.
+
+### 1a. Python fallback (only when Docker is declined or impossible; Python 3.12+ required)
+
+```bash
+pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"   # mcp<2 is mandatory: FastMCP was renamed in 2.x
+```
+
+Run from the clone root, always with `MEMORY_DIR=./data` (otherwise data lands in `/data` and won't carry over to a later Docker switch):
+
+- Windows: `$env:MEMORY_DIR="./data"; python app/app.py`
+- macOS/Linux: `MEMORY_DIR=./data python app/app.py`
+
+Tell the user honestly what is lost without Docker: auto-updates, autostart after reboot, network isolation (the server listens on 0.0.0.0 — visible in the LAN, token required). Later: install Docker and re-run the installer — `./data` is picked up. The rules are already injected by the installer; the token is `data/local_token.txt` after the first launch → step 2.
+
+## 2. Connect MCP to the user's host
+
+Endpoint `http://localhost:8787/mcp`, header `Authorization: Bearer <token>` (token — in the installer package / the `MAXGRAPH_NEXT_STEPS` line / `data/local_token.txt`).
+
+- Claude Code: `claude plugin marketplace add RuMemory/maxgraph && claude plugin install maxgraph@maxgraph`
+- Any host with a JSON MCP config:
+
+```json
+{"mcpServers": {"maxgraph": {"type": "http", "url": "http://localhost:8787/mcp", "headers": {"Authorization": "Bearer <token>"}}}}
+```
+
+Other hosts (Cursor/VS Code deeplinks etc.) — `docs/PAIRING.md`, optional.
+
+## 3. Verify memory
+
+1. `create_entities`: name `install-check`, one fact "MaxGraph installed <date>".
+2. `search_nodes("install-check")` — the entity comes back → memory works. Tell the user.
+
+## 4. Tell the user explicitly
+
+"Restart the host fully (quit the IDE/CLI, not just close the window) and start a NEW session in the project folder" — the MCP connection and the `AGENTS.md` rules are picked up only at session start. Without this the user keeps the old session and concludes memory doesn't work.
+
+Dashboard with the live graph: `http://localhost:8787/app` (same token).
+
+## Uninstall (on the user's request)
+
+1. In the install folder: `bash uninstall.sh` / `powershell -File uninstall.ps1` — removes containers/images and service leftovers; memory data (`./data`) is KEPT by default, full wipe only after the user's explicit "yes" or with `--wipe-data`.
+2. Remove the `maxgraph` entry from the clients' MCP configs.
+3. Remove the block between `<!-- maxgraph:start -->` and `<!-- maxgraph:end -->` from the project's `AGENTS.md`.
+4. If data was kept — move `./data` out of the install folder BEFORE deleting it; delete the folder after the user's confirmation.
+
+---
+
+Разработка продукта (правила кода, процессы, ADR) — `DEV.md`, только в dev-репозитории; агенту-установщику не нужно.
+Product development (code rules, processes, ADRs) — `DEV.md`, dev repo only; not needed for installation.

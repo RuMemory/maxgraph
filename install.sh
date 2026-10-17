@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
 # install.sh — MaxGraph installer for macOS and Linux (Windows: install.ps1).
-# Run from the root of the cloned repo:  bash install.sh [--yes]
+# Run from the root of the cloned repo:
+#   bash install.sh [--yes] [--project-dir <user project root>] [--rules-lang ru|en]
 #
 # Steps: working Docker? → if missing, with the user's consent install an engine
 # (macOS → official Docker Desktop from docker.com; Linux → official Docker
 # Engine script) → write hostfp.json + HOST_FP/INSTALL_FLAVOR into .env → pull the prebuilt
-# GHCR image (local build as fallback) → up -d → wait for healthz.
+# GHCR image (local build as fallback) → up -d → wait for healthz → print the
+# next-steps package (token + MCP config) for the installing AI agent.
+# --project-dir: the memory rules block is injected into <dir>/AGENTS.md between
+# <!-- maxgraph:start/end --> markers (idempotent).
 #
 # Modes: default = full install; --hostfp-only = only (re)compute hostfp.json
 # next to docker-compose.yml (heals an existing install — no rebuild; apply with
-# `docker compose up -d`).
+# `docker compose up -d`; no rules injection, no package print).
 #
 # Exit codes (read by the installing AI agent, see AGENTS.md):
 #   0 — MaxGraph is running in Docker (or hostfp.json written in --hostfp-only)
-#   3 — engine declined or impossible → Python fallback (AGENTS.md, step 3)
+#   3 — engine declined or impossible → Python fallback (AGENTS.md, step 1a)
 #   1 — unexpected error (see install.log)
 set -uo pipefail
 umask 077   # .env and downloads must not be world-readable
@@ -26,7 +30,24 @@ LOG=install.log
 STATE=install-state.json
 YES=0
 HOSTFP_ONLY=0
-for a in "$@"; do case "$a" in --yes|-y) YES=1 ;; --hostfp-only) HOSTFP_ONLY=1 ;; esac; done
+PROJECT_DIR=""
+RULES_LANG=""
+RULES_INJECTED=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --yes|-y) YES=1 ;;
+    --hostfp-only) HOSTFP_ONLY=1 ;;
+    --project-dir) shift
+      case "${1:-}" in -*|"") echo "[maxgraph-install] FATAL: --project-dir needs a path" >&2; exit 1 ;;
+        *) PROJECT_DIR="$1" ;; esac ;;
+    --project-dir=*) PROJECT_DIR="${1#*=}" ;;
+    --rules-lang) shift
+      case "${1:-}" in -*|"") echo "[maxgraph-install] FATAL: --rules-lang needs ru|en" >&2; exit 1 ;;
+        *) RULES_LANG="$1" ;; esac ;;
+    --rules-lang=*) RULES_LANG="${1#*=}" ;;
+  esac
+  shift
+done
 
 OS="$(uname -s)"
 case "$OS" in Darwin|Linux) ;; *)
@@ -60,6 +81,84 @@ consent() {  # $1 = question; --yes answers for the user (agent already asked in
   local a
   read -r a || return 1
   case "$a" in y|Y|yes|YES|д|Д|да|ДА) return 0 ;; *) return 1 ;; esac
+}
+
+# --- memory rules into the user's project (--project-dir) --------------------
+# Injected BEFORE any engine work: only the repo file is needed, and the block
+# must land on every exit path (including the Python fallback). Idempotent:
+# the <!-- maxgraph:start/end --> markers are replaced in place on re-runs.
+
+rules_lang() {  # explicit flag wins; otherwise the OS locale decides
+  case "$RULES_LANG" in
+    ru|en) printf '%s' "$RULES_LANG"; return ;;
+  esac
+  case "${LANG:-}${LC_ALL:-}" in ru*|*ru_RU*) printf 'ru' ;; *) printf 'en' ;; esac
+}
+
+json_escape() {  # минимальное JSON-экранирование строки (пути с " и \ ломали MAXGRAPH_NEXT_STEPS)
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+extract_rules_block() {  # $1 = ru|en → block from maxgraph-agent.md (single source of truth)
+  local hdr
+  case "$1" in ru) hdr='## Блок (RU' ;; *) hdr='## Блок (EN' ;; esac
+  awk -v hdr="$hdr" '
+    !inhdr && index($0, hdr) == 1 { inhdr=1; next }
+    inhdr && /^```/ && !inblock { inblock=1; next }
+    inblock && /^```/ { exit }
+    inblock { print }
+  ' maxgraph-agent.md
+}
+
+inject_rules() {
+  [ -n "$PROJECT_DIR" ] || return 0
+  case "$RULES_LANG" in ru|en|"") ;; *) log "WARN: --rules-lang '$RULES_LANG' — ожидается ru|en; определяю по локали"; RULES_LANG="" ;; esac
+  local dir f block
+  dir="$(cd "$PROJECT_DIR" 2>/dev/null && pwd -P)" \
+    || { log "WARN: --project-dir '$PROJECT_DIR' does not exist — rules not injected"; return 1; }
+  if [ "$dir" = "$(pwd -P)" ]; then
+    log "WARN: --project-dir points at the cloned repo itself — rules belong in the USER's project root; skipped"
+    return 1
+  fi
+  block="$(extract_rules_block "$(rules_lang)")"
+  [ -n "$block" ] || { log "WARN: rules block not found in maxgraph-agent.md"; return 1; }
+  f="$dir/AGENTS.md"
+  [ -L "$f" ] && { log "WARN: $f — симлинк; запись сквозь него отклонена"; return 1; }
+  # Маркер — ТОЛЬКО строкой целиком (инлайн-упоминание маркеров внутри самого
+  # блока не должно срабатывать); grep-чек быстрый и мягкий, строгое равенство
+  # строк — в awk; битая пара (end раньше start / нет end) → файл не трогаем.
+  # CRLF-файл → и блок в CRLF, чтобы не смешивать переносы.
+  local crlf=0 tmp
+  [ -f "$f" ] && grep -q $'\r' "$f" && crlf=1
+  [ "$crlf" = 1 ] && block="$(printf '%s\n' "$block" | sed 's/$/\r/')"
+  if [ -f "$f" ] && grep -qF '<!-- maxgraph:start -->' "$f" && grep -qF '<!-- maxgraph:end -->' "$f"; then
+    tmp="$(mktemp "$dir/.mg-agents.XXXXXX")" || { log "WARN: cannot create temp file in $dir"; return 1; }
+    BLOCK="$block" awk '
+      { line = $0; sub(/\r$/, "", line) }
+      line == "<!-- maxgraph:start -->" && !done { print; print ENVIRON["BLOCK"]; skip=1; done=1; next }
+      line == "<!-- maxgraph:end -->" && skip { skip=0; print; next }
+      !skip { print }
+      END { if (skip || !done) exit 3 }
+    ' "$f" > "$tmp" \
+      || { rm -f "$tmp"; log "WARN: cannot update $f (битая пара маркеров?) — файл не тронут"; return 1; }
+    local mode
+    mode="$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f" 2>/dev/null)"
+    [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null   # mv пересоздаёт файл; umask 077 иначе даст 600
+    mv -f "$tmp" "$f" || { rm -f "$tmp"; log "WARN: cannot replace $f"; return 1; }
+    log "Memory rules updated in $f (between markers)"
+  else
+    if [ "$crlf" = 1 ]; then
+      { [ -s "$f" ] && printf '\r\n'; printf '<!-- maxgraph:start -->\r\n%s\n<!-- maxgraph:end -->\r\n' "$block"; } >> "$f" \
+        || { log "WARN: cannot write $f"; return 1; }
+    else
+      { [ -f "$f" ] && printf '\n'; printf '<!-- maxgraph:start -->\n%s\n<!-- maxgraph:end -->\n' "$block"; } >> "$f" \
+        || { log "WARN: cannot write $f"; return 1; }
+    fi
+    log "Memory rules written into $f"
+  fi
+  RULES_INJECTED=1
 }
 
 python_fallback() {
@@ -179,6 +278,40 @@ write_hostfp_json() {  # собрать компоненты ОС → hostfp.jso
   return 0
 }
 
+print_next_steps() {  # финальный пакет для агента-установщика (см. AGENTS.md)
+  local token="" cfg=""
+  [ -f data/local_token.txt ] && token="$(tr -d '[:space:]' < data/local_token.txt)"
+  [ -n "$token" ] || token="<см. data/local_token.txt>"
+  cfg="\"url\":\"http://localhost:8787/mcp\",\"headers\":{\"Authorization\":\"Bearer $token\"}"
+  local rules_text
+  if [ "$RULES_INJECTED" = 1 ]; then
+    rules_text="already in the project AGENTS.md ($PROJECT_DIR)"
+  else
+    rules_text="NOT injected — paste the block from maxgraph-agent.md between <!-- maxgraph:start --> and <!-- maxgraph:end --> in the project AGENTS.md"
+  fi
+  cat <<EOF
+
+================ MAXGRAPH — NEXT STEPS (for the agent) ================
+1. Connect MCP to the user's host:
+   url: http://localhost:8787/mcp
+   header: Authorization: Bearer $token
+   JSON config (any host): {"mcpServers":{"maxgraph":{"type":"http",$cfg}}}
+   Claude Code: claude plugin marketplace add RuMemory/maxgraph && claude plugin install maxgraph@maxgraph
+2. Memory rules: $rules_text
+3. Verify memory: create_entities install-check → search_nodes install-check.
+4. Tell the user: fully restart the host and start a NEW session in the project folder.
+   Dashboard: http://localhost:8787/app (same token).
+=======================================================================
+EOF
+  # машиночитаемая строка — ТОЛЬКО stdout; в install.log токен не пишем (его
+  # прикрепляют к багрепортам). json_escape: пути с \ и " ломали JSON.
+  printf 'MAXGRAPH_NEXT_STEPS={"mcp_url":"http://localhost:8787/mcp","token":"%s","rules_injected":%s,"project_dir":"%s"}\n' \
+    "$(json_escape "$token")" "$([ "$RULES_INJECTED" = 1 ] && printf true || printf false)" \
+    "$(json_escape "$PROJECT_DIR")"
+  printf 'MAXGRAPH_NEXT_STEPS: rules_injected=%s project_dir=%s (token — только stdout)\n' \
+    "$([ "$RULES_INJECTED" = 1 ] && printf true || printf false)" "$PROJECT_DIR" >> "$LOG"
+}
+
 install_engine_macos() {
   if command -v brew >/dev/null 2>&1; then
     log "Installing Docker Desktop via Homebrew…"
@@ -231,6 +364,8 @@ if [ "$HOSTFP_ONLY" = 1 ]; then
   write_hostfp_json || exit 1
   exit 0
 fi
+
+inject_rules || true   # правила не критичны для запуска; предупреждение уже в логе
 
 if docker_ok; then
   FLAVOR=docker
@@ -293,6 +428,7 @@ if [ -n "$running" ] && [ -n "$mgv" ] && [ "$running" != "$mgv" ] \
   upsert_env MG_VERSION "$running"   # автообновлённая установка + старый клон: даунгрейдить нельзя
   log "Running MaxGraph $running is NEWER than this clone ($mgv) — the clone is stale (git pull for a fresh one). Leaving the running server untouched."
   write_state done "$FLAVOR"
+  print_next_steps
   exit 0
 fi
 
@@ -318,7 +454,6 @@ done
 
 write_state done "$FLAVOR"
 log "MaxGraph is running (engine: $FLAVOR)."
-log "Dashboard: http://localhost:8787/app · MCP: http://localhost:8787/mcp"
-log "Access token: data/local_token.txt"
+print_next_steps
 [ "$DOCKER" != "docker" ] && log "Note: re-login for 'docker' without sudo (group membership)."
 exit 0
