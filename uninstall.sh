@@ -128,6 +128,8 @@ fi
 cat <<EOF
 [maxgraph-uninstall] Left for the agent (AGENTS.md → Uninstall):
   • remove the "maxgraph" entry from the MCP client config(s)
+  • remove the capture-hook registrations from the agent host config(s)
+    (what to remove — docs/HOOKS.md, «Удаление»/«Removal» per host)
   • remove the block between <!-- maxgraph:start --> and <!-- maxgraph:end -->
     from the project AGENTS.md; for global agent rules — SHOW the user any
     maxgraph lines and remove only install-made blocks after their "yes"

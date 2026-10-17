@@ -47,12 +47,16 @@ pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"   # mcp<2 обя�
 
 Другие хосты (deeplinks Cursor/VS Code и т.п.) — `docs/PAIRING.md`, опционально.
 
-## 3. Проверь память
+## 3. Зарегистрируй захват-хуки своего хоста
+
+Установщик уже положил файлы в `~/.maxgraph/` (хук + `hooks.env` с адресом сервера и токеном — в конфиги токен не копируй). Впиши хук в конфиг СВОЕГО хоста по рецепту из `docs/HOOKS.md` (один сниппет, идемпотентно; про другие программы пользователя не спрашивай и их конфиги не трогай). Codex: после записи скажи пользователю один раз выполнить `/hooks` и доверить хуки — без их trust-гейта захват молча не работает.
+
+## 4. Проверь память
 
 1. `create_entities`: name `install-check`, один факт «MaxGraph установлен <дата>».
 2. `search_nodes("install-check")` — сущность вернулась → память работает. Скажи это пользователю.
 
-## 4. Скажи пользователю явно
+## 5. Скажи пользователю явно
 
 «Перезапусти хост полностью (не крестиком в окно) и начни НОВУЮ сессию в папке проекта» — MCP-подключение и правила из `AGENTS.md` подхватываются только на старте сессии. Без этого пользователь продолжит старую сессию и решит, что память не работает.
 
@@ -61,7 +65,7 @@ pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"   # mcp<2 обя�
 ## Удаление (по просьбе пользователя)
 
 1. В папке установки: `bash uninstall.sh` / `powershell -File uninstall.ps1` — снимает контейнеры/образы и служебные остатки; данные памяти (`./data`) по умолчанию СОХРАНЯЮТСЯ, полное стирание — только после явного «да» пользователя или с `--wipe-data`.
-2. Удали запись `maxgraph` из MCP-конфигов клиентов.
+2. Удали запись `maxgraph` из MCP-конфигов клиентов и регистрации захват-хуков (команда с `maxgraph_hook.py`) из конфига своего хоста — что именно удалять: `docs/HOOKS.md`, раздел «Удаление».
 3. Удали блок между `<!-- maxgraph:start -->` и `<!-- maxgraph:end -->` из `AGENTS.md` проекта.
 4. Если данные сохранялись — перенеси `./data` из папки установки ДО её удаления; папку удаляй после подтверждения пользователя.
 
@@ -116,12 +120,16 @@ Endpoint `http://localhost:8787/mcp`, header `Authorization: Bearer <token>` (to
 
 Other hosts (Cursor/VS Code deeplinks etc.) — `docs/PAIRING.md`, optional.
 
-## 3. Verify memory
+## 3. Register capture hooks in your own host
+
+The installer already placed the files in `~/.maxgraph/` (the hook + `hooks.env` with the server URL and token — do NOT copy the token into configs). Register the hook in YOUR OWN host's config using the recipe in `docs/HOOKS.md` (one snippet, idempotent; never ask the user about other programs or touch their configs). Codex: after writing, tell the user to run `/hooks` once and trust the hooks — without their trust gate, capture silently does nothing.
+
+## 4. Verify memory
 
 1. `create_entities`: name `install-check`, one fact "MaxGraph installed <date>".
 2. `search_nodes("install-check")` — the entity comes back → memory works. Tell the user.
 
-## 4. Tell the user explicitly
+## 5. Tell the user explicitly
 
 "Restart the host fully (quit the IDE/CLI, not just close the window) and start a NEW session in the project folder" — the MCP connection and the `AGENTS.md` rules are picked up only at session start. Without this the user keeps the old session and concludes memory doesn't work.
 
@@ -130,7 +138,7 @@ Dashboard with the live graph: `http://localhost:8787/app` (same token).
 ## Uninstall (on the user's request)
 
 1. In the install folder: `bash uninstall.sh` / `powershell -File uninstall.ps1` — removes containers/images and service leftovers; memory data (`./data`) is KEPT by default, full wipe only after the user's explicit "yes" or with `--wipe-data`.
-2. Remove the `maxgraph` entry from the clients' MCP configs.
+2. Remove the `maxgraph` entry from the clients' MCP configs and the capture-hook registrations (the `maxgraph_hook.py` command) from your host's config — what to remove: `docs/HOOKS.md`, "Removal".
 3. Remove the block between `<!-- maxgraph:start -->` and `<!-- maxgraph:end -->` from the project's `AGENTS.md`.
 4. If data was kept — move `./data` out of the install folder BEFORE deleting it; delete the folder after the user's confirmation.
 

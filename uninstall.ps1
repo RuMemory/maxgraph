@@ -146,6 +146,8 @@ if ($script:Failed -gt 0) {
 }
 Log 'Left for the agent (AGENTS.md → Uninstall):'
 Log '  • remove the "maxgraph" entry from the MCP client config(s)'
+Log '  • remove the capture-hook registrations from the agent host config(s)'
+Log '    (what to remove — docs/HOOKS.md, Removal section per host)'
 Log '  • remove the block between <!-- maxgraph:start --> and <!-- maxgraph:end -->'
 Log '    from the project AGENTS.md; for global agent rules — SHOW the user any'
 Log '    maxgraph lines and remove only install-made blocks after their "yes"'

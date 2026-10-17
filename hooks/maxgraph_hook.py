@@ -26,6 +26,10 @@ Env:
   MG_SERVER  — базовый URL сервера (https://memory.example.com); пусто → только spool
   MG_TOKEN   — bearer-токен (= MEMORY_TOKEN сервера)
   MG_SPOOL   — путь spool-файла (default ~/.maxgraph/spool.jsonl)
+  MG_HOST    — хост агента (claude/dsh/cursor/gemini/codex/kimi/antigravity/
+               windsurf); ставится рецептом из docs/HOOKS.md. По имени хоста
+               переводим его события в канонические (v0.46.0); без MG_HOST
+               имена принимаются как есть (формат Claude Code).
 
 Ротация spool: при превышении 10MB остаётся хвост ~5MB (целые строки).
 Проект — каскад Ф1: git remote → git root → имя cwd (kebab-slug), сервер
@@ -43,6 +47,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 HOOKS = ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd")
+
+# v0.46.0: имена событий хостов → канонические (база — Claude Code/DSH).
+# Ключи в нижнем регистре; хосты с совпадающими именами (kimi, codex) не
+# перечислены — перевод не нужен. У antigravity нет SessionEnd/UserPromptSubmit
+# (Stop — завершение execution loop, стреляет многократно), у windsurf нет
+# событий сессии — это нормально: урезанный режим, docs/HOOKS.md помечает.
+_HOST_EVENTS = {
+    "cursor": {"sessionstart": "SessionStart", "sessionend": "SessionEnd",
+               "beforesubmitprompt": "UserPromptSubmit", "posttooluse": "PostToolUse",
+               "stop": "Stop"},
+    "gemini": {"sessionstart": "SessionStart", "sessionend": "SessionEnd",
+               "beforeagent": "UserPromptSubmit", "aftertool": "PostToolUse",
+               "afteragent": "Stop"},
+    "antigravity": {"sessionstart": "SessionStart", "posttooluse": "PostToolUse",
+                    "stop": "Stop"},
+    "windsurf": {"pre_user_prompt": "UserPromptSubmit",
+                 "post_cascade_response": "Stop"},
+}
 TIMEOUT = 3                     # сек на POST — хук не блокирует хоста
 GIT_TIMEOUT = 2                 # сек на git-вызов детекта проекта
 BATCH = 100                     # лимит батча /api/ingest
@@ -52,7 +74,30 @@ FIELD_MAX = 2000                # потолок символов на текс�
 
 
 def _env(name: str) -> str:
-    return (os.environ.get(name) or "").strip()
+    """os.environ → fallback ~/.maxgraph/hooks.env (v0.46.0: конфиги хостов
+    вызывают хук напрямую, без env-обёртки; файл пишет установщик).
+    MG_HOOKS_ENV переопределяет путь к файлу (тесты)."""
+    v = (os.environ.get(name) or "").strip()
+    return v or _file_env(name)
+
+
+_HOOKS_ENV = None
+
+
+def _file_env(name: str) -> str:
+    global _HOOKS_ENV
+    if _HOOKS_ENV is None:
+        _HOOKS_ENV = {}
+        path = (os.environ.get("MG_HOOKS_ENV") or "").strip() \
+            or "~/.maxgraph/hooks.env"
+        try:
+            for line in Path(path).expanduser().read_text(encoding="utf-8").splitlines():
+                k, _, v = line.partition("=")
+                if k.strip() and not k.strip().startswith("#"):
+                    _HOOKS_ENV[k.strip()] = v.strip()
+        except OSError:
+            pass
+    return _HOOKS_ENV.get(name, "")
 
 
 def spool_path() -> Path:
@@ -121,12 +166,19 @@ def _cut(v, n: int):
     return s[:n]
 
 
+def _canon_event(name: str) -> str:
+    """Имя события хоста → каноническое (таблица по MG_HOST). Без MG_HOST или
+    для неизвестного хоста имена принимаются как есть (формат Claude Code)."""
+    table = _HOST_EVENTS.get(_env("MG_HOST").lower())
+    return table.get(name.lower(), name) if table else name
+
+
 def normalize(payload: dict) -> dict:
-    """Событие хука Claude Code/DSH → {"hook","project","ts","data"}.
+    """Событие хука хоста → {"hook","project","ts","data"}.
     Неизвестный/битый хук → None (не спулим мусор)."""
     if not isinstance(payload, dict):
         return None
-    hook = payload.get("hook_event_name") or payload.get("hook") or ""
+    hook = _canon_event(payload.get("hook_event_name") or payload.get("hook") or "")
     if hook not in HOOKS:
         return None
     data = {}
@@ -184,11 +236,19 @@ def _parse_events(lines: list) -> list:
 
 
 def append_spool(event: dict, path=None) -> None:
-    """Append одной JSONL-строки + мягкая ротация: >10MB → хвост ~5MB целых строк."""
+    """Append одной JSONL-строки + мягкая ротация: >10MB → хвост ~5MB целых строк.
+    Новый файл сразу chmod 600 (security-ревизия v0.47.0, Low-5: в spool —
+    тексты промптов и ответов инструментов, читаемость другими недопустима)."""
     p = path or spool_path()
     p.parent.mkdir(parents=True, exist_ok=True)
+    existed = p.exists()
     with open(p, "a", encoding="utf-8") as f:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    if not existed:
+        try:
+            os.chmod(p, 0o600)
+        except OSError:
+            pass
     try:
         if p.stat().st_size > SPOOL_MAX:
             data = p.read_bytes()[-SPOOL_KEEP:]
@@ -271,11 +331,18 @@ def flush(server: str = "", token: str = "", path=None, http_post=None):
 
 # ------------------------------------------------------------------ main -----
 
-def main(stdin=None) -> int:
+def main(stdin=None, argv=None) -> int:
     """stdin JSON → spool → попытка flush. ВСЕГДА 0: хук не должен ломать хоста
     (claude-mem: transport errors → exit 0). Даже при неизвестном хуке делаем
-    flush — drain накопленного spool'а на каждом вызове."""
+    flush — drain накопленного spool'а на каждом вызове.
+    argv: `--host <имя>` — хост агента (таблица перевода событий); надёжнее
+    env в конфигах: нет квотинга, одинаково работает в sh и cmd (v0.46.0)."""
     try:
+        args = list(sys.argv[1:] if argv is None else argv)
+        if "--host" in args:
+            i = args.index("--host")
+            if i + 1 < len(args):
+                os.environ["MG_HOST"] = args[i + 1]
         src = stdin if stdin is not None else sys.stdin
         raw = src.read()
         payload = json.loads(raw) if raw.strip() else {}

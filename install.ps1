@@ -187,6 +187,32 @@ function Inject-Rules {
   $script:RulesInjected = $true
 }
 
+function Write-HookFiles {  # ~/.maxgraph: хук + hooks.env; регистрацию в конфигах хостов делает агент по docs/HOOKS.md
+  $d = Join-Path $env:USERPROFILE '.maxgraph'
+  if ((Test-Path $d) -and ((Get-Item $d -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    Log "WARN: $d is a reparse point - refusing to write hooks.env"; return
+  }
+  try { New-Item -ItemType Directory -Path $d -Force | Out-Null } catch { Log "WARN: cannot create $d"; return }
+  $src = Join-Path $PSScriptRoot 'hooks\maxgraph_hook.py'
+  if (Test-Path $src) {
+    try { Copy-Item $src (Join-Path $d 'maxgraph_hook.py') -Force } catch { Log "WARN: hook copy failed: $($_.Exception.Message)"; return }
+  } else { Log 'WARN: hooks\maxgraph_hook.py not found in the clone'; return }
+  $envFile = Join-Path $d 'hooks.env'
+  if (-not (Test-Path $envFile)) {   # пишем один раз: ручные правки не затираем; без BOM
+    $token = ''
+    $tf = Join-Path $PSScriptRoot 'data\local_token.txt'
+    if (Test-Path $tf) { $token = ([System.IO.File]::ReadAllText($tf) -replace '\s','') }   # весь whitespace: внутренний перевод строки инъецирует лишнюю строку в hooks.env
+    if ($token) {
+      [System.IO.File]::WriteAllText($envFile, "MG_SERVER=http://localhost:8787`nMG_TOKEN=$token`n", (New-Object System.Text.UTF8Encoding($false)))
+      try {  # ACL как chmod 600 в sh: только текущий пользователь
+        $who = "$env:USERDOMAIN\$env:USERNAME"
+        & icacls $envFile /inheritance:r /grant:r "${who}:F" | Out-Null
+      } catch {}
+    }
+  }
+  Log 'Hooks ready: ~/.maxgraph (agent registers them into its host - docs/HOOKS.md)'
+}
+
 function Show-NextSteps {  # final package for the installing agent (see AGENTS.md)
   $token = ''
   $tf = Join-Path $PSScriptRoot 'data\local_token.txt'
@@ -202,8 +228,9 @@ function Show-NextSteps {  # final package for the installing agent (see AGENTS.
   Write-Host "   JSON config (any host): {""mcpServers"":{""maxgraph"":{""type"":""http"",$cfg}}}"
   Write-Host '   Claude Code: claude plugin marketplace add RuMemory/maxgraph; claude plugin install maxgraph@maxgraph'
   Write-Host "2. Memory rules: $rulesText"
-  Write-Host '3. Verify memory: create_entities install-check -> search_nodes install-check.'
-  Write-Host '4. Tell the user: fully restart the host and start a NEW session in the project folder.'
+  Write-Host '3. Capture hooks: files are in ~/.maxgraph - register them into YOUR host by docs/HOOKS.md (one snippet, idempotent).'
+  Write-Host '4. Verify memory: create_entities install-check -> search_nodes install-check.'
+  Write-Host '5. Tell the user: fully restart the host and start a NEW session in the project folder.'
   Write-Host '   Dashboard: http://localhost:8787/app (same token).'
   Write-Host '======================================================================='
   $ri = $script:RulesInjected
@@ -372,6 +399,7 @@ function Finish-Install {  # shared final for both engine paths: .env → compos
       if ([version]$running -gt [version]$mgv) {   # автообновлённая установка + старый клон: даунгрейдить нельзя
         Upsert-Env 'MG_VERSION' $running
         Log "Running MaxGraph $running is NEWER than this clone ($mgv) - the clone is stale (git pull for a fresh one). Leaving the running server untouched."
+        Write-HookFiles
         Write-State 'done'; Stop-Log; Show-NextSteps; exit 0
       }
     } catch {}
@@ -400,6 +428,7 @@ function Finish-Install {  # shared final for both engine paths: .env → compos
     Log 'healthz did not answer - check: docker compose logs maxgraph'
     Write-State 'error'; Stop-Log; exit 1
   }
+  Write-HookFiles   # хуки не критичны для запуска; агент зарегистрирует по docs/HOOKS.md
   Write-State 'done'
   Log "MaxGraph is running (engine: $script:Flavor)."
   Stop-Log

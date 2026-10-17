@@ -278,6 +278,28 @@ write_hostfp_json() {  # собрать компоненты ОС → hostfp.jso
   return 0
 }
 
+write_hook_files() {  # ~/.maxgraph/: хук + hooks.env; регистрацию в конфигах
+  # хостов делает агент по docs/HOOKS.md (знает свой хост; вопросов про другие
+  # нейросети не задаём). hooks.env — единственное место с токеном (chmod 600),
+  # пишется один раз (не затираем ручные правки); хук обновляем всегда.
+  local d="$HOME/.maxgraph"
+  [ -L "$d" ] && { log "WARN: $d is a symlink — refusing to write hooks.env"; return 1; }
+  mkdir -p "$d" || { log "WARN: cannot create $d"; return 1; }
+  if [ -f hooks/maxgraph_hook.py ]; then
+    cp hooks/maxgraph_hook.py "$d/maxgraph_hook.py" \
+      || { log "WARN: hook copy failed"; return 1; }
+  else
+    log "WARN: hooks/maxgraph_hook.py not found in the clone"; return 1
+  fi
+  local token=""
+  [ -f data/local_token.txt ] && token="$(tr -d '[:space:]' < data/local_token.txt)"
+  if [ ! -f "$d/hooks.env" ] && [ -n "$token" ]; then
+    ( umask 077; { printf 'MG_SERVER=http://localhost:8787\n'; printf 'MG_TOKEN=%s\n' "$token"; } \
+      > "$d/hooks.env" )   # 600 с рождения: токен недолжен быть читаем даже на секунду
+  fi
+  log "Hooks ready: ~/.maxgraph (agent registers them into its host — docs/HOOKS.md)"
+}
+
 print_next_steps() {  # финальный пакет для агента-установщика (см. AGENTS.md)
   local token="" cfg=""
   [ -f data/local_token.txt ] && token="$(tr -d '[:space:]' < data/local_token.txt)"
@@ -298,8 +320,9 @@ print_next_steps() {  # финальный пакет для агента-уст
    JSON config (any host): {"mcpServers":{"maxgraph":{"type":"http",$cfg}}}
    Claude Code: claude plugin marketplace add RuMemory/maxgraph && claude plugin install maxgraph@maxgraph
 2. Memory rules: $rules_text
-3. Verify memory: create_entities install-check → search_nodes install-check.
-4. Tell the user: fully restart the host and start a NEW session in the project folder.
+3. Capture hooks: files are in ~/.maxgraph — register them into YOUR host by docs/HOOKS.md (one snippet, idempotent).
+4. Verify memory: create_entities install-check → search_nodes install-check.
+5. Tell the user: fully restart the host and start a NEW session in the project folder.
    Dashboard: http://localhost:8787/app (same token).
 =======================================================================
 EOF
@@ -427,6 +450,7 @@ if [ -n "$running" ] && [ -n "$mgv" ] && [ "$running" != "$mgv" ] \
    && [ "$lowest" = "$mgv" ]; then
   upsert_env MG_VERSION "$running"   # автообновлённая установка + старый клон: даунгрейдить нельзя
   log "Running MaxGraph $running is NEWER than this clone ($mgv) — the clone is stale (git pull for a fresh one). Leaving the running server untouched."
+  write_hook_files || true
   write_state done "$FLAVOR"
   print_next_steps
   exit 0
@@ -452,6 +476,7 @@ for _ in $(seq 1 60); do
 done
 [ "$ok" = 1 ] || { log "healthz did not answer — check: $DOCKER compose logs maxgraph"; write_state error "$FLAVOR"; exit 1; }
 
+write_hook_files || true   # хуки не критичны для запуска; агент зарегистрирует по docs/HOOKS.md
 write_state done "$FLAVOR"
 log "MaxGraph is running (engine: $FLAVOR)."
 print_next_steps

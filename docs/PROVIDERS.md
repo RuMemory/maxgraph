@@ -36,7 +36,7 @@ Settings → MCP → новый сервер → тип `streamable-http` → т
       Authorization: Bearer <MEMORY_TOKEN>
 ```
 
-Плюс готовые client-plugin и SessionEnd-хук в `hooks/` — память пишется сама.
+Плюс захват-хуки — память пишется сама: [HOOKS.md](HOOKS.md).
 
 ### Любой другой MCP-клиент
 
@@ -74,12 +74,20 @@ MaxGraph не требует интернета: ставится рядом с 
 
 ## Шпаргалка
 
-| Провайдер | Путь подключения |
-|---|---|
-| Claude Code / Claude Desktop | MCP |
-| Cursor / Windsurf / Cline / Continue | MCP |
-| DeepSeek Harness | MCP + client-plugin + hook |
-| Gemini CLI / Kimi CLI | MCP |
-| ChatGPT | OpenAPI Actions (GPTs) |
-| GLM / Qwen / n8n / Make / самописное | REST |
-| Локальные модели | MCP или REST по LAN |
+| Провайдер | Путь подключения | Захват-хуки |
+|---|---|---|
+| Claude Code / Claude Desktop | MCP | ✅ все события |
+| DeepSeek Harness | MCP | ✅ все события |
+| Cursor | MCP | ✅ все события |
+| Kimi Code CLI | MCP | ✅ все события |
+| Codex CLI | MCP | ✅ после одноразового доверия (`/hooks`) |
+| Antigravity (Google) | MCP | ⚠️ урезано (нет SessionEnd/UserPromptSubmit) |
+| Gemini CLI (legacy) | MCP | ✅ через аналоги событий |
+| Windsurf / Devin | MCP | ⚠️ урезано (только промпт/ответ) |
+| Cline / Continue | MCP | ❌ нет конфиг-хуков |
+| ChatGPT | OpenAPI Actions (GPTs) | ❌ облако |
+| GLM / Qwen / n8n / Make / самописное | REST | — |
+| Локальные модели | MCP или REST по LAN | — |
+
+Рецепты хуков под каждый хост — [HOOKS.md](HOOKS.md). Без хуков память всё равно
+работает: агент ведёт её через MCP-инструменты (session_start → записи → session_close).
