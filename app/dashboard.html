@@ -613,6 +613,14 @@ const $=s=>document.querySelector(s),$$=s=>document.querySelectorAll(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const REDUCED=matchMedia('(prefers-reduced-motion: reduce)').matches;
 let TOKEN=localStorage.getItem('rm_token')||'';
+// v0.48.0: вход по ссылке с токеном во фрагменте (http://localhost:8787/app#<токен>).
+// Фрагмент не уходит на сервер и не попадает в логи/историю запросов; после
+// сохранения в localStorage стираем его из адресной строки. Принимаем только
+// urlsafe-алфавит токена и ТОЛЬКО если токена ещё нет (L1: чужая ссылка не должна
+// молча перезаписывать существующий вход — token fixation).
+(function(){const h=location.hash||'';if(h.length>2){const t=h.slice(1);
+  if(!localStorage.getItem('rm_token')&&/^[A-Za-z0-9_\-\.]{16,}$/.test(t)){TOKEN=t;localStorage.setItem('rm_token',t);}
+  history.replaceState(null,'',location.pathname+location.search);}})();
 let LANG=localStorage.getItem('mg_lang')||'ru';
 let curProject=localStorage.getItem('mg_project')||'';
 const SLUG_RE=/^[a-z0-9-]{1,64}$/;

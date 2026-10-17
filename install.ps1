@@ -213,6 +213,21 @@ function Write-HookFiles {  # ~/.maxgraph: хук + hooks.env; регистра�
   Log 'Hooks ready: ~/.maxgraph (agent registers them into its host - docs/HOOKS.md)'
 }
 
+function Register-Hooks {  # авто-регистрация хуков во всех НАЙДЕННЫХ хостах (молча; агент — фолбэк)
+  $rh = Join-Path $PSScriptRoot 'hooks\register_hook.py'
+  if (-not (Test-Path $rh)) { return }
+  $py = $null
+  foreach ($cand in @('python', 'py')) {
+    if (Get-Command $cand -ErrorAction SilentlyContinue) { $py = $cand; break }
+  }
+  if (-not $py) { Log 'python not found - hooks not registered automatically (agent registers by docs/HOOKS.md)'; return }
+  $rhArgs = @($rh, '--auto')
+  if ($py -eq 'py') { $rhArgs = @('-3') + $rhArgs }
+  try {
+    & $py @rhArgs 2>$null | ForEach-Object { Log "hooks: $_" }
+  } catch { Log "WARN: hook registration failed: $($_.Exception.Message)" }   # не роняет установку
+}
+
 function Show-NextSteps {  # final package for the installing agent (see AGENTS.md)
   $token = ''
   $tf = Join-Path $PSScriptRoot 'data\local_token.txt'
@@ -228,23 +243,25 @@ function Show-NextSteps {  # final package for the installing agent (see AGENTS.
   Write-Host "   JSON config (any host): {""mcpServers"":{""maxgraph"":{""type"":""http"",$cfg}}}"
   Write-Host '   Claude Code: claude plugin marketplace add RuMemory/maxgraph; claude plugin install maxgraph@maxgraph'
   Write-Host "2. Memory rules: $rulesText"
-  Write-Host '3. Capture hooks: files are in ~/.maxgraph - register them into YOUR host by docs/HOOKS.md (one snippet, idempotent).'
+  Write-Host '3. Capture hooks: auto-registered into every detected agent host (see "hooks:" log lines); if yours was skipped - one snippet from docs/HOOKS.md.'
   Write-Host '4. Verify memory: create_entities install-check -> search_nodes install-check.'
   Write-Host '5. Tell the user: fully restart the host and start a NEW session in the project folder.'
-  Write-Host '   Dashboard: http://localhost:8787/app (same token).'
+  Write-Host "   Dashboard: http://localhost:8787/app#$token (token is in the link - opens signed in)."
   Write-Host '======================================================================='
   $ri = $script:RulesInjected
   # машиночитаемая строка — через ConvertTo-Json (пути с \ и " ломали ручную сборку);
   # вызывать ПОСЛЕ Stop-Log: токен не должен попадать в транскрипт install.log
-  $meta = [ordered]@{ mcp_url = 'http://localhost:8787/mcp'; token = $token; rules_injected = $ri; project_dir = $ProjectDir }
+  $meta = [ordered]@{ mcp_url = 'http://localhost:8787/mcp'; token = $token; dashboard = "http://localhost:8787/app#$token"; rules_injected = $ri; project_dir = $ProjectDir }
   Write-Host ("MAXGRAPH_NEXT_STEPS=" + ($meta | ConvertTo-Json -Compress))
 }
 
 function Docker-Ok {
   if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return $false }
-  & docker compose version *> $null
+  # PS 5.1: stderr нативной команды при редиректе + EAP=Stop → terminating error
+  # (боевой прогон 2026-10-18); try/catch — логика не меняется, читаем $LASTEXITCODE
+  try { & docker compose version *> $null } catch { return $false }
   if ($LASTEXITCODE -ne 0) { return $false }
-  & docker info *> $null
+  try { & docker info *> $null } catch { return $false }
   return ($LASTEXITCODE -eq 0)
 }
 
@@ -393,25 +410,27 @@ function Finish-Install {  # shared final for both engine paths: .env → compos
   }
   Upsert-Env 'MG_VERSION' $mgv   # pin of the GHCR image; empty → latest
 
-  $running = ([string](& docker exec maxgraph cat /app/VERSION 2>$null)).Trim()
+  $running = ''
+  try { $running = ([string](& docker exec maxgraph cat /app/VERSION 2>$null)).Trim() } catch { $running = '' }   # PS 5.1: native stderr + EAP=Stop → terminating; нам достаточно пустой строки
   if ($running -match '^[0-9]+\.[0-9]+\.[0-9]+$' -and $mgv) {
     try {
       if ([version]$running -gt [version]$mgv) {   # автообновлённая установка + старый клон: даунгрейдить нельзя
         Upsert-Env 'MG_VERSION' $running
         Log "Running MaxGraph $running is NEWER than this clone ($mgv) - the clone is stale (git pull for a fresh one). Leaving the running server untouched."
         Write-HookFiles
+        Register-Hooks
         Write-State 'done'; Stop-Log; Show-NextSteps; exit 0
       }
     } catch {}
   }
 
   Log 'Starting MaxGraph (pulling the prebuilt image first; local build is the fallback)...'
-  & docker compose pull *> $null
+  try { & docker compose pull *> $null } catch { $global:LASTEXITCODE = 1 }
   if ($LASTEXITCODE -ne 0) { Log 'Prebuilt image unavailable - building locally (a few minutes)...' }
-  & docker compose up -d
+  try { & docker compose up -d } catch { $global:LASTEXITCODE = 1 }
   if ($LASTEXITCODE -ne 0) {
     Log 'up failed - retrying with a full local build...'
-    & docker compose up -d --build
+    try { & docker compose up -d --build } catch { $global:LASTEXITCODE = 1 }
   }
   if ($LASTEXITCODE -ne 0) {
     Log 'compose failed - see install.log'
@@ -429,6 +448,7 @@ function Finish-Install {  # shared final for both engine paths: .env → compos
     Write-State 'error'; Stop-Log; exit 1
   }
   Write-HookFiles   # хуки не критичны для запуска; агент зарегистрирует по docs/HOOKS.md
+  Register-Hooks    # авто-регистрация в найденных хостах (не роняет установку)
   Write-State 'done'
   Log "MaxGraph is running (engine: $script:Flavor)."
   Stop-Log

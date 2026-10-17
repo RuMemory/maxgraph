@@ -300,6 +300,16 @@ write_hook_files() {  # ~/.maxgraph/: хук + hooks.env; регистрацию
   log "Hooks ready: ~/.maxgraph (agent registers them into its host — docs/HOOKS.md)"
 }
 
+register_hooks() {  # авто-регистрация хуков во всех НАЙДЕННЫХ хостах (молча,
+  # без вопросов про другие программы; агент — фолбэк для нестандартных хостов)
+  [ -f hooks/register_hook.py ] || return 1
+  if ! command -v python3 >/dev/null 2>&1; then
+    log "python3 not found — hooks not registered automatically (agent registers by docs/HOOKS.md)"
+    return 1
+  fi
+  python3 hooks/register_hook.py --auto | while IFS= read -r line; do log "hooks: $line"; done
+}
+
 print_next_steps() {  # финальный пакет для агента-установщика (см. AGENTS.md)
   local token="" cfg=""
   [ -f data/local_token.txt ] && token="$(tr -d '[:space:]' < data/local_token.txt)"
@@ -320,16 +330,16 @@ print_next_steps() {  # финальный пакет для агента-уст
    JSON config (any host): {"mcpServers":{"maxgraph":{"type":"http",$cfg}}}
    Claude Code: claude plugin marketplace add RuMemory/maxgraph && claude plugin install maxgraph@maxgraph
 2. Memory rules: $rules_text
-3. Capture hooks: files are in ~/.maxgraph — register them into YOUR host by docs/HOOKS.md (one snippet, idempotent).
+3. Capture hooks: auto-registered into every detected agent host (see "hooks:" log lines); if yours was skipped — one snippet from docs/HOOKS.md.
 4. Verify memory: create_entities install-check → search_nodes install-check.
 5. Tell the user: fully restart the host and start a NEW session in the project folder.
-   Dashboard: http://localhost:8787/app (same token).
+   Dashboard: http://localhost:8787/app#$token (token is in the link — opens signed in).
 =======================================================================
 EOF
   # машиночитаемая строка — ТОЛЬКО stdout; в install.log токен не пишем (его
   # прикрепляют к багрепортам). json_escape: пути с \ и " ломали JSON.
-  printf 'MAXGRAPH_NEXT_STEPS={"mcp_url":"http://localhost:8787/mcp","token":"%s","rules_injected":%s,"project_dir":"%s"}\n' \
-    "$(json_escape "$token")" "$([ "$RULES_INJECTED" = 1 ] && printf true || printf false)" \
+  printf 'MAXGRAPH_NEXT_STEPS={"mcp_url":"http://localhost:8787/mcp","token":"%s","dashboard":"http://localhost:8787/app#%s","rules_injected":%s,"project_dir":"%s"}\n' \
+    "$(json_escape "$token")" "$(json_escape "$token")" "$([ "$RULES_INJECTED" = 1 ] && printf true || printf false)" \
     "$(json_escape "$PROJECT_DIR")"
   printf 'MAXGRAPH_NEXT_STEPS: rules_injected=%s project_dir=%s (token — только stdout)\n' \
     "$([ "$RULES_INJECTED" = 1 ] && printf true || printf false)" "$PROJECT_DIR" >> "$LOG"
@@ -451,6 +461,7 @@ if [ -n "$running" ] && [ -n "$mgv" ] && [ "$running" != "$mgv" ] \
   upsert_env MG_VERSION "$running"   # автообновлённая установка + старый клон: даунгрейдить нельзя
   log "Running MaxGraph $running is NEWER than this clone ($mgv) — the clone is stale (git pull for a fresh one). Leaving the running server untouched."
   write_hook_files || true
+  register_hooks || true
   write_state done "$FLAVOR"
   print_next_steps
   exit 0
@@ -477,6 +488,7 @@ done
 [ "$ok" = 1 ] || { log "healthz did not answer — check: $DOCKER compose logs maxgraph"; write_state error "$FLAVOR"; exit 1; }
 
 write_hook_files || true   # хуки не критичны для запуска; агент зарегистрирует по docs/HOOKS.md
+register_hooks || true     # авто-регистрация в найденных хостах (не роняет установку)
 write_state done "$FLAVOR"
 log "MaxGraph is running (engine: $FLAVOR)."
 print_next_steps

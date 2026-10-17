@@ -117,7 +117,12 @@ EOF
     fi
   fi
 fi
-[ -d "$HOME/.maxgraph" ] && run rm -rf "$HOME/.maxgraph"   # session-hook spool; symlink → the link goes, never the target
+# хуки: снять регистрации из конфигов хостов ДО удаления ~/.maxgraph (v0.48.0)
+if [ -f hooks/register_hook.py ] && command -v python3 >/dev/null 2>&1; then
+  if [ "$DRY" = 1 ]; then python3 hooks/register_hook.py --auto --remove --dry-run || true
+  else python3 hooks/register_hook.py --auto --remove || true; fi
+fi
+[ -d "$HOME/.maxgraph" ] && run rm -rf "$HOME/.maxgraph"   # session-hook spool + hooks.env; symlink → the link goes, never the target
 
 # --- done ----------------------------------------------------------------------
 if [ "$FAILED" -gt 0 ]; then

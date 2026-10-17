@@ -85,7 +85,7 @@ else { Log 'Data is kept (.\data + updater backups).' }
 
 # --- docker side ---------------------------------------------------------------
 $dockerOk = $false
-if (Get-Command docker -ErrorAction SilentlyContinue) { & docker info *> $null; $dockerOk = ($LASTEXITCODE -eq 0) }
+if (Get-Command docker -ErrorAction SilentlyContinue) { try { & docker info *> $null } catch { $global:LASTEXITCODE = 1 }; $dockerOk = ($LASTEXITCODE -eq 0) }   # PS 5.1: native stderr + EAP=Stop → terminating
 if ($dockerOk) {
   if (Test-Path -LiteralPath 'docker-compose.yml') {
     $composeArgs = @('compose', 'down', '--rmi', 'all', '--remove-orphans')
@@ -136,7 +136,18 @@ if (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -
 if (Get-ItemProperty 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'MaxGraphInstall' -ErrorAction SilentlyContinue) {
   Remove-Registry { Remove-ItemProperty 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'MaxGraphInstall' -ErrorAction Stop } 'HKCU RunOnce MaxGraphInstall'
 }
-if (Test-Path -LiteralPath "$HOME\.maxgraph") { Remove-Tree "$HOME\.maxgraph" }   # session-hook spool
+# --- хуки: снять регистрации из конфигов хостов, потом ~/.maxgraph --------------
+$rh = Join-Path $PSScriptRoot 'hooks\register_hook.py'
+if (Test-Path $rh) {
+  $py = $null
+  foreach ($cand in @('python', 'py')) { if (Get-Command $cand -ErrorAction SilentlyContinue) { $py = $cand; break } }
+  if ($py) {
+    $rhArgs = @($rh, '--auto', '--remove'); if ($DryRun) { $rhArgs += '--dry-run' }
+    if ($py -eq 'py') { $rhArgs = @('-3') + $rhArgs }
+    try { & $py @rhArgs 2>$null | ForEach-Object { Log "hooks: $_" } } catch { Log "WARN: hook deregistration failed: $($_.Exception.Message)" }
+  }
+}
+if (Test-Path -LiteralPath "$HOME\.maxgraph") { Remove-Tree "$HOME\.maxgraph" }   # session-hook spool + hooks.env (токен)
 
 # --- done -------------------------------------------------------------------------
 if ($script:Failed -gt 0) {

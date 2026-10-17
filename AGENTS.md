@@ -47,9 +47,9 @@ pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"   # mcp<2 обя�
 
 Другие хосты (deeplinks Cursor/VS Code и т.п.) — `docs/PAIRING.md`, опционально.
 
-## 3. Зарегистрируй захват-хуки своего хоста
+## 3. Проверь захват-хуки
 
-Установщик уже положил файлы в `~/.maxgraph/` (хук + `hooks.env` с адресом сервера и токеном — в конфиги токен не копируй). Впиши хук в конфиг СВОЕГО хоста по рецепту из `docs/HOOKS.md` (один сниппет, идемпотентно; про другие программы пользователя не спрашивай и их конфиги не трогай). Codex: после записи скажи пользователю один раз выполнить `/hooks` и доверить хуки — без их trust-гейта захват молча не работает.
+Установщик уже зарегистрировал хуки во всех найденных на машине хостах (строки «hooks: …» в его выводе). Если твоего хоста там нет — впиши хук в конфиг СВОЕГО хоста по рецепту из `docs/HOOKS.md` (один сниппет, идемпотентно; про другие программы пользователя не спрашивай и их конфиги не трогай). Codex: скажи пользователю один раз выполнить `/hooks` и доверить хуки — без их trust-гейта захват молча не работает. Токен в конфиги не копируй — хук сам читает `~/.maxgraph/hooks.env`.
 
 ## 4. Проверь память
 
@@ -60,7 +60,7 @@ pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"   # mcp<2 обя�
 
 «Перезапусти хост полностью (не крестиком в окно) и начни НОВУЮ сессию в папке проекта» — MCP-подключение и правила из `AGENTS.md` подхватываются только на старте сессии. Без этого пользователь продолжит старую сессию и решит, что память не работает.
 
-Дашборд с живым графом: `http://localhost:8787/app` (вход тем же токеном).
+Дашборд с живым графом: ссылка из пакета установщика (уже с токеном — открывается сразу, вставлять ничего не нужно).
 
 ## Удаление (по просьбе пользователя)
 
@@ -120,9 +120,9 @@ Endpoint `http://localhost:8787/mcp`, header `Authorization: Bearer <token>` (to
 
 Other hosts (Cursor/VS Code deeplinks etc.) — `docs/PAIRING.md`, optional.
 
-## 3. Register capture hooks in your own host
+## 3. Check the capture hooks
 
-The installer already placed the files in `~/.maxgraph/` (the hook + `hooks.env` with the server URL and token — do NOT copy the token into configs). Register the hook in YOUR OWN host's config using the recipe in `docs/HOOKS.md` (one snippet, idempotent; never ask the user about other programs or touch their configs). Codex: after writing, tell the user to run `/hooks` once and trust the hooks — without their trust gate, capture silently does nothing.
+The installer already registered the hooks into every detected host (see the "hooks: …" lines in its output). If your host is missing — register the hook in YOUR OWN host's config using the recipe in `docs/HOOKS.md` (one snippet, idempotent; never ask the user about other programs or touch their configs). Codex: tell the user to run `/hooks` once and trust the hooks — without their trust gate, capture silently does nothing. Do NOT copy the token into configs — the hook reads `~/.maxgraph/hooks.env` itself.
 
 ## 4. Verify memory
 
@@ -133,7 +133,7 @@ The installer already placed the files in `~/.maxgraph/` (the hook + `hooks.env`
 
 "Restart the host fully (quit the IDE/CLI, not just close the window) and start a NEW session in the project folder" — the MCP connection and the `AGENTS.md` rules are picked up only at session start. Without this the user keeps the old session and concludes memory doesn't work.
 
-Dashboard with the live graph: `http://localhost:8787/app` (same token).
+Dashboard with the live graph: the link from the installer package (already carries the token — opens signed in, nothing to paste).
 
 ## Uninstall (on the user's request)
 
