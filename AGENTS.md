@@ -38,6 +38,7 @@ pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"   # mcp<2 обя�
 
 Эндпоинт `http://localhost:8787/mcp`, заголовок `Authorization: Bearer <токен>` (токен — в пакете установщика / строке `MAXGRAPH_NEXT_STEPS` / файле `data/local_token.txt`).
 
+- DeepSeek Harness (DSH): установщик уже вписал MCP-ряд и хуки в `~/.dsh/profiles/*/cordis.patch.yml` (и чинит битые ряды при повторном запуске) — ничего не копируй руками. Проверка: инструменты `mcp__maxgraph__*` появляются после полного рестарта DSH.
 - Claude Code: `claude plugin marketplace add RuMemory/maxgraph && claude plugin install maxgraph@maxgraph`
 - Любой хост с JSON-конфигом MCP:
 
@@ -111,6 +112,7 @@ Tell the user honestly what is lost without Docker: auto-updates, autostart afte
 
 Endpoint `http://localhost:8787/mcp`, header `Authorization: Bearer <token>` (token — in the installer package / the `MAXGRAPH_NEXT_STEPS` line / `data/local_token.txt`).
 
+- DeepSeek Harness (DSH): the installer already wrote the MCP row and hooks into `~/.dsh/profiles/*/cordis.patch.yml` (and repairs broken rows on re-run) — do not hand-copy anything. Check: `mcp__maxgraph__*` tools appear after a full DSH restart.
 - Claude Code: `claude plugin marketplace add RuMemory/maxgraph && claude plugin install maxgraph@maxgraph`
 - Any host with a JSON MCP config:
 

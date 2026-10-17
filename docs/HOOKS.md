@@ -218,6 +218,31 @@ Fail-open: сеть/сервер недоступны — события ост�
 скрипт всегда завершается кодом 0 и никогда не блокирует хоста. Переопределения:
 `MG_SPOOL` (путь spool), `MG_HOOKS_ENV` (путь hooks.env), `MG_HOST` (вместо `--host`).
 
+### Обратное направление (v0.49.0): память приходит в контекст сама
+
+Помимо захвата, хук теперь отдаёт память хосту (stdout, fail-open, таймаут 3с):
+
+- **SessionStart** → `GET /api/session-context?project=<slug>` → блок памяти
+  проекта попадает в контекст сессии автоматически. Выключатель: `MG_SESSION_INJECT=0`.
+- **UserPromptSubmit** → `POST /api/recall` → топ-факты проекта по тексту
+  промпта (скип промптов <12 символов и начинающихся с `/ ! #`; дедуп по
+  sha256 промпта в `~/.maxgraph/recalled.json`, последние 500). Факты в контексте
+  помечены маркером `▣` — если факт повлиял на ответ, источник называй «из maxgraph».
+  Выключатель: `MG_RECALL=0`.
+- **PreToolUse** → read-only инструменты maxgraph (`search_nodes`, `open_nodes`,
+  `read_graph`, `session_start`, `task_list`) разрешаются автоматически, без
+  диалога подтверждения. Записи (`create_entities`, `add_observations`, `delete_*`,
+  `task_add` и т.д.) всегда спрашивают пользователя. Выключатель: `MG_PREAPPROVE=0`.
+
+Для PreToolUse в Claude Code добавь в `~/.claude/settings.json` (вместе с остальными):
+
+```json
+"PreToolUse": [{ "matcher": "mcp__.*maxgraph.*", "hooks": [{ "type": "command", "command": "python3 ~/.maxgraph/maxgraph_hook.py --host claude", "timeout": 5 }] }]
+```
+
+(в Windows-команде — pythonw с полным путём, как в шапке). Установщик регистрирует
+PreToolUse сам (register_hook.py).
+
 Переустановка со сменой токена: `hooks.env` нарочно не затирается установщиком —
 при новом токене удали `~/.maxgraph/hooks.env` и перезапусти установщик (или
 поправь `MG_TOKEN` в файле вручную), иначе захват молча копит spool.

@@ -2603,6 +2603,125 @@ async def api_search(request: Request):
         request.query_params.get("type", ""), limit))
 
 
+# ---------------------------------------------------- recall (v0.49.0) -----
+
+# Символ атрибуции фактов из памяти: клиент-хук помечает им строки, вставленные
+# в контекст агента из /api/recall и /api/session-context. Формат строки —
+# на клиенте-хуке (hooks/); сервер отдаёт чистый JSON, маркер не подставляет.
+RECALL_MARKER = "▣"
+
+RECALL_MAX_BODY = 65536          # лимит тела POST /api/recall (64KB, как api_ingest)
+RECALL_MAX_QUERY = 500           # query режем до 500 символов
+RECALL_MAX_FACT = 300            # один факт ≤300 символов
+RECALL_MAX_FACTS_CHARS = 1500    # суммарный потолок фактов в ответе
+RECALL_TOP_ENTITIES = 5          # сущностей в ответе (из top-10 op_search)
+RECALL_RATE_LIMIT = 120          # запросов/мин с IP (общий in-memory лимитер)
+SESSION_CONTEXT_DEFAULT_BUDGET = 4000   # budget_chars /api/session-context по умолчанию
+
+
+@mcp.custom_route("/api/session-context", methods=["GET"])
+async def api_session_context(request: Request):
+    """Фаза 1 «MaxGraph recall» (v0.49.0): op_session_start как REST для
+    клиент-хуков — обратное направление памяти (память сама приходит в контекст
+    агента). Ответ — {"context_block", "meta"} как есть.
+
+    ?project=<slug> обязателен: пустой → 400 {"error": "project is required"},
+    невалидный → 400 (_check_project). budget_chars: default 4000, клэмп
+    500..20000. Чтение: READONLY не блокирует (как /api/search — чтение
+    разрешено всегда, _readonly_guard тут не вызывается)."""
+    if not str(request.query_params.get("project") or "").strip():
+        return JSONResponse({"error": "project is required"}, status_code=400)
+    slug, err = _query_project(request)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    ip = _client_ip(request)
+    if _rate_limited(ip, "session_context", RECALL_RATE_LIMIT, 60):
+        return JSONResponse({"error": "too_many_requests"}, status_code=429,
+                            headers={"Retry-After": "60"})
+    budget = max(500, min(_safe_int(request.query_params.get("budget_chars"),
+                                   SESSION_CONTEXT_DEFAULT_BUDGET), 20000))
+    import asyncio
+    # op_session_start читает граф/пульс синхронно (а op_search внутри recall
+    # может ходить в сеть за embeddings) — в async-хендлере уводим в threadpool,
+    # как api_search.
+    return JSONResponse(await asyncio.to_thread(op_session_start, slug, budget),
+                        headers=_NOCACHE)
+
+
+@mcp.custom_route("/api/recall", methods=["POST"])
+async def api_recall(request: Request):
+    """Фаза 1 «MaxGraph recall» (v0.49.0): точечный recall по запросу —
+    {"project": slug, "query": str} → лучшие факты лучших сущностей.
+
+    op_search(limit=10) → ≤5 сущностей со score>0 → ≤2 факта на сущность
+    (простая эвристика: число токенов запроса в тексте, при равенстве — свежее;
+    факт ≤300 chars; инвалидированные [~дата] и пустые исключены); суммарно
+    ≤1500 chars фактов — дальше хвост списка обрезается.
+
+    Чтение: без _readonly_guard/_write_block. Rate-limit 120/мин с IP
+    (Ф8-конвенция), тело ≤64KB → 413, невалидный JSON → 400."""
+    ip = _client_ip(request)
+    if _rate_limited(ip, "recall", RECALL_RATE_LIMIT, 60):
+        return JSONResponse({"error": "too_many_requests"}, status_code=429,
+                            headers={"Retry-After": "60"})
+    # v0.49.0 (security Medium-2): тело читаем через _read_capped — потоковый
+    # кап по факту длины (chunked/врущий Content-Length не раздует память);
+    # его 400 маппим в наш 413.
+    raw, rerr = await _read_capped(request, RECALL_MAX_BODY)
+    if rerr is not None:
+        return JSONResponse({"error": f"payload too large (≤{RECALL_MAX_BODY} bytes)"},
+                            status_code=413)
+    try:
+        body = json.loads(raw)
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "expected JSON object"}, status_code=400)
+    slug, err = _check_project(body.get("project"))
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    if not slug:
+        return JSONResponse({"error": "project is required"}, status_code=400)
+    query = body.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return JSONResponse({"error": "query is required"}, status_code=400)
+    query = query.strip()[:RECALL_MAX_QUERY]
+    import asyncio
+    # op_search при включённом embed делает синхронную сеть (embed.query_vector)
+    # — в async-хендлере это блокирует весь event loop; уводим в threadpool.
+    return JSONResponse(await asyncio.to_thread(_recall, query, slug),
+                        headers=_NOCACHE)
+
+
+def _recall(query: str, slug: str) -> dict:
+    """Ядро /api/recall (синхронное; вызывается из хендлера через to_thread)."""
+    res = op_search(query, slug, limit=10)
+    qts = set(searchrank.tokenize(query))  # стемы запроса (lowercase)
+    facts, total = [], 0
+    for e in res.get("entities", []):
+        if len(facts) >= RECALL_TOP_ENTITIES:
+            break
+        score = float(e.get("score") or 0)
+        if score <= 0:
+            continue
+        obs = [str(o).strip() for o in e.get("observations", [])
+               if str(o).strip() and not _is_invalidated(o)]
+        if not obs:
+            continue
+        # лучшие ≤2: больше токенов запроса в тексте → выше; при равенстве —
+        # свежее (наблюдения append-only: позже в списке = новее).
+        best = sorted(range(len(obs)),
+                      key=lambda i: (-sum(1 for t in qts if t in obs[i].lower()), -i))
+        text = " | ".join(obs[i][:RECALL_MAX_FACT] for i in best[:2])
+        if total + len(text) > RECALL_MAX_FACTS_CHARS:
+            break  # потолок 1500: хвост списка сущностей обрезаем
+        total += len(text)
+        facts.append({"entity": e["name"], "title": e.get("title") or e["name"],
+                      "type": e.get("type") or e.get("entityType") or "",
+                      "score": score, "text": text})
+    return {"facts": facts, "query": query, "project": slug}
+
+
 @mcp.custom_route("/api/timeline", methods=["GET"])
 async def api_timeline(request: Request):
     slug, err = _query_project(request)

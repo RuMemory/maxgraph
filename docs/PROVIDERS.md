@@ -25,15 +25,18 @@ Settings → MCP → новый сервер → тип `streamable-http` → т
 
 ### DeepSeek Harness (DSH)
 
+Блок в `~/.dsh/profiles/<профиль>/cordis.patch.yml`. Обёртка `- insert:` обязательна: без неё запись читается как правка существующего ряда и молча пропускается — инструменты не появятся.
+
 ```yaml
-- id: mcp-maxgraph
-  name: "@deepseek-ai/dsh-mcp-client"
-  config:
-    serverName: maxgraph
-    transport: streamable-http
-    url: http://<host>:8787/mcp
-    headers:
-      Authorization: Bearer <MEMORY_TOKEN>
+- insert:
+    - id: mcp-maxgraph
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: maxgraph
+        transport: streamable-http
+        url: http://<host>:8787/mcp
+        headers:
+          Authorization: Bearer <MEMORY_TOKEN>
 ```
 
 Плюс захват-хуки — память пишется сама: [HOOKS.md](HOOKS.md).

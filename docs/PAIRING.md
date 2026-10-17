@@ -161,17 +161,18 @@ curl -H "Authorization: Bearer $T" http://localhost:8787/api/export > backup.jso
 }
 ```
 
-**DeepSeek Harness** — yaml:
+**DeepSeek Harness** — блок в `~/.dsh/profiles/<профиль>/cordis.patch.yml`. Обёртка `- insert:` обязательна: без неё запись читается как правка существующего ряда и молча пропускается — инструменты не появятся.
 
 ```yaml
-- id: mcp-remotemem
-  name: "@deepseek-ai/dsh-mcp-client"
-  config:
-    serverName: remotemem
-    transport: streamable-http
-    url: http://localhost:8787/mcp
-    headers:
-      Authorization: Bearer <MEMORY_TOKEN>
+- insert:
+    - id: mcp-maxgraph
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: maxgraph
+        transport: streamable-http
+        url: http://localhost:8787/mcp
+        headers:
+          Authorization: Bearer <MEMORY_TOKEN>
 ```
 
 **Cursor** — файл `~/.cursor/mcp.json` (глобально) или `.cursor/mcp.json` в папке проекта:

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """register_hook.py — автоматическая (де)регистрация захват-хука MaxGraph
-в конфигах хостов агентов (v0.48.0). Чистый stdlib, Python 3.10+.
+в конфигах хостов агентов (v0.48.1). Чистый stdlib, Python 3.10+.
 
 Установщик вызывает:  python3 hooks/register_hook.py --auto
   --auto     — все хосты: где конфиг найден → регистрируем, где нет → пропускаем
@@ -8,6 +8,12 @@
   --host X   — один хост (claude/dsh/cursor/codex/kimi/gemini/antigravity/windsurf)
   --remove   — снять регистрацию (uninstall)
   --dry-run  — только показать, что бы сделали
+
+DSH дополнительно (v0.48.1): в профильные cordis.patch.yml вписывается и
+MCP-ряд (dsh-mcp-client, streamable-http) — только в форме `- insert:` (голый
+`- id:` DSH молча пропускает, см. docs/PROVIDERS.md); битый голый ряд
+mcp-maxgraph/mcp-remotemem от старой доки переписывается в правильную форму.
+Токен — из data/local_token.txt рядом с репо (или env MEMORY_TOKEN).
 
 Свойства: идемпотентно (команда с maxgraph_hook.py уже в конфиге → пропуск),
 перед первой записью конфига — бэкап <файл>.bak-maxgraph (один раз, не затираем),
@@ -65,6 +71,11 @@ def _entry_settings(host: str, event: str) -> dict:
     e = {"hooks": [{"type": "command", "command": _command(host), "timeout": TIMEOUT}]}
     if host == "claude" and event == "PostToolUse":
         e["matcher"] = "*"
+    if host == "claude" and event == "PreToolUse":
+        # v0.49.0: только maxgraph-инструменты — auto-approve read-only в хуке;
+        # прочие PreToolUse хук молча пропускает.
+        e["matcher"] = "mcp__.*maxgraph.*"
+        e["hooks"][0]["timeout"] = 5
     if host == "codex" and event == "SessionStart":
         e["matcher"] = "startup"
     return e
@@ -84,7 +95,8 @@ HOSTS = {
     "claude": {
         "detect": ["~/.claude"], "config": "~/.claude/settings.json",
         "kind": "settings", "entry": _entry_settings,
-        "events": ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd"],
+        "events": ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop",
+                   "SessionEnd", "PreToolUse"],
     },
     "gemini": {
         "detect": ["~/.gemini/settings.json"], "config": "~/.gemini/settings.json",
@@ -337,6 +349,115 @@ _DSH_BLOCK = """- insert:
         projectDir: {project_dir}
 """
 
+_DSH_MCP_BLOCK = """- insert:
+    - id: mcp-maxgraph
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: maxgraph
+        transport: streamable-http
+        url: {url}
+        headers:
+          Authorization: {auth}
+"""
+
+# Наши MCP-ряды: id из актуальной доки и из старой (remotemem-эпохи PAIRING.md)
+_MCP_IDS = ("id: mcp-maxgraph", "id: mcp-remotemem")
+_MCP_SERVERS = ("serverName: maxgraph", "serverName: remotemem")
+
+
+def _mcp_token() -> str:
+    """Токен для MCP-ряда DSH: env MEMORY_TOKEN, иначе data/local_token.txt
+    рядом с корнем репо (установщик зовёт скрипт из корня клона, после подъёма
+    сервера). Весь whitespace режем: внутренний перевод строки сломает YAML."""
+    tok = (os.environ.get("MEMORY_TOKEN") or "").strip()
+    if tok:
+        return tok
+    try:
+        f = Path(__file__).resolve().parent.parent / "data" / "local_token.txt"
+        return "".join(f.read_text(encoding="utf-8").split())
+    except OSError:
+        return ""
+
+
+def _dsh_row_spans(lines: list) -> list:
+    """(start, end, indent) каждого YAML list-item ('- ' с любым отступом).
+    Ряд тянется до следующего item с тем же или меньшим отступом."""
+    items = [(i, len(ln) - len(ln.lstrip(" ")))
+             for i, ln in enumerate(lines)
+             if ln.strip().startswith("- ") or ln.strip() == "-"]
+    spans = []
+    for k, (i, ind) in enumerate(items):
+        end = len(lines)
+        for j, ind2 in items[k + 1:]:
+            if ind2 <= ind:
+                end = j
+                break
+        spans.append((i, end, ind))
+    return spans
+
+
+def _innermost(hits: list) -> list:
+    """Из спанов оставляем самые внутренние (insert-блок, содержащий наш ряд,
+    не должен засчитываться как ряд)."""
+    return [h for h in hits
+            if not any(o is not h and o[0] >= h[0] and o[1] <= h[1] for o in hits)]
+
+
+def _dsh_mcp_rows(lines: list) -> list:
+    """Наши MCP-ряды: [(start, end, mounted)]. mounted = ряд смонтирован через
+    insert: (предок с меньшим отступом); голый top-level `- id:` — битая форма
+    старой доки, DSH такой ряд молча пропускает (applyEntryPatches: id без
+    insert = оверрайд несуществующего ряда)."""
+    hits = []
+    for s, e, ind in _dsh_row_spans(lines):
+        text = "".join(lines[s:e])
+        if "dsh-mcp-client" not in text:
+            continue
+        if any(m in text for m in _MCP_SERVERS) or any(m in text for m in _MCP_IDS):
+            hits.append((s, e, ind))
+    out = []
+    for s, e, ind in _innermost(hits):
+        mounted = False
+        cur = ind
+        for k in range(s - 1, -1, -1):   # идём вверх по предкам (отступ < текущего)
+            ln = lines[k]
+            if not ln.strip() or ln.lstrip().startswith("#"):
+                continue
+            li = len(ln) - len(ln.lstrip(" "))
+            if li < cur:
+                if ln.strip() in ("- insert:", "insert:"):
+                    mounted = True
+                    break
+                cur = li
+        out.append((s, e, mounted))
+    return out
+
+
+def _dsh_drop_spans(lines: list, spans: list) -> list:
+    """Удалить спаны рядов + опустевшие после этого строки '- insert:'."""
+    for s, e in sorted(spans, reverse=True):
+        del lines[s:e]
+    out, i = [], 0
+    while i < len(lines):
+        ln = lines[i]
+        if ln.strip() in ("- insert:", "insert:"):
+            ind = len(ln) - len(ln.lstrip(" "))
+            j = i + 1
+            has_child = False
+            while j < len(lines):
+                nl = lines[j]
+                if nl.strip() and not nl.lstrip().startswith("#"):
+                    if len(nl) - len(nl.lstrip(" ")) > ind:
+                        has_child = True
+                    break
+                j += 1
+            if not has_child:
+                i += 1
+                continue   # пустой insert — мусор
+        out.append(ln)
+        i += 1
+    return out
+
 
 def _dsh_top_level_ok(text: str) -> bool:
     """M3: cordis.patch.yml — top-level sequence. Любая непустая строка в
@@ -375,55 +496,88 @@ def _apply_dsh(spec: dict, remove: bool, dry: bool) -> str:
             changed = True
         if changed:
             _write_json(hooks_json, data, dry)
+    token = _mcp_token()
     results = []
     for prof in profiles:
         p = Path(prof)
         text = p.read_text(encoding="utf-8") if p.exists() else ""
+        lines = text.splitlines(keepends=True)
+        active = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
         if remove:
-            if not any("hooks-maxgraph" in ln for ln in text.splitlines()
-                       if not ln.lstrip().startswith("#")):
+            # удаляем ТОЛЬКО наши ряды (hooks и mcp) — row-level, чтобы чужие
+            # ряды в общем insert-блоке не пострадали
+            spans = _dsh_row_spans(lines)
+            drop = []
+            for s, e, _ind in spans:
+                block_text = "".join(lines[s:e])
+                is_hooks = any("hooks-maxgraph" in l for l in lines[s:e])
+                is_mcp = ("dsh-mcp-client" in block_text
+                          and any(m in block_text for m in _MCP_SERVERS)) \
+                    or any(m in block_text for m in _MCP_IDS)
+                if is_hooks or is_mcp:
+                    drop.append((s, e))
+            drop = _innermost(drop)
+            if not drop:
                 results.append(f"{p}: not registered")
                 continue
-            # блок = top-level "- …" элемент, содержащий hooks-maxgraph
-            lines = text.splitlines(keepends=True)
-            out, i = [], 0
-            while i < len(lines):
-                if lines[i].startswith("- "):
-                    j = i
-                    while j < len(lines) and (j == i or not lines[j].startswith("- ")):
-                        j += 1
-                    block = lines[i:j]
-                    if not any("hooks-maxgraph" in b for b in block):
-                        out.extend(block)
-                    i = j
-                else:
-                    out.append(lines[i])
-                    i += 1
             if not dry:
-                _atomic_write(p, "".join(out))
+                _atomic_write(p, "".join(_dsh_drop_spans(lines, drop)))
             results.append(f"{p}: removed")
+            continue
+        status = []
+        add_blocks = []
+        # --- hooks ---
+        if any("hooks-maxgraph" in ln for ln in active):
+            status.append("hooks already registered")
         else:
-            if any("hooks-maxgraph" in ln for ln in text.splitlines()
-                   if not ln.lstrip().startswith("#")):
-                results.append(f"{p}: already registered")
-                continue
-            if not _dsh_top_level_ok(text):
-                results.append(f"{p}: skip (top level is not a list — left untouched)")
-                continue
-            block = _DSH_BLOCK.format(
+            add_blocks.append(_DSH_BLOCK.format(
                 config_path=_yaml_str(str(hooks_json).replace("\\", "/")),
-                project_dir=_yaml_str(str(_home("~")).replace("\\", "/")))
-            if not dry:
-                new_text = text.rstrip("\n") + "\n" + block
-                _atomic_write(p, new_text)
-                # пост-проверка: наш блок на месте и структура верхнего уровня жива;
-                # иначе — откат из .bak-maxgraph (M3)
-                check = p.read_text(encoding="utf-8")
-                if "hooks-maxgraph" not in check or not _dsh_top_level_ok(check):
-                    _restore_text(p, text)   # к содержимому ДО нашей записи, не к древнему бэкапу
-                    results.append(f"{p}: ERROR post-check failed — reverted")
-                    continue
-            results.append(f"{p}: registered")
+                project_dir=_yaml_str(str(_home("~")).replace("\\", "/"))))
+            status.append("hooks registered")
+        # --- MCP-ряд: absent → вставка; битый (голый - id:) → переписать ---
+        mcp_rows = _dsh_mcp_rows(lines)
+        broken = [(s, e) for s, e, mounted in mcp_rows if not mounted]
+        dropped = False
+        if any(mounted for _s, _e, mounted in mcp_rows):
+            status.append("mcp already registered")
+        elif not token:
+            status.append("mcp skipped (no token — data/local_token.txt)")
+        else:
+            if broken:
+                lines = _dsh_drop_spans(lines, _innermost(broken))
+                dropped = True
+                status.append("mcp repaired (was bare '- id:', DSH skips those)")
+            else:
+                status.append("mcp registered")
+            add_blocks.append(_DSH_MCP_BLOCK.format(
+                url=_yaml_str("http://localhost:8787/mcp"),
+                auth=_yaml_str("Bearer " + token)))
+        if not add_blocks and not dropped:
+            results.append(f"{p}: " + ", ".join(status))
+            continue
+        if not _dsh_top_level_ok(text):
+            results.append(f"{p}: skip (top level is not a list — left untouched)")
+            continue
+        if not dry:
+            new_text = "".join(lines).rstrip("\n") + "\n" + "".join(add_blocks)
+            _atomic_write(p, new_text)
+            # пост-проверка: наши блоки на месте, структура верхнего уровня жива,
+            # отремонтированных рядов в битой форме не осталось; иначе — откат
+            # к содержимому ДО нашей записи (M3)
+            check = p.read_text(encoding="utf-8")
+            want = (["hooks-maxgraph"] if any("hooks registered" in s for s in status) else []) \
+                + (["mcp-maxgraph"] if any(s.startswith("mcp registered")
+                                           or s.startswith("mcp repaired") for s in status) else [])
+            rows_after = _dsh_mcp_rows(check.splitlines(keepends=True))
+            # still_broken судим только когда ремонт реально делался (при
+            # skipped-broken битый ряд остаётся нетронутым — это не провал)
+            attempted_repair = bool(broken) and any(s.startswith("mcp repaired") for s in status)
+            still_broken = attempted_repair and any(not m for _s, _e, m in rows_after)
+            if any(w not in check for w in want) or not _dsh_top_level_ok(check) or still_broken:
+                _restore_text(p, text)
+                results.append(f"{p}: ERROR post-check failed — reverted")
+                continue
+        results.append(f"{p}: " + ", ".join(status))
     return "; ".join(results)
 
 

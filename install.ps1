@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 install.ps1 — MaxGraph installer for Windows (macOS/Linux: install.sh).
 Run from the root of the cloned repo:
@@ -238,6 +238,7 @@ function Show-NextSteps {  # final package for the installing agent (see AGENTS.
   Write-Host ''
   Write-Host '================ MAXGRAPH - NEXT STEPS (for the agent) ================'
   Write-Host "1. Connect MCP to the user's host:"
+  Write-Host '   DSH: already done - row mcp-maxgraph in ~/.dsh/profiles/*/cordis.patch.yml (see "hooks:" log lines)'
   Write-Host '   url: http://localhost:8787/mcp'
   Write-Host "   header: Authorization: Bearer $token"
   Write-Host "   JSON config (any host): {""mcpServers"":{""maxgraph"":{""type"":""http"",$cfg}}}"
