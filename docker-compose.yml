@@ -9,6 +9,10 @@ services:
       - "127.0.0.1:8787:8787"
     volumes:
       - ./data:/data
+      # Отпечаток хоста (только хеши; пишет установщик). Read-only.
+      # Файла нет (compose без установщика) → установка работает в режиме
+      # unanchored, лечение — bash install.sh --hostfp-only / install.ps1 -HostfpOnly.
+      - ${HOSTFP_PATH:-./hostfp.json}:/app/hostfp.json:ro
     environment:
       MEMORY_TOKEN: ${MEMORY_TOKEN:-}  # пусто → автогенерация mg_local_* в data/local_token.txt (v0.14)
       HOST_FP: ${HOST_FP:-}  # sha256 железа хоста (ставит установщик; стабильный fingerprint машины)

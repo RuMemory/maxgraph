@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 install.ps1 — MaxGraph installer for Windows (macOS/Linux: install.sh).
 Run from the root of the cloned repo:
@@ -9,18 +9,22 @@ the user's consent: download the official Docker Desktop installer from
 docker.com (verified by its Authenticode signature) and run it — Docker's
 installer requests admin rights itself, enables WSL2 and asks for the reboot
 when one is needed; a reboot resumes this installer automatically (HKCU
-RunOnce, only with an unchanged script) → HOST_FP/INSTALL_FLAVOR into .env →
-pull the prebuilt GHCR image (local build as fallback) → up -d → wait for
-healthz.
+RunOnce, only with an unchanged script) → hostfp.json + HOST_FP/INSTALL_FLAVOR
+into .env → pull the prebuilt GHCR image (local build as fallback) → up -d →
+wait for healthz.
+
+Modes: default = full install; -HostfpOnly = only (re)compute hostfp.json next
+to docker-compose.yml (heals an existing install — no rebuild; apply with
+`docker compose up -d`).
 
 Exit codes (read by the installing AI agent, see AGENTS.md):
-  0 — MaxGraph is running in Docker
+  0 — MaxGraph is running in Docker (or hostfp.json written with -HostfpOnly)
   2 — Docker Desktop needs a reboot or has a dialog waiting: the installer
       continues automatically at next logon (or re-run install.ps1)
   3 — engine declined or impossible → Python fallback (AGENTS.md, step 3a)
   1 — unexpected error (see install.log)
 #>
-param([switch]$Yes, [switch]$Resume)
+param([switch]$Yes, [switch]$Resume, [switch]$HostfpOnly)
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false   # pwsh 7.4+: упавшие нативные команды не должны бросать (мы читаем $LASTEXITCODE)
@@ -147,9 +151,70 @@ function Upsert-Env([string]$key, [string]$val) {
   [System.IO.File]::WriteAllLines($envFile, $lines, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+function Write-HostfpJson {  # композитный отпечаток хоста → hostfp.json рядом с compose
+  # Сырые идентификаторы не покидают машину: в файл идут только sha256-хеши
+  # (salt + нормализованное значение). Алгоритм байт-в-байт тот же, что в
+  # install.sh и app/hostfp.py: нормализация (lowercase/trim/схлопнуть пробелы/
+  # срезать -:_), отброс плейсхолдеров, сортировка строк — ordinal.
+  $Salt = 'maxgraph-hostfp/v1'
+  function _norm([object]$v) {
+    if ($null -eq $v) { return '' }
+    $s = ([string]$v).Trim().ToLower() -replace '\s+', ' '
+    ($s -replace '[-:_]', '').Trim()
+  }
+  function _isPlaceholder([string]$n) {
+    if ($n -eq '') { return $true }
+    if (@('03000200040005000006000700080009','to be filled by o.e.m.','default string',
+          'none','not applicable','n/a','unknown','system serial number','serialnumber',
+          'oem') -contains $n) { return $true }
+    if ($n -match '^[0]+$') { return $true }    # все-нули
+    if ($n -match '^[f]+$') { return $true }    # все-f (незаписанный UUID)
+    if ($n -match '^[0 ]+$') { return $true }   # нули и пробелы
+    return $false
+  }
+  function _sha256([string]$text) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text)))).Replace('-','').ToLower() }
+    finally { $sha.Dispose() }
+  }
+  # user-mode сбор, без admin: MachineGuid, SMBIOS UUID, серийники платы/диска, MAC
+  $mguid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -ErrorAction SilentlyContinue).MachineGuid
+  $uuid = (Get-CimInstance Win32_ComputerSystemProduct -ErrorAction SilentlyContinue).UUID
+  $board = (Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue).SerialNumber
+  $disk = (Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue |
+           Where-Object { $_.MediaType -match 'Fixed' } | Select-Object -First 1).SerialNumber
+  if (-not $disk) { $disk = (Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue | Select-Object -First 1).SerialNumber }
+  $mac = (Get-NetAdapter -Physical -ErrorAction SilentlyContinue |
+          Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1).MacAddress
+  if (-not $mac) { $mac = (Get-CimInstance Win32_NetworkAdapter -Filter 'PhysicalAdapter=True' -ErrorAction SilentlyContinue |
+                   Where-Object { $_.MACAddress } | Select-Object -First 1).MACAddress }
+  $raw = [ordered]@{ os_install_id = $mguid; smbios_uuid = $uuid; board_serial = $board
+                     disk_serial = $disk; mac = $mac }
+  $comps = [ordered]@{}
+  $lines = [System.Collections.Generic.List[string]]::new()
+  foreach ($tag in $raw.Keys) {
+    $n = _norm $raw[$tag]
+    if (_isPlaceholder $n) { continue }
+    $comps[$tag] = _sha256 "$Salt|$tag=$n"
+    $lines.Add("$tag=$n")
+  }
+  if ($lines.Count -eq 0) { Log 'WARN: no usable hardware ids — hostfp.json not written'; return $false }
+  $arr = $lines.ToArray()
+  [Array]::Sort($arr, [StringComparer]::Ordinal)
+  $hostFp = _sha256 ($Salt + "`n" + ($arr -join "`n"))
+  $path = Join-Path $PSScriptRoot 'hostfp.json'
+  if (Test-Path $path -PathType Container) { Remove-Item $path -Force }  # каталог-заглушка от docker bind-монта
+  $out = [ordered]@{ v = 1; host_fp = $hostFp; components = $comps; os = 'windows'
+                     created = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+  # no BOM: docker compose и python-читатель трипаются о BOM
+  [System.IO.File]::WriteAllText($path, ($out | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
+  Log 'hostfp.json written (machine fingerprint, hashes only)'
+  return $true
+}
+
 function Finish-Install {  # shared final for both engine paths: .env → compose → healthz
   Clear-RunOnce
-  Log 'Writing .env (HOST_FP, INSTALL_FLAVOR)...'
+  Log 'Writing .env (HOST_FP, INSTALL_FLAVOR) + hostfp.json...'
   $guid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -ErrorAction SilentlyContinue).MachineGuid
   if ($guid) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -159,6 +224,7 @@ function Finish-Install {  # shared final for both engine paths: .env → compos
     Log 'WARN: no MachineGuid - HOST_FP not set'
   }
   Upsert-Env 'INSTALL_FLAVOR' $script:Flavor
+  try { Write-HostfpJson | Out-Null } catch { Log "WARN: hostfp.json failed: $($_.Exception.Message)" }  # не критично: без него установка unanchored
   $mgv = ([string](Get-Content (Join-Path $PSScriptRoot 'VERSION') -ErrorAction SilentlyContinue)).Trim()
   if ($mgv -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {   # мусор в VERSION не должен отравить ref образа
     if ($mgv) { Log "WARN: VERSION is not semver ('$mgv') - MG_VERSION empty (image: latest)" }
@@ -223,6 +289,15 @@ if ($Resume) {
 
 Start-Transcript -Path (Join-Path $PSScriptRoot 'install.log') -Append | Out-Null
 $script:TranscriptOn = $true
+
+if ($HostfpOnly) {
+  # лечение существующей установки без пересборки: досчитать hostfp.json рядом
+  # с compose-файлом; дальше — `docker compose up -d`, чтобы контейнер подхватил
+  $okHfp = $false
+  try { $okHfp = Write-HostfpJson } catch { Log "ERROR: $($_.Exception.Message)" }
+  Stop-Log
+  if ($okHfp) { exit 0 } else { exit 1 }
+}
 
 try {
   if (Docker-Ok) {

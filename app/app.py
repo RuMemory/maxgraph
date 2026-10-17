@@ -69,6 +69,7 @@ from starlette.responses import FileResponse
 from starlette.responses import Response  # --- digiseller per-order (v0.7) ---
 
 import licensing   # stdlib-only: триал/лицензии (тестируется отдельно)
+import hostfp      # stdlib-only: композитный host-fingerprint (hostfp.json от установщика)
 import plans       # stdlib-only: тарифы/лейблы планов (общие с магазином)
 import searchrank  # --- Ф6 (MEMORY-SYSTEM-v2) --- stdlib-only: ранжированный FTS-lite поиск
 import embed       # --- В2.2 (волна 2) --- stdlib-only: опциональные эмбеддинги, гибридный поиск
@@ -2192,6 +2193,7 @@ def _license_status() -> dict:
         latest = licensing.latest_version(DATA_DIR, LICENSE_SECRET)
         st["latest"] = latest
         st["update_available"] = licensing.version_newer(latest, VERSION)
+        st["fp_class"] = hostfp.fp_class()  # дашборд: баннер непривязанной установки
         return st
     except Exception as e:  # статус не читается — не доверяем
         log.error("licensing.status failed: %s", e)
@@ -3190,6 +3192,79 @@ _FP_RE = re.compile(r"^[0-9a-f]{64}$")
 _INSTALL_FLAVORS = frozenset({"docker", "docker-desktop", "rancher", "python"})
 _INSTALLS_CAP = 10000   # потолок installs-дикта; вытеснение самых старых по last_seen
 _TRIALS_CAP = 100_000   # потолок fp-реестра; переполнение → ответ без trial-блока (не 5xx)
+_FP_KINDS = frozenset({"composite", "legacy", "container"})
+
+
+def _parse_hostfp_body(body: dict) -> tuple:
+    """Композитный host-fp из тела запроса → (host_fp, components, fp_kind).
+
+    Битый host_fp — не ошибка запроса, а его отсутствие (дальше работает legacy
+    fp, как раньше); components фильтруются по известным тегам и формату
+    (hostfp.sanitize_components), fp_kind — по вайтлисту, неизвестное значение
+    выводится из наличия host_fp."""
+    hf = str(body.get("host_fp") or "").strip().lower()
+    if not _FP_RE.match(hf or ""):
+        hf = ""
+    components = hostfp.sanitize_components(body.get("components")) if hf else {}
+    kind = str(body.get("fp_kind") or "").strip().lower()
+    if kind not in _FP_KINDS:
+        kind = "composite" if hf else ""
+    if kind == "composite" and not hf:
+        kind = ""  # заявленный composite без валидного host_fp — не composite
+    return hf, components, kind
+
+
+def _adopt_trial_anchor(trials: dict, eff: str, prev_fp: str,
+                        components: dict, allow_scoring: bool = True):
+    """Усыновить существующий якорь под новым effective fp (зовётся под
+    _installs_lock, когда trials[eff] ещё нет) → запись | None.
+
+    Два канала тождества машины:
+    1) преемственность установки — installs[iid] до этого пинга сидел на prev_fp
+       (та же установка принесла композитный fp вместо legacy);
+    2) похомпонентный скоринг против якорей с components (частичная смена
+       железа; review-зона помечается флагом review, виден только в админке).
+    Перенос сохраняет started_at (якорь не молодеет → переустановка ОС на том же
+    железе триал не перезапускает); старый fp помечается alias_of=eff и дальше
+    выцветает штатным ghost-GC."""
+    def _claim(old_key, verdict):
+        t_old = trials[old_key]
+        t = dict(t_old)
+        t["installs"] = list(t.get("installs") or [])  # iid допишет хендлер (reinstalls-буккипинг)
+        t.pop("ghost", None)
+        t.pop("ghost_since", None)
+        t.pop("volatile", None)   # усыновленный composite — настоящая привязка
+        t.pop("last_seen", None)
+        if components and not t.get("components"):
+            t["components"] = components  # эталон якоря не перезаписываем
+        if verdict == "review":
+            t["review"] = True
+        trials[eff] = t
+        t_old["alias_of"] = eff
+        return t
+
+    if prev_fp and prev_fp != eff and prev_fp in trials:
+        if not trials[prev_fp].get("alias_of"):
+            return _claim(prev_fp, "same"), False
+    if components and allow_scoring:
+        best = None
+        # shortcut: линейный скан по якорям с components (их доля мала — композитная
+        # эра); при росте trials к капу — индекс по spine-хешу
+        for old_key, t_old in trials.items():
+            if old_key == eff or not isinstance(t_old, dict) or t_old.get("alias_of"):
+                continue
+            oc = t_old.get("components")
+            if not oc:
+                continue
+            verdict, pct = hostfp.score(oc, components)
+            if verdict == "new":
+                continue
+            started = t_old.get("started_at") or 0
+            if best is None or pct > best[0] or (pct == best[0] and started < best[1]):
+                best = (pct, started, old_key, verdict)
+        if best:
+            return _claim(best[2], best[3]), True
+    return None
 
 
 def _load_installs():
@@ -3217,6 +3292,8 @@ def _save_installs(data: dict):
 _ghost_gc_day = ""  # UTC-дата последнего ghost-GC (раз в сутки, на install-ping)
 _GHOST_TTL_SEC = 90 * 86400  # ghost-якорь живёт 90д (атака «копия data/ → сутки →
                              # вернул» не сбрасывает триал), потом стирается
+_VOLATILE_TTL_SEC = 7 * 86400  # volatile-якорь (установка без привязки к железу)
+                               # без пингов стирается через 7д; машиной не считается
 
 
 def _gc_ghost_fps(data: dict, now: float) -> tuple:
@@ -3227,12 +3304,20 @@ def _gc_ghost_fps(data: dict, now: float) -> tuple:
     переживает атаку копией data/; стираем после _GHOST_TTL_SEC тишины.
     Настоящий «поставил и забыл» (fp == текущему fp его install_id) и недоказуемые
     (install вытеснен капом) не трогаем. Вернувшийся fp воскресает в хендлере.
-    Зовётся под _installs_lock ДО _save_installs. → (marked [(fp,[live…])], deleted)."""
+    Volatile-якоря (fp_kind=container) в ghost не играют: TTL 7д без пингов.
+    Зовётся под _installs_lock ДО _save_installs. → (marked [(fp,[live…])], deleted,
+    volatile_deleted)."""
     installs = data.get("installs") or {}
     trials = data.get("trials") or {}
-    marked, deleted = [], []
+    marked, deleted, volatile_deleted = [], [], []
     for fp in list(trials):
         t = trials[fp]
+        if t.get("volatile"):
+            idle = now - _safe_int(t.get("last_seen") or t.get("started_at"), now)
+            if idle > _VOLATILE_TTL_SEC:
+                volatile_deleted.append(fp)
+                del trials[fp]
+            continue
         if t.get("ghost"):
             if now - _safe_int(t.get("ghost_since"), now) > _GHOST_TTL_SEC:
                 deleted.append(fp)
@@ -3254,7 +3339,7 @@ def _gc_ghost_fps(data: dict, now: float) -> tuple:
             t["ghost"] = True
             t["ghost_since"] = _safe_int(t.get("ghost_since"), now) or now
             marked.append((fp, sorted(lives)))
-    return marked, deleted
+    return marked, deleted, volatile_deleted
 
 
 def _rebind_ghost_licenses(ghosts) -> int:
@@ -3285,6 +3370,16 @@ def _rebind_ghost_licenses(ghosts) -> int:
                 if new != fps:  # включая dedup-only (legacy 2-слота) — LOW-1: сохраняем
                     rec["fps"] = new
                     changed = True
+                al = rec.get("aliases") or []
+                if al:  # алиасы (выцветшие fp) переписываем тем же правилом
+                    new_al = []
+                    for fp in al:
+                        live = ghost2live.get(fp, fp)
+                        if live not in new_al:
+                            new_al.append(live)
+                    if new_al != al:
+                        rec["aliases"] = new_al
+                        changed = True
             if changed:
                 _save_machines(mdata)
             return moved
@@ -3353,27 +3448,70 @@ def _save_machines(data: dict):
         pass  # Windows — best-effort
 
 
-def _machine_bind(data: dict, key: str, fp: str, now: float) -> str:
-    """Привязать fp к ключу (зовётся под _machines_lock) → "known"|"bound"|"limit".
-    known — fp уже привязан; bound — свободный слот был, привязали; limit — слоты заняты.
-    Legacy (ключ без единой привязки) принимает первый fp."""
+def _machine_bind(data: dict, key: str, fp: str, now: float,
+                  components: dict | None = None, legacy_fp: str = "") -> tuple:
+    """Привязать effective fp к ключу (зовётся под _machines_lock) → (verdict, rec|None).
+
+    verdict: known — fp привязан (или его алиас); bound — свободный слот был,
+    привязали; rebound — fp заменён по доказательству тождества машины, старый
+    ушёл в aliases; review — то же, но скоринг в серой зоне (флаг для админки);
+    limit — слоты заняты и тождество не доказано.
+
+    Тождество при занятом слоте доказывается двумя путями: преемственностью
+    (та же связка ключ + ранее привязанный legacy fp предъявляет композитный)
+    или похомпонентным скорингом против сохранённых components (hostfp.score).
+    Legacy-ключ без привязок принимает первый fp, как раньше."""
     h = _key_hash(key)
     rec = data["machines"].get(h)
-    if rec and fp in (rec.get("fps") or []):
+    fps = (rec or {}).get("fps") or []
+    aliases = (rec or {}).get("aliases") or []
+    if rec and fp in fps:
         rec["updated"] = now  # свежесть = защита от вытеснения по капу
-        return "known"
+        if components and not rec.get("components"):
+            rec["components"] = components  # дозапись при первом композитном визите
+        return "known", rec
+    if rec and fp in aliases:
+        rec["updated"] = now
+        return "known", rec
     if rec is None:
         rec = data["machines"][h] = {"fps": [], "first_seen": now}
     fps = rec.setdefault("fps", [])
+    verdict = "bound"
     if len(fps) >= _MACHINES_MAX_FP:
-        return "limit"
+        # continuity (связка ключ + ранее привязанный fp) — только для разовой
+        # миграции legacy→composite: после записи components ротация идёт через
+        # скоринг, иначе предъявление любого fp из истории = безлимитный перенос
+        linked = (legacy_fp and not rec.get("components")
+                  and (legacy_fp in fps or legacy_fp in (rec.get("aliases") or [])))
+        if linked:
+            verdict = "rebound"  # legacy→composite по преемственности install_id+ключа
+        elif components and rec.get("components"):
+            v, _pct = hostfp.score(rec["components"], components)
+            if v == "new":
+                return "limit", rec
+            verdict = "rebound" if v == "same" else "review"
+        else:
+            return "limit", rec
+        for old in fps:  # старые fp — в алиасы (матчатся как known, слот не едят)
+            if old != fp and old not in aliases:
+                aliases.append(old)
+        del aliases[:-8]  # потолок алиасов: rebound-цикл не раздувает запись
+        rec["aliases"] = aliases
+        fps[:] = []
     fps.append(fp)
+    if components and not rec.get("components"):
+        rec["components"] = components  # перезапись при rebound не делаем: реплей
+                                        # чужого набора не должен сдвигать эталон
+    if verdict == "review":
+        rec["review"] = True
+    else:
+        rec.pop("review", None)  # чистое тождество снимает прошлый флаг
     rec["updated"] = now
     if len(data["machines"]) > _MACHINES_CAP:  # вытеснение самых старых по updated
         stale = sorted(data["machines"], key=lambda k: data["machines"][k].get("updated", 0))
         for k in stale[: len(data["machines"]) - _MACHINES_CAP]:
             del data["machines"][k]
-    return "bound"
+    return verdict, rec
 
 
 _MACHINE_LIMIT_MSG = ("Ключ уже привязан к другому компьютеру. Отвязка — только через "
@@ -3428,6 +3566,32 @@ def _get_json(url: str, timeout: int = 5):
         return None
 
 
+def _client_fp_fields() -> dict:
+    """Поля привязки к железу для исходящих запросов на магазин (install-ping,
+    license validate, relay/config, referral/code).
+
+    fp — legacy machine_fingerprint (как раньше). Поверх: host_fp + components
+    из hostfp.json (его пишет установщик НА ХОСТЕ — контейнер железо не
+    вычисляет и вычислить не может) и fp_kind — класс установки: composite
+    (есть hostfp.json), legacy (валидный env HOST_FP) или container (fp из
+    контейнерных источников — плывёт при пересоздании). Магазин линкует
+    legacy fp как алиас композитного по install_id+ключу."""
+    out = {}
+    fp = licensing.machine_fingerprint()
+    if fp:
+        out["fp"] = fp
+    hf = hostfp.load_hostfp()
+    if hf is not None:
+        out["fp_kind"] = "composite"
+        out["host_fp"] = hf["host_fp"]
+        if hf.get("components"):
+            out["components"] = hf["components"]
+        return out
+    env_fp = (os.environ.get("HOST_FP") or "").strip().lower()
+    out["fp_kind"] = "legacy" if env_fp and hostfp.FP64_RE.fullmatch(env_fp) else "container"
+    return out
+
+
 def _telemetry_ping(post=None, env=None, data_dir=None):
     """Анонимный install-ping на магазин: install_id + версия + install_flavor
     (v0.39.0) + fp (sha256-хеш машины, v0.16.3). Всегда ON (v0.41.0: выключатель
@@ -3443,9 +3607,7 @@ def _telemetry_ping(post=None, env=None, data_dir=None):
                # ставит установщик (install.sh/install.ps1); пусто → autodetect.
                "install_flavor": (env.get("INSTALL_FLAVOR") or "").strip()
                or ("docker" if os.path.exists("/.dockerenv") else "python")}
-    fp = licensing.machine_fingerprint()
-    if fp:
-        payload["fp"] = fp
+    payload.update(_client_fp_fields())
     try:
         resp = (post or _post_json)(PUBLIC_BASE_URL + "/api/telemetry/install", payload, timeout=5)
     except Exception:
@@ -3490,10 +3652,10 @@ def _relay_config_pull(env=None):
         else:
             if licensing.status(DATA_DIR, LICENSE_SECRET).get("state") != "trial":
                 return  # expired — без relay (запись и так заблокирована)
-            fp = licensing.machine_fingerprint()
-            if not fp:
+            fields = _client_fp_fields()
+            if not fields.get("fp") and not fields.get("host_fp"):
                 return
-            payload = {"install_id": _install_id(), "fp": fp}
+            payload = {"install_id": _install_id(), **fields}
         cfg = _post_json(PUBLIC_BASE_URL + "/api/relay/config", payload, timeout=8)
         ok = isinstance(cfg, dict) and cfg.get("ok")
         if not ok:  # v0.40.0: молчание мешало диагностике «нет семантики» у покупателя
@@ -3544,9 +3706,7 @@ def _watchdog_iteration(env):
     key = licensing.current_key(DATA_DIR, LICENSE_SECRET)
     if key:
         payload = {"key": key}
-        fp = licensing.machine_fingerprint()
-        if fp:
-            payload["fp"] = fp  # host-fp: магазин учитывает машину ключа (2 слота)
+        payload.update(_client_fp_fields())  # host-fp: магазин учитывает машину ключа
         # v0.38.0: + install_id — магазин связывает ключ с инстансом (self-ref блок рефералки)
         payload["install_id"] = _install_id()
         try:
@@ -3986,11 +4146,14 @@ async def api_telemetry_install(request: Request):
     fp = str(body.get("fp") or "")
     if fp and not _FP_RE.match(fp):
         return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
+    host_fp, components, fp_kind = _parse_hostfp_body(body)
+    eff = host_fp or fp  # effective id машины: композитный при наличии, иначе legacy
     flavor = str(body.get("install_flavor") or "")[:16]  # v0.39.0
     now = time.time()
     trial_ts = None
     marked = []
     deleted = []
+    vol_deleted = []
     capped = False
     today = time.strftime("%Y-%m-%d", time.gmtime(now))
     with _installs_lock:
@@ -3998,58 +4161,78 @@ async def api_telemetry_install(request: Request):
         if data is None:  # битый installs.json — fail-open без записи (не затираем)
             return JSONResponse({"ok": True}, headers=_NOCACHE)
         rec = data["installs"].get(iid)
+        prev_fp = str((rec or {}).get("fp") or "")  # до перезаписи: линковка legacy→composite
         first = rec is None
         rec = rec or {"first_seen": now, "starts": 0}
         rec.update({"last_seen": now, "version": ver, "starts": int(rec.get("starts") or 0) + 1})
         if flavor in _INSTALL_FLAVORS:  # вайтлист: неизвестное молча не храним (forward-compat)
             rec["install_flavor"] = flavor  # перезаписывается при миграции python → docker
-        if fp:
-            rec["fp"] = fp  # fp установки — для админки
+        if eff:
+            rec["fp"] = eff  # fp установки — для админки
+            if fp_kind:
+                rec["fp_kind"] = fp_kind
         data["installs"][iid] = rec
         if len(data["installs"]) > _INSTALLS_CAP:  # вытеснение самых старых по last_seen
             stale = sorted(data["installs"], key=lambda k: data["installs"][k].get("last_seen", 0))
             for k in stale[: len(data["installs"]) - _INSTALLS_CAP]:
                 del data["installs"][k]
-        if fp:
+        if eff:
             trials = data.setdefault("trials", {})
-            t = trials.get(fp)
+            t = trials.get(eff)
             if t is not None and t.get("ghost"):
                 # fp вернулся (копия data/ вернулась на исходный хост) — воскрес,
                 # якорь не тронут: tombstone и убил атаку «копия → сутки → возврат»
                 t.pop("ghost", None)
                 t.pop("ghost_since", None)
             if t is None:
-                if len(trials) < _TRIALS_CAP:
-                    # v0.41.1: анти-фарм — ≤3 новых якоря с IP в сутки (код открыт,
-                    # fp подделываем; сверх капа пинг ок, якоря нет до завтра).
-                    # IP — через _client_ip: на проде TRUST_PROXY=1 требует nginx
-                    # $proxy_add_x_forwarded_for (иначе кап глобален на IP прокси)
-                    anchor_ip = data.setdefault("anchor_ip", {})
-                    akey = f"{ip}|{today}"
-                    if _safe_int(anchor_ip.get(akey)) < 3:
-                        t = trials[fp] = {"started_at": now, "reinstalls": 0, "installs": [iid]}
+                # анти-фарм: ≤3 новых якоря ИЛИ scoring-усыновлений с IP в сутки
+                # (код открыт, fp подделываем; сверх капа пинг ок — якорь ни
+                # создаётся, ни переезжает до завтра). Преемственность установки
+                # (тот же install_id принёс новый fp) кап не ест — штатная миграция.
+                anchor_ip = data.setdefault("anchor_ip", {})
+                akey = f"{ip}|{today}"
+                budget_ok = _safe_int(anchor_ip.get(akey)) < 3 and len(trials) < _TRIALS_CAP
+                adopted = _adopt_trial_anchor(trials, eff, prev_fp, components,
+                                              allow_scoring=budget_ok)
+                if adopted is not None:
+                    t, used_scoring = adopted
+                    if used_scoring:
                         anchor_ip[akey] = _safe_int(anchor_ip.get(akey)) + 1
-                        # вчерашние счётчики не тащим
-                        data["anchor_ip"] = {k: v for k, v in anchor_ip.items()
-                                             if k.endswith("|" + today)}
-                    else:
-                        capped = True
-            else:
+                elif budget_ok:
+                    t = trials[eff] = {"started_at": now, "reinstalls": 0, "installs": [iid]}
+                    if components:
+                        t["components"] = components
+                    if fp_kind == "container":
+                        # unanchored-установка (нет hostfp.json/HOST_FP): якорь
+                        # volatile — в «машины» не считается, без пингов 7д стирается
+                        t["volatile"] = True
+                        t["last_seen"] = now
+                    anchor_ip[akey] = _safe_int(anchor_ip.get(akey)) + 1
+                else:
+                    capped = True
+                if _safe_int(anchor_ip.get(akey)):
+                    # вчерашние счётчики не тащим
+                    data["anchor_ip"] = {k: v for k, v in anchor_ip.items()
+                                         if k.endswith("|" + today)}
+            if t is not None:
                 seen = t.setdefault("installs", [])
-                if iid not in seen:  # новый install_id для этого fp = переустановка
+                if iid not in seen:  # новый install_id для этого якоря = переустановка
                     t["reinstalls"] = int(t.get("reinstalls") or 0) + 1
                     if len(seen) < 100:  # служебный перечень — без роста в бесконечность
                         seen.append(iid)
-            if t is not None:
-                trial_ts = t["started_at"]  # якорь НИКОГДА не двигается вперёд
+                if components and not t.get("components"):
+                    t["components"] = components  # дозапись при апгрейде клиента
+                if t.get("volatile"):
+                    t["last_seen"] = now
+                trial_ts = t.get("started_at")  # якорь НИКОГДА не двигается вперёд
         # v0.41.1: ghost-GC (tombstone) раз в UTC-день, до save — персистится тем же файлом
         global _ghost_gc_day
         if _ghost_gc_day != today:
             _ghost_gc_day = today
             try:
-                marked, deleted = _gc_ghost_fps(data, now)
+                marked, deleted, vol_deleted = _gc_ghost_fps(data, now)
             except Exception:
-                marked, deleted = [], []  # GC не должен ломать ping
+                marked, deleted, vol_deleted = [], [], []  # GC не должен ломать ping
                 log.exception("ghost-GC: сбой — пропущен до завтра")
         _save_installs(data)
     if marked or deleted:
@@ -4058,9 +4241,12 @@ async def api_telemetry_install(request: Request):
         n = _rebind_ghost_licenses(marked)
         if n:
             _event("license_ghost_rebind", "", f"fp перепривязано к живым: {n}")
+    if vol_deleted:
+        _event("trials_volatile_gc", "",
+               f"volatile-якорей стёрто после {_VOLATILE_TTL_SEC // 86400}д тишины: {len(vol_deleted)}")
     if capped:
         _event("trial_anchor_capped", ip, "свыше 3 новых fp за сутки — якорь не создан")
-    if first and fp:
+    if first and eff:
         # событие только для fp-анкоренных установок — анонимный флуд
         # uuid'ами не засоряет таймлайн админки (fp флудеру вычислять лень)
         _event("install_seen", iid, ver)
@@ -4403,13 +4589,21 @@ async def api_installs_list(request: Request):
         return _admin_401()
     data = _load_installs() or {"installs": {}}  # битый файл → пустой список, не 500
     installs = data["installs"]
-    # v0.41.1: ghost-tombstone'ы (доказанный дрейф fp) из витрины скрыты — якоря их живут
-    trials = {k: v for k, v in (data.get("trials") or {}).items() if not v.get("ghost")}
+    # ghost-tombstone'ы (доказанный дрейф fp), выцветшие алиасы (legacy→composite)
+    # и volatile-якоря (установки без привязки к железу) в витрину машин не идут —
+    # якоря их при этом живут; volatile посчитаны отдельно в kpi.
+    all_trials = data.get("trials") or {}
+    trials = {k: v for k, v in all_trials.items()
+              if not v.get("ghost") and not v.get("alias_of") and not v.get("volatile")}
+    volatile_n = sum(1 for v in all_trials.values()
+                     if isinstance(v, dict) and v.get("volatile") and not v.get("alias_of"))
     fp2kh = {}
+    fp2mrec = {}
     try:  # fp → key_hash из machines.json (лицензионные привязки)
         for kh, rec in (_load_machines().get("machines") or {}).items():
             for fp in rec.get("fps") or []:
                 fp2kh[fp] = kh
+                fp2mrec[fp] = rec
     except Exception:
         pass  # битый machines.json — машины без лицензионного статуса
     kh2lic = {}
@@ -4431,30 +4625,64 @@ async def api_installs_list(request: Request):
         pass
     by_fp = {}
     unknown = []
+    # строка машины — канонический fp: выцветшие алиасы (их якоря помечены
+    # alias_of) складываются в строку цели; volatile-якоря (установки без
+    # привязки к железу) машину не образуют — уходят в unknown_installs
+    alias_of = {k: v["alias_of"] for k, v in all_trials.items()
+                if isinstance(v, dict) and v.get("alias_of")}
+    volatile_fps = {k for k, v in all_trials.items()
+                    if isinstance(v, dict) and v.get("volatile")}
+
+    def _canon_fp(fp):
+        seen = set()
+        while fp in alias_of and fp not in seen:
+            seen.add(fp)
+            fp = alias_of[fp]
+        return fp
+
     for iid, rec in installs.items():
         fp = rec.get("fp")
-        if fp:
-            by_fp.setdefault(fp, []).append({"install_id": iid, **rec})
+        if fp and fp in volatile_fps:
+            unknown.append({"install_id": iid, **rec})
+        elif fp:
+            by_fp.setdefault(_canon_fp(fp), []).append({"install_id": iid, **rec})
         else:
             unknown.append({"install_id": iid, **rec})
     machines = []
-    for fp in set(by_fp) | set(trials) | set(fp2kh):
+    # лицензия может ещё висеть на выцветшем алиасе (ребаинд machines.json — на
+    # ближайшем validate): строку алиаса не показываем, но лицензию подтягиваем
+    rev_alias = {}
+    for old_fp, new_fp in alias_of.items():
+        rev_alias.setdefault(new_fp, []).append(old_fp)
+    fp_rows = set(by_fp) | set(trials) | {f for f in fp2kh if f not in alias_of}
+    for fp in fp_rows:
         t = trials.get(fp) or {}
+        mrec = fp2mrec.get(fp) or {}
         all_rows = by_fp.get(fp, [])
         last = max([r.get("last_seen", 0) for r in all_rows] or [0])
         rows = sorted(all_rows,
                       key=lambda r: r.get("last_seen", 0), reverse=True)[:50]  # кап на машину
+        kh = fp2kh.get(fp) or ""
+        if not kh:
+            for a in rev_alias.get(fp, []):
+                kh = fp2kh.get(a) or ""
+                if kh:
+                    break
         machines.append({"fp": fp,
+                         "fp_class": "composite" if (t.get("components") or mrec.get("components"))
+                         else "legacy",
+                         "review": bool(t.get("review") or mrec.get("review")),
                          "started_at": t.get("started_at"),
                          "reinstalls": _safe_int(t.get("reinstalls")),
                          "installs": rows,
-                         "license": kh2lic.get(fp2kh.get(fp) or ""),
+                         "license": kh2lic.get(kh),
                          "last_seen": last})
     machines.sort(key=lambda m: m["last_seen"], reverse=True)
     unknown.sort(key=lambda r: r.get("last_seen", 0), reverse=True)
     return JSONResponse({"machines": machines[:500],
                          "unknown_installs": unknown[:500],
-                         "kpi": {"machines": len(machines), "installs": len(installs)}},
+                         "kpi": {"machines": len(machines), "installs": len(installs),
+                                 "volatile": volatile_n}},
                         headers=_NOCACHE)
 
 
@@ -4936,7 +5164,9 @@ async def api_referral(request: Request):
         return PlainTextResponse("Not Found", status_code=404)  # как /app: у магазина нет дашборда
     import asyncio
     iid = _install_id()
-    fp = licensing.machine_fingerprint() or ""
+    fields = _client_fp_fields()
+    # магазин сверяет fp с installs[iid].fp — там живёт effective fp (композитный при наличии)
+    fp = fields.get("host_fp") or fields.get("fp") or ""
     out = {"ok": False, "install_id": iid, "fp": fp}
     try:
         # M2: install_id/fp — в теле POST (query оседает в access-логах магазина)
@@ -5329,9 +5559,7 @@ def _activate_key(key: str) -> dict:
     if not PUBLIC_BASE_URL:
         return {"ok": False, "error": "активация требует связи с сервером магазина"}
     payload = {"key": key}
-    fp = licensing.machine_fingerprint()
-    if fp:
-        payload["fp"] = fp
+    payload.update(_client_fp_fields())
     payload["install_id"] = _install_id()  # v0.38.0: связка ключ↔инстанс (self-ref блок рефералки)
     try:
         j = _post_json(f"{PUBLIC_BASE_URL}/api/license/validate", payload, timeout=6)
@@ -5398,27 +5626,40 @@ async def api_license_validate(request: Request):
         return JSONResponse({"ok": False, "revoked": True, "error": "license revoked",
                              "revoked_at": rec.get("ts") or 0}, headers=_NOCACHE)
     fp = str(body.get("fp") or "")[:128].strip().lower()
-    if fp:
-        if not _FP_RE.match(fp):
-            return JSONResponse({"ok": False, "error": "bad fp"}, status_code=400)
+    host_fp, components, fp_kind = _parse_hostfp_body(body)
+    eff = host_fp or fp  # effective id машины: композитный при наличии, иначе legacy
+    if fp and not _FP_RE.match(fp):
+        return JSONResponse({"ok": False, "error": "bad fp"}, status_code=400)
+    if eff and fp_kind != "container":
+        # container-fp (unanchored-установка) слот не занимает: привязка создаётся,
+        # когда появится настоящий fp; до этого — legacy fail-open, ключ работает
         try:
             with _machines_lock:
                 mdata = _load_machines()
-                verdict = _machine_bind(mdata, key, fp, time.time())
+                verdict, _rec = _machine_bind(mdata, key, eff, time.time(),
+                                              components=components, legacy_fp=fp)
                 if verdict != "limit":
                     _save_machines(mdata)
         except Exception:  # битый machines.json → fail-closed (500), привязки целы
             log.error("validate: machines.json не читается — отказ (fail-closed)")
             return JSONResponse({"ok": False, "error": "store registry error"}, status_code=500)
         if verdict == "limit":
-            _event("license_machine_limit", payload.get("email") or "", fp[:12])
+            _event("license_machine_limit", payload.get("email") or "", eff[:12])
             log.info("validate: machine_limit для %s (fp=%s…)",
-                     payload.get("email") or "?", fp[:8])
+                     payload.get("email") or "?", eff[:8])
             return JSONResponse({"ok": False, "error": "machine_limit",
                                  "message": _MACHINE_LIMIT_MSG},
                                 status_code=403, headers=_NOCACHE)
         if verdict == "bound":
-            _event("license_machine_bound", payload.get("email") or "", fp[:12])
+            _event("license_machine_bound", payload.get("email") or "", eff[:12])
+        elif verdict == "rebound":
+            # fp заменён по доказанному тождеству машины (legacy→composite или
+            # скоринг компонентов); старый fp — алиас, слот не расходуется
+            _event("license_machine_rebound", payload.get("email") or "", eff[:12])
+        elif verdict == "review":
+            # то же, но скоринг в серой зоне — флаг review виден только в админке
+            _event("license_machine_review", payload.get("email") or "", eff[:12])
+    fp = eff  # дальше (key_installs, self-ref) работает effective fp
     # v0.38.0: инстанс присылает install_id → связка ключ↔инстанс (key_installs в
     # codes.json) для self-ref блока рефералки: ключ куплен по реф-коду и активируется
     # с инстанса владельца кода → откат начисления (лицензию не трогаем — она оплачена).
@@ -5540,6 +5781,8 @@ async def api_relay_config(request: Request):
         # (10/час) + дневная квота на каждый trial-lk.
         iid = str(payload.get("install_id") or "")
         fp = str(payload.get("fp") or "")
+        host_fp, _components, _kind = _parse_hostfp_body(payload if isinstance(payload, dict) else {})
+        fp = host_fp or fp  # effective fp: якорь триала живёт под композитным при наличии
         t = None
         pair_known = False
         if _INSTALL_ID_RE.match(iid) and _FP_RE.match(fp):
@@ -5959,6 +6202,9 @@ async def api_admin_machines(request: Request):
         return JSONResponse({"ok": False, "error": "machines registry corrupted"}, status_code=500)
     rec = (data.get("machines") or {}).get(_key_hash(key)) or {}
     return JSONResponse({"ok": True, "fps": list(rec.get("fps") or []),
+                         "aliases": list(rec.get("aliases") or []),
+                         "review": bool(rec.get("review")),
+                         "fp_class": "composite" if rec.get("components") else "legacy",
                          "first_seen": rec.get("first_seen"), "updated": rec.get("updated"),
                          "limit": _MACHINES_MAX_FP}, headers=_NOCACHE)
 
@@ -5997,9 +6243,17 @@ async def api_admin_machines_unbind(request: Request):
             data = _load_machines()
             rec = (data.get("machines") or {}).get(_key_hash(key))
             fps = (rec or {}).get("fps") or []
-            changed = fp in fps
+            aliases = (rec or {}).get("aliases") or []
+            changed = fp in fps or fp in aliases
             if changed:
-                rec["fps"] = [x for x in fps if x != fp]
+                if fp in fps:
+                    rec["fps"] = [x for x in fps if x != fp]
+                    if not rec["fps"]:  # каноничный fp ушёл — его components/review/aliases
+                        rec.pop("components", None)   # не живут без него: иначе старая машина
+                        rec.pop("review", None)       # проходила бы validate по алиасу БЕЗ слота,
+                        rec["aliases"] = []           # а слот достался бы второй машине
+                if fp in aliases:
+                    rec["aliases"] = [x for x in aliases if x != fp]
                 rec["updated"] = time.time()
                 _save_machines(data)
     except Exception:
@@ -6742,6 +6996,13 @@ def main():
     st = _license_status()  # при старте: создаёт license.json на первом запуске, ловит fail-closed
     log.info("license: %s (days_left=%s)%s", st.get("state"), st.get("days_left"),
              "" if licensing.allows_write(st) else " — МУТАЦИИ ЗАБЛОКИРОВАНЫ, activate: /#activate")
+    if not STORE_MODE and st.get("fp_class") == "unanchored":
+        # Ни hostfp.json, ни валидного env HOST_FP: fingerprint контейнерный и плывёт
+        # при пересоздании — учёт машин/триала на магазине будет неточным.
+        # Лечение без переустановки: повторный запуск установщика досчитает hostfp.json.
+        log.warning("установка не привязана к железу хоста (нет hostfp.json/HOST_FP) — "
+                    "учёт триала/машин будет неточным; лечение: пере-run install.sh/install.ps1 "
+                    "(досчитает hostfp.json), затем recreate контейнера")
     # полный токен — ровно один раз при генерации (онбординг «токен в логах»);
     # при чтении из файла молчим — токен не тонет в журналах при каждом рестарте
     if _TOKEN_SOURCE == "generated":

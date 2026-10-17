@@ -276,6 +276,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
 /* ═══════════ Покупка Pro (v0.18.0) ═══════════ */
 .grace{display:none;background:rgba(232,185,62,.1);border-bottom:1px solid rgba(232,185,62,.3);color:#E8B93E;font-size:11.5px;padding:7px 16px;text-align:center}
 .grace.on{display:block}
+.grace a{color:inherit;text-decoration:underline}
 .grace b{font-family:var(--mono);font-weight:600}
 .icon-btn{position:relative;color:var(--ink-3);padding:6px;border-radius:8px;display:flex;transition:background var(--t-fast)}
 .icon-btn:hover{background:var(--border);color:var(--ink)}
@@ -384,6 +385,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
       </div>
     </header>
     <div class="grace" id="graceBar"></div>
+    <div class="grace" id="anchorBar"></div>
 
     <div class="scroll">
       <!-- ═══════════ Обзор ═══════════ -->
@@ -639,6 +641,7 @@ ru:{
  'buy.manual':'Ввести ключ вручную','buy.err':'Оплата не прошла. Попробуй ещё раз или напиши: help@rezon-ai.ru',
  'buy.close':'Закрыть','close':'Закрыть',
  'grace.pre':'Лицензия отозвана (возврат платежа). Запись закроется через','grace.h':' ч',
+ 'anchor.pre':'Установка не привязана к этому компьютеру — учёт машины и триала будет неточным.','anchor.link':'Как привязать',
  'nav.overview':'Обзор','nav.catalog':'Каталог','nav.timeline':'Хроника','nav.tasks':'Дела',
  'hdr.search':'Поиск по памяти, воспоминаниям и связям...','hdr.project':'Проект','hdr.all':'все',
  'gear.export':'Экспорт NDJSON','gear.prompt':'Промпт для агента',
@@ -686,6 +689,7 @@ en:{
  'buy.manual':'Enter key manually','buy.err':'Payment failed. Retry or contact: help@rezon-ai.ru',
  'buy.close':'Close','close':'Close',
  'grace.pre':'License revoked (chargeback). Writes stop in','grace.h':' h',
+ 'anchor.pre':'This installation is not linked to this computer — machine and trial tracking will be inaccurate.','anchor.link':'How to link',
  'nav.overview':'Overview','nav.catalog':'Catalog','nav.timeline':'Timeline','nav.tasks':'Tasks',
  'hdr.search':'Search memories, entities and relations...','hdr.project':'Project','hdr.all':'all',
  'gear.export':'Export NDJSON','gear.prompt':'Agent prompt',
@@ -756,6 +760,9 @@ async function checkLicense(){try{
   const gb=$('#graceBar');
   if(s.revoked&&s.grace_ends){const h=Math.max(1,Math.round((s.grace_ends*1000-Date.now())/3600000));gb.textContent='';gb.append(t('grace.pre')+' ');const bb=document.createElement('b');bb.textContent='~'+h+t('grace.h');gb.append(bb);gb.classList.add('on');}
   else gb.classList.remove('on');
+  const ab=$('#anchorBar');
+  if(s.fp_class==='unanchored'){ab.textContent='';ab.append(t('anchor.pre')+' ');const a=document.createElement('a');a.href='https://github.com/RuMemory/maxgraph/blob/master/docs/PAIRING.md#unanchored';a.target='_blank';a.rel='noopener';a.textContent=t('anchor.link');ab.append(a);ab.classList.add('on');}
+  else ab.classList.remove('on');
   $('#sysLicState').textContent=s.state||'—';$('#sysLicDays').textContent=dl??'—';
   const licd=s.state==='licensed'&&!!s.key;
   $('#sysLicActivate').style.display=licd?'none':'';

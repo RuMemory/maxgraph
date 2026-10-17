@@ -34,8 +34,9 @@ Check Docker: `docker info` answers without errors and `docker compose version` 
 
 Run the installer from the repo root — it installs a missing engine, computes
 `HOST_FP` (sha256 of the host hardware id; never overwrites a non-empty value; the
-raw id never leaves the host), writes `.env` and starts the server (prebuilt GHCR
-image, local build as fallback):
+raw id never leaves the host), writes `.env`, creates `hostfp.json` next to
+`docker-compose.yml` (same fingerprint — hashes only) and starts the server
+(prebuilt GHCR image, local build as fallback):
 
 - macOS/Linux: `bash install.sh --yes`
 - Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes`
@@ -71,6 +72,11 @@ never overwrite a non-empty value; the raw hardware id never leaves the host):
 - Windows (PowerShell): `$guid=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography').MachineGuid; [BitConverter]::ToString([System.Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes("$guid"))).Replace('-','').ToLower()`
 - macOS: `printf %s "$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/{print $4}')" | shasum -a 256 | awk '{print $1}'`
 - Linux: `tr -d '[:space:]' < /etc/machine-id | sha256sum | awk '{print $1}'`
+
+Optionally also create `hostfp.json` in the repo root (the same fingerprint, hashes
+only; Python mode reads it from there) — the installer does it without touching
+Docker: `bash install.sh --hostfp-only` (macOS/Linux) or
+`powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -HostfpOnly` (Windows).
 
 Run from the repo root, always with `MEMORY_DIR=./data` (otherwise data lands in
 `/data` and won't be picked up by a later switch to Docker):
@@ -150,8 +156,9 @@ Client-specific locations:
 
 ## What the installer leaves behind
 
-Besides Docker containers and `data/`: `install.log` / `install-state.json` in the
-repo folder, and — only while a reboot is pending — a `MaxGraphInstall` entry in
+Besides Docker containers and `data/`: `install.log` / `install-state.json` and
+`hostfp.json` (host fingerprint, hashes only) in the repo folder, and — only
+while a reboot is pending — a `MaxGraphInstall` entry in
 the user's `HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce` (removed
 automatically on success). The uninstaller (next section) removes them.
 Installations made by MaxGraph 0.39–0.41 may additionally carry a Rancher Desktop

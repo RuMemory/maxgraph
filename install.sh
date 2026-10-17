@@ -4,11 +4,15 @@
 #
 # Steps: working Docker? → if missing, with the user's consent install an engine
 # (macOS → official Docker Desktop from docker.com; Linux → official Docker
-# Engine script) → write HOST_FP/INSTALL_FLAVOR into .env → pull the prebuilt
+# Engine script) → write hostfp.json + HOST_FP/INSTALL_FLAVOR into .env → pull the prebuilt
 # GHCR image (local build as fallback) → up -d → wait for healthz.
 #
+# Modes: default = full install; --hostfp-only = only (re)compute hostfp.json
+# next to docker-compose.yml (heals an existing install — no rebuild; apply with
+# `docker compose up -d`).
+#
 # Exit codes (read by the installing AI agent, see AGENTS.md):
-#   0 — MaxGraph is running in Docker
+#   0 — MaxGraph is running in Docker (or hostfp.json written in --hostfp-only)
 #   3 — engine declined or impossible → Python fallback (AGENTS.md, step 3)
 #   1 — unexpected error (see install.log)
 set -uo pipefail
@@ -21,7 +25,8 @@ trap 'rm -rf "$TD"' EXIT
 LOG=install.log
 STATE=install-state.json
 YES=0
-case "${1:-}" in --yes|-y) YES=1 ;; esac
+HOSTFP_ONLY=0
+for a in "$@"; do case "$a" in --yes|-y) YES=1 ;; --hostfp-only) HOSTFP_ONLY=1 ;; esac; done
 
 OS="$(uname -s)"
 case "$OS" in Darwin|Linux) ;; *)
@@ -91,6 +96,89 @@ compute_host_fp() {  # sha256 of the stable hardware id; raw id never leaves the
   esac
 }
 
+# --- hostfp.json: композитный отпечаток хоста --------------------------------
+# Сырые идентификаторы не покидают машину: в файл идут только sha256-хеши
+# (salt "maxgraph-hostfp/v1" + нормализованное значение). Тот же алгоритм —
+# в install.ps1 и app/hostfp.py; нормализация и сортировка байт-в-байт
+# идентичны (LC_ALL=C sort = ordinal), иначе fp расплывётся между ОС.
+
+_HFP_SALT="maxgraph-hostfp/v1"
+
+_hfp_sha256() {  # stdin → hex
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}';
+  else shasum -a 256 | awk '{print $1}'; fi
+}
+
+_hfp_norm() {  # stdin → lowercase, trim, схлопнуть пробелы, срезать - : _
+  tr '[:upper:]' '[:lower:]' | tr -d '\-:_' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'
+}
+
+_hfp_placeholder() {  # $1 = normalized value; 0 = плейсхолдер (в fp не идёт)
+  local v="$1"
+  [ -z "$v" ] && return 0
+  case "$v" in
+    "03000200040005000006000700080009"|"to be filled by o.e.m."|"default string"|\
+    "none"|"not applicable"|"n/a"|"unknown"|"system serial number"|"serialnumber"|"oem")
+      return 0 ;;
+  esac
+  case "$v" in *[!0]*) ;; *) return 0 ;; esac      # все-нули
+  case "$v" in *[!f]*) ;; *) return 0 ;; esac      # все-f
+  case "$v" in *[!0\ ]*) ;; *) return 0 ;; esac    # нули и пробелы
+  return 1
+}
+
+_hfp_mac_linux() {
+  local iface f
+  iface="$(ip route show default 2>/dev/null | awk '/default/{print $5; exit}')"
+  if [ -n "$iface" ] && [ -r "/sys/class/net/$iface/address" ]; then
+    cat "/sys/class/net/$iface/address"; return
+  fi
+  for f in /sys/class/net/*/address; do
+    case "$f" in */lo/*) continue ;; esac
+    [ -r "$f" ] && { cat "$f"; return; }
+  done
+}
+
+write_hostfp_json() {  # собрать компоненты ОС → hostfp.json рядом с compose
+  local os_tag mid="" uuid="" board="" chassis="" serial="" mac=""
+  if [ "$OS" = "Darwin" ]; then
+    os_tag="macos"
+    mid="$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/{print $4; exit}')"
+    serial="$(ioreg -l 2>/dev/null | awk -F'"' '/IOPlatformSerialNumber/{print $4; exit}')"
+    mac="$(ifconfig en0 2>/dev/null | awk '/ether/{print $2; exit}')"
+  else
+    os_tag="linux"
+    mid="$(cat /etc/machine-id 2>/dev/null || cat /var/lib/dbus/machine-id 2>/dev/null)"
+    uuid="$(cat /sys/class/dmi/id/product_uuid 2>/dev/null)"
+    board="$(cat /sys/class/dmi/id/board_serial 2>/dev/null)"
+    chassis="$(cat /sys/class/dmi/id/chassis_serial 2>/dev/null)"
+    mac="$(_hfp_mac_linux)"
+  fi
+  local comps="" lines="" tag raw norm h
+  for spec in "os_install_id:$mid" "smbios_uuid:$uuid" "board_serial:$board" \
+              "chassis_serial:$chassis" "platform_serial:$serial" "disk_serial:" \
+              "mac:$mac"; do
+    tag="${spec%%:*}"; raw="${spec#*:}"
+    [ -z "$raw" ] && continue
+    norm="$(printf '%s' "$raw" | _hfp_norm)"
+    _hfp_placeholder "$norm" && continue
+    h="$(printf '%s' "$_HFP_SALT|$tag=$norm" | _hfp_sha256)"
+    comps="${comps:+$comps,}\"$tag\":\"$h\""
+    lines="${lines:+$lines
+}$tag=$norm"
+  done
+  [ -z "$lines" ] && { log "WARN: no usable hardware ids — hostfp.json not written"; return 1; }
+  local host_fp
+  host_fp="$(printf '%s' "$_HFP_SALT"$'\n'"$(printf '%s\n' "$lines" | LC_ALL=C sort)" | _hfp_sha256)"
+  [ -d hostfp.json ] && rmdir hostfp.json 2>/dev/null  # docker мог создать каталог-заглушку bind-монта
+  printf '{"v":1,"host_fp":"%s","components":{%s},"os":"%s","created":"%s"}\n' \
+    "$host_fp" "$comps" "$os_tag" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > hostfp.json \
+    || { log "WARN: cannot write hostfp.json"; return 1; }
+  chmod 600 hostfp.json 2>/dev/null || true
+  log "hostfp.json written (machine fingerprint, hashes only)"
+  return 0
+}
+
 install_engine_macos() {
   if command -v brew >/dev/null 2>&1; then
     log "Installing Docker Desktop via Homebrew…"
@@ -137,6 +225,13 @@ install_engine_linux() {
 
 # --- engine -----------------------------------------------------------------
 
+if [ "$HOSTFP_ONLY" = 1 ]; then
+  # лечение существующей установки без пересборки: досчитать hostfp.json рядом
+  # с compose-файлом; дальше — `docker compose up -d`, чтобы контейнер подхватил
+  write_hostfp_json || exit 1
+  exit 0
+fi
+
 if docker_ok; then
   FLAVOR=docker
   log "Docker is present and running."
@@ -172,7 +267,7 @@ fi
 
 # --- config + app -------------------------------------------------------------
 
-log "Writing .env (HOST_FP, INSTALL_FLAVOR)…"
+log "Writing .env (HOST_FP, INSTALL_FLAVOR) + hostfp.json…"
 EMPTY_SHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 fp="$(compute_host_fp)"
 if [ -n "$fp" ] && [ "$fp" != "$EMPTY_SHA256" ]; then   # sha256 of an empty string is a constant, not an id
@@ -181,6 +276,7 @@ else
   log "WARN: no machine-id found — HOST_FP not set"
 fi
 upsert_env INSTALL_FLAVOR "$FLAVOR"
+write_hostfp_json || true   # отпечаток не критичен для запуска: без него установка unanchored
 mgv="$(cat VERSION 2>/dev/null || true)"
 if ! printf '%s' "$mgv" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then   # мусор в VERSION не должен отравить ref образа
   [ -n "$mgv" ] && log "WARN: VERSION is not semver ('$mgv') — MG_VERSION empty (image: latest)"

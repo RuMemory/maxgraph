@@ -68,6 +68,8 @@ $guid=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography').MachineGuid
 
 При переустановке на том же компьютере `HOST_FP` не меняется — если строка уже есть в `.env`, оставляй её как есть.
 
+Если ставил через установщик (`install.sh` / `install.ps1`), он дополнительно создаёт `hostfp.json` рядом с `docker-compose.yml` — тот же отпечаток компьютера, только хеши. Ничего настраивать не нужно; файла нет → дашборд покажет спокойный баннер с инструкцией (см. «[Unanchored-баннер](#unanchored)»).
+
 Запуск:
 
 ```bash
@@ -241,6 +243,25 @@ curl -H "Authorization: Bearer $T" http://localhost:8787/api/export > backup.jso
 ### «Лимит: ключ уже привязан к другому компьютеру»
 
 Один license key = одна машина. Новый компьютер или пересборка — напиши на help@rezon-ai.ru с email покупки: отвяжем старую машину, ключ активируется.
+
+<a id="unanchored"></a>
+### «Установка не привязана к этому компьютеру»
+
+Янтарный баннер в дашборде означает: сервер запущен без отпечатка компьютера (например, `docker compose up` вручную, в обход установщика). Всё работает, но учёт триала и машин будет неточным.
+
+Лечение без переустановки — досчитать отпечаток (появится `hostfp.json` рядом с `docker-compose.yml`) и перезапустить контейнер:
+
+```bash
+# Linux / macOS
+bash install.sh --hostfp-only && docker compose up -d
+```
+
+```powershell
+# Windows (PowerShell)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -HostfpOnly; docker compose up -d
+```
+
+Отпечаток — это хеш: сырые данные о компьютере никуда не отправляются.
 
 ### «Дашборд пуст»
 
