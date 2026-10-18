@@ -180,6 +180,9 @@ PROJECT_ALIASES_FILE = DATA_DIR / "project-aliases.json"  # --- v0.50.0: али�
 INSTALLS_FILE = DATA_DIR / "installs.json"  # --- v0.14: install-ping учёт ---
 LEARN_EVENTS_FILE = DATA_DIR / "learn_events.jsonl"  # --- W2 v0.26.0: learn-events ---
 HEARTBEATS_FILE = DATA_DIR / "heartbeats.jsonl"  # --- T7 (native-client): heartbeat живости ---
+SUPPORT_REPORTS_FILE = DATA_DIR / "support_reports.jsonl"  # --- v1.0.8: отчёты о багах из дашборда ---
+UPDATE_LOG_FILE = DATA_DIR / "update.log"    # журнал helper'а автообновлений (selfupdate)
+SERVER_LOG_FILE = DATA_DIR / "maxgraph.log"  # журнал сервера (windowed-exe, ротация 2×1МБ)
 RANK_CONFIG_FILE = DATA_DIR / "rank_config.json"  # --- W3 v0.27.0: last-good словарь синонимов ---
 _ENV_TOKEN = bool((os.environ.get("MEMORY_TOKEN") or "").strip())
 TOKEN = _resolve_token()
@@ -4935,6 +4938,107 @@ async def api_telemetry_heartbeat(request: Request):
     return JSONResponse({"ok": True}, headers=_NOCACHE)
 
 
+# --- v1.0.8: отчёт о баге из дашборда покупателя (mailto у покупателя мёртв) ---
+_sup_lock = threading.Lock()
+_SUP_BODY_CAP = 16384                    # text 2000 + update_log_tail 4000 + запас на JSON
+_SUP_BYTES_CAP = 2 * 1024 * 1024         # stat-клапан до append (конвенция heartbeats)
+
+
+@mcp.custom_route("/api/support/report", methods=["POST"])
+async def api_support_report(request: Request):
+    """Отчёт о баге из дашборда покупателя: {text (обяз.), version?, os?,
+    install_id?, update_log_tail?, server_log_errors?} → append в
+    data/support_reports.jsonl с СЕРВЕРНЫМ ts. Публичный (как heartbeat), только
+    STORE_MODE. Никаких путей/токенов/ключей не принимаем и не храним — только
+    симптом и техконтекст, чтобы агент владельца мог отладить по отчёту."""
+    g = _store_gate()
+    if g:
+        return g
+    ip = _client_ip(request)
+    if _rate_limited(ip, "support", 5, 3600):
+        return JSONResponse({"ok": False, "error": "rate_limited"}, status_code=429)
+    # лимит тела — кап по ФАКТУ длины (content-length может врать/отсутствовать)
+    body, err = await _read_capped(request, _SUP_BODY_CAP)
+    if err is not None:
+        return JSONResponse({"ok": False, "error": "too_large"}, status_code=413)
+    try:
+        body = json.loads(body)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
+    if not isinstance(body, dict):  # [1,2] / "str" → 400, не 500
+        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
+    text = body.get("text")
+    if not isinstance(text, str):  # text обязателен и только строкой
+        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
+    text = text.strip()[:2000]
+    if not text:
+        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
+    # опциональные строки: не-строка → 400 (мусор), длинное — усечь, пустое — не храним
+    opt = {}
+    for name, cap in (("version", 20), ("os", 20),
+                      ("update_log_tail", 4000), ("server_log_errors", 4000)):
+        v = body.get(name)
+        if v is None:
+            continue
+        if not isinstance(v, str):
+            return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
+        v = v[:cap]
+        if v:
+            opt[name] = v
+    iid = body.get("install_id")
+    if iid is not None:
+        if not isinstance(iid, str) or not _HB_ID_RE.fullmatch(iid):
+            return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
+        opt["install_id"] = iid
+    rec = {"ts": time.time(), "text": text, **opt}
+    with _sup_lock:
+        try:  # stat-клапан ДО append — файл не растёт сверх капа
+            full = (SUPPORT_REPORTS_FILE.exists()
+                    and SUPPORT_REPORTS_FILE.stat().st_size > _SUP_BYTES_CAP)
+        except OSError:
+            full = False
+        if full:
+            return JSONResponse({"ok": False, "error": "store_full"}, status_code=503)
+        try:
+            with SUPPORT_REPORTS_FILE.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except OSError:
+            # read-only data/ → честный отказ (как heartbeats)
+            return JSONResponse({"ok": False, "error": "store_unavailable"},
+                                status_code=503)
+    return JSONResponse({"ok": True}, headers=_NOCACHE)
+
+
+@mcp.custom_route("/api/support/context", methods=["GET"])
+async def api_support_context(request: Request):
+    """Техконтекст для отчёта о баге (self-hosted, Bearer — как у всех /api/*):
+    версия, ОС, хвост update.log и ERROR/WARNING-строки maxgraph.log. Читаются
+    только технические журналы программы — память пользователя сюда не попадает."""
+    tail, errs = "", []
+    try:  # последние ≤4000 символов журнала обновлений (файла может не быть)
+        with UPDATE_LOG_FILE.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 8192))  # байт с запасом: UTF-8 кириллица ×2
+            tail = f.read().decode("utf-8", "replace")[-4000:]
+    except OSError:
+        pass
+    try:  # последние ≤10 строк с ERROR/WARNING из лога сервера (читаем хвост файла)
+        with SERVER_LOG_FILE.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 262144))  # ротация 1МБ — хвоста 256КБ хватит на 10 строк
+            lines = f.read().decode("utf-8", "replace").splitlines()
+        errs = [l for l in lines if " ERROR " in l or " WARNING " in l][-10:]
+    except OSError:
+        pass
+    osname = ("windows" if sys.platform.startswith("win")
+              else ("macos" if sys.platform == "darwin" else "linux"))
+    return JSONResponse({"version": VERSION, "os": osname,
+                         "update_log_tail": tail, "server_log_errors": errs},
+                        headers=_NOCACHE)
+
+
 # --- W3 v0.27.0: агрегация словаря синонимов из learn-events (SPEC-rank-config) ---
 RANK_VETO_FILE = DATA_DIR / "rank_veto.json"   # [[stem_a, stem_b], ...] — вето владельца
 _rank_lock = threading.Lock()
@@ -7590,6 +7694,7 @@ class TokenAuth:
                     "/api/telemetry/install",  # v0.14: анонимный install-ping
                     "/api/telemetry/learn",  # v0.26.0: анонимные learn-events (W2)
                     "/api/telemetry/heartbeat",  # T7: анонимный heartbeat живости (native-client)
+                    "/api/support/report",  # v1.0.8: отчёт о баге из дашборда (только магазин, rate-limited)
                     "/api/version",  # v0.18.2: апдейт-чип дашборда (публичная версия)
                     "/api/admin/me",  # v0.18.0: страница входа админки (configured/authed — не секрет)
                     "/api/admin/login", "/api/admin/setup",  # v0.18.0: логин/первичная настройка (rate-limited)

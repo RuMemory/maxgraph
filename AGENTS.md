@@ -46,6 +46,8 @@ macOS / Linux: для проверки скачанного файла нуже�
 
 ## 5. Скажи пользователю явно
 
+ПЕРЕД тем как просить перезапуск — проверь, что сервер жив: `curl -s http://localhost:8787/healthz` должен ответить `ok`; мёртв — подними сам (запусти программу из папки установки) и только потом проси перезапуск/новую сессию.
+
 «Перезапусти хост полностью (не крестиком в окно) и начни НОВУЮ сессию в папке проекта» — MCP-подключение и правила из `AGENTS.md` подхватываются только на старте сессии. Без этого пользователь продолжит старую сессию и решит, что память не работает.
 
 Дашборд с живым графом: ссылка из пакета установщика (уже с токеном — открывается сразу, вставлять ничего не нужно).
@@ -106,6 +108,8 @@ The installer already registered the hooks into every detected host (see the "ho
 2. `search_nodes("install-check")` — the entity comes back → memory works. Tell the user.
 
 ## 5. Tell the user explicitly
+
+BEFORE asking for a restart — check the server is alive: `curl -s http://localhost:8787/healthz` must answer `ok`; if it is dead, start it yourself (run the program from the install folder) and only then ask for the restart/new session.
 
 "Restart the host fully (quit the IDE/CLI, not just close the window) and start a NEW session in the project folder" — the MCP connection and the `AGENTS.md` rules are picked up only at session start. Without this the user keeps the old session and concludes memory doesn't work.
 

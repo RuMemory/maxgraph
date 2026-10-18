@@ -563,7 +563,6 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
       <div class="sec-label"><span data-i18n="sys.act">Действия</span><span class="line"></span></div>
       <div class="sys-actions">
         <button class="btn ghost" id="sysExport" data-i18n="gear.export">Экспорт NDJSON</button>
-        <button class="btn ghost" id="sysPrompt" data-i18n="gear.prompt">Промпт для агента</button>
         <button class="btn ghost" id="sysBug" data-i18n="gear.bug">Сообщить о баге</button>
       </div>
     </div>
@@ -602,6 +601,19 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
       <div class="buy-key" id="buyKeyTxt"></div>
       <button class="btn ghost" id="buyCopy" style="width:100%" data-i18n="buy.copy">Скопировать ключ</button>
     </div>
+  </div>
+</div>
+
+<!-- ═══════════ Диалог «Сообщить о баге» (v1.0.8) ═══════════ -->
+<div class="buy-veil" id="bugPop" role="dialog" aria-modal="true" aria-labelledby="bugTitle">
+  <div class="buy-card">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between"><h2 id="bugTitle" data-i18n="bug.title">Сообщить о баге</h2><button class="np-close" id="bugClose" data-i18n-al="close" aria-label="Закрыть">✕</button></div>
+    <div class="sub" data-i18n="bug.sub">Отчёт уйдёт разработчику напрямую — почта не нужна.</div>
+    <label class="f-label" for="bugText" data-i18n="bug.ph">Что случилось?</label>
+    <textarea class="inp" id="bugText" rows="5" maxlength="2000" style="margin:2px 0 10px;resize:vertical"></textarea>
+    <label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;margin:0 0 4px;cursor:pointer"><input type="checkbox" id="bugLog" checked style="margin-top:2px"><span><span data-i18n="bug.attachlog">Приложить журнал обновлений</span><br><span class="sub" style="margin:0" data-i18n="bug.lognote">только технический журнал, без ваших записей</span></span></label>
+    <div class="sub" id="bugErr" style="display:none;color:var(--bad)"></div>
+    <button class="btn" id="bugSend" style="width:100%;margin-top:10px" data-i18n="bug.send">Отправить</button>
   </div>
 </div>
 
@@ -653,8 +665,11 @@ ru:{
  'anchor.pre':'Установка не привязана к этому компьютеру — учёт машины и триала будет неточным.','anchor.link':'Как привязать',
  'nav.overview':'Обзор','nav.catalog':'Каталог','nav.timeline':'Хроника','nav.tasks':'Дела',
  'hdr.search':'Поиск по памяти, воспоминаниям и связям...','hdr.project':'Проект','hdr.all':'все',
- 'gear.export':'Экспорт NDJSON','gear.prompt':'Промпт для агента',
+ 'gear.export':'Экспорт NDJSON',
  'gear.bug':'Сообщить о баге','gear.bugsubj':'MaxGraph: баг','gear.bugbody':'Версия: {v}\nОС: {os}\n\nОпиши проблему:\n',
+ 'bug.title':'Сообщить о баге','bug.sub':'Отчёт уйдёт разработчику напрямую — почта не нужна.','bug.ph':'Что случилось?',
+ 'bug.attachlog':'Приложить журнал обновлений','bug.lognote':'только технический журнал, без ваших записей',
+ 'bug.send':'Отправить','bug.ok':'Отправлено, спасибо!','bug.empty':'Опишите, что случилось','bug.net':'Не удалось отправить. Напишите на почту:',
  'ov.graph':'Карта памяти','ov.gsearch':'Найти на карте…','ov.linkhint':'+ drag между узлами — новая связь',
  'ov.k1':'Воспоминания','ov.k2':'Связи','ov.k3':'Факты','ov.obs':'Факты','ov.linked':'Связанные','ov.more':'Открыть в каталоге →',
  'ov.recent':'Недавние воспоминания','ov.tocatalog':'В каталог →','ov.feed':'Лента памяти','ov.live':'обновляется','ov.allhistory':'Вся история (Хроника)',
@@ -702,8 +717,11 @@ en:{
  'anchor.pre':'This installation is not linked to this computer — machine and trial tracking will be inaccurate.','anchor.link':'How to link',
  'nav.overview':'Overview','nav.catalog':'Catalog','nav.timeline':'Timeline','nav.tasks':'Tasks',
  'hdr.search':'Search memories, entities and relations...','hdr.project':'Project','hdr.all':'all',
- 'gear.export':'Export NDJSON','gear.prompt':'Agent prompt',
+ 'gear.export':'Export NDJSON',
  'gear.bug':'Report a bug','gear.bugsubj':'MaxGraph: bug','gear.bugbody':'Version: {v}\nOS: {os}\n\nDescribe the problem:\n',
+ 'bug.title':'Report a bug','bug.sub':'The report goes straight to the developer — no email needed.','bug.ph':'What happened?',
+ 'bug.attachlog':'Attach update log','bug.lognote':'technical log only — none of your memories',
+ 'bug.send':'Send','bug.ok':'Sent, thank you!','bug.empty':'Describe what happened','bug.net':'Could not send. Email us:',
  'ov.graph':'Memory map','ov.gsearch':'Find on map…','ov.linkhint':'+ drag between nodes — new relation',
  'ov.k1':'Memories','ov.k2':'Relations','ov.k3':'Facts','ov.obs':'Facts','ov.linked':'Linked','ov.more':'Open in catalog →',
  'ov.recent':'Recent memories','ov.tocatalog':'To catalog →','ov.feed':'Memory feed','ov.live':'live','ov.allhistory':'Full history (Timeline)',
@@ -820,7 +838,7 @@ $('#sysLicKey').addEventListener('keydown',e=>{if(e.key==='Enter')activateLicens
 $('#licExport').addEventListener('click',e=>{e.preventDefault();doExport();});
 /* ═══ Покупка Pro из дашборда (v0.18.0): магазин → Platega → автоактивация ═══ */
 let licInfo=null,plansCache=null,buySel='pro1',buyRef=null,buyPayUrl=null,buyTimer=null,buyGiveup=0,buyOpener=null;
-const STORE='https://rezon-ai.ru';
+const STORE=(window.__MG_STORE__&&window.__MG_STORE__.storeUrl)||'https://rezon-ai.ru';
 const PLANS_FALLBACK=[{id:'pro1',rub:149,usd:1.99,days:31},{id:'pro3',rub:399,usd:4.99,days:93},{id:'pro6',rub:749,usd:9.99,days:186},{id:'pro12',rub:1299,usd:14.99,days:372}];
 async function loadPlans(){if(plansCache)return plansCache;try{const r=await fetch(STORE+'/api/plans');const j=await r.json();plansCache=(j.plans&&j.plans.length)?j.plans:PLANS_FALLBACK;}catch(e){plansCache=PLANS_FALLBACK;}return plansCache;}
 function fmtPlanPrice(p,price){return (LANG==='en'&&p.usd)?('$'+Number(price).toFixed(2)):((Number(price)|0)+' ₽');}
@@ -890,9 +908,7 @@ function saveToken(){const v=$('#gateToken').value.trim();if(!v)return;TOKEN=v;l
 $('#gateBtn').onclick=saveToken;
 $('#gateToken').addEventListener('keydown',e=>{if(e.key==='Enter')saveToken();});
 async function doExport(){try{const r=await fetch('/api/export',{headers:{'Authorization':'Bearer '+TOKEN}});const b=await r.blob();const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='maxgraph-export-'+new Date().toISOString().slice(0,10)+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),5000);toast(t('toast.export'));}catch(e){toast(t('toast.exporterr'));}}
-const AGENT_PROMPT='У тебя есть постоянная память Maxgraph (инструменты maxgraph/*).\n\nСТАРТ СЕССИИ: вызови session_start(project=<slug>) — бюджетный блок контекста\n(решения владельца, открытые баги и задачи, прошлые сессии). Нужна тема — search_nodes.\nПеред работой по теме ВСЕГДА ищи, что уже сделано/исправлено — не переделывай решённое.\n\nВО ВРЕМЯ РАБОТЫ — ПИШИ СРАЗУ, не откладывай на конец разговора:\n- новый проект/сервис/файл/инструмент → create_entities (с title, entityType, tags);\n  name = kebab-case id навсегда, title = человеческое имя;\n  перед созданием — search_nodes, существующие не дублировать;\n- новый durable-факт о существующем → add_observations\n  (одно наблюдение = один атомарный факт, со ссылкой на дату/версию, если важно);\n- объект X использует/зависит от Y → create_relations в активном залоге\n  ("uses", "depends on", "configured by", "hosted on", "part of" — не "is used by");\n- изменился статус/параметр → add_observations (новый факт с датой),\n  при смене имени — update_entity.\n\nЗАКРЫТИЕ ХВОСТОВ — обязательно с отметкой ГДЕ реализовано:\n- баг исправлен → update_entity(status="fixed") + факт: коммит/файл:строки, чем проверено;\n- задача/отложенное сделано → task_done(project, name) + факт с датой и ссылкой;\n- просьба владельца выполнена → факт с датой на той же сущности.\nНе закрыл в памяти = не сделал: следующие сессии считают баг открытым.\n\nКОНЕЦ СЕССИИ: создай сущность session-YYYY-MM-DD с итогами разговора\n(entityType: "session") и свяжи её связью "discussed" с затронутыми сущностями.\n\nПолный протокол: https://raw.githubusercontent.com/RuMemory/maxgraph/master/docs/PROTOCOL.md';
 async function copyText(s,tk){try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(s);}else{const ta=document.createElement('textarea');ta.value=s;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();}toast(t(tk||'toast.copied'));}catch(e){toast(t('toast.copyerr'));}}
-async function copyPrompt(){copyText(AGENT_PROMPT);}
 
 /* ═══════════ Тост ═══════════ */
 let toastT=null;
@@ -1169,16 +1185,43 @@ $('#licChip').onclick=()=>buyOpen();
 $('#sysClose').onclick=()=>sysOpen(false);
 $('#veil').onclick=()=>sysOpen(false);
 $('#sysExport').onclick=doExport;
-$('#sysPrompt').onclick=copyPrompt;
-// «Сообщить о баге»: mailto с предзаполненной темой и телом (версия — из
-// публичного /api/version, ОС — navigator.platform; без авторизации не нужно).
-$('#sysBug').onclick=async()=>{
-  let ver='?';
-  try{const v=await fetch('/api/version').then(r=>r.json());if(v&&v.version)ver=v.version;}catch(e){}
-  const body=t('gear.bugbody').replace('{v}',ver).replace('{os}',navigator.platform||'?');
-  location.href='mailto:help@rezon-ai.ru?subject='+encodeURIComponent(t('gear.bugsubj'))
-    +'&body='+encodeURIComponent(body);
-};
+/* ═══ «Сообщить о баге» (v1.0.8): модалка → POST на магазин /api/support/report.
+   mailto у покупателя без почтового клиента мёртв — отчёт уходит сразу, с
+   техконтекстом из GET /api/support/context (версия, ОС, хвост журналов). ═══ */
+let bugCtx=null,bugOpener=null;
+function bugOpen(){bugOpener=document.activeElement;$('#bugErr').style.display='none';$('#bugText').value='';$('#bugLog').checked=true;
+  $('#bugPop').classList.add('on');sysOpen(false);$('#bugText').focus();
+  if(!bugCtx){api('/api/support/context').then(j=>{if(j&&j.version)bugCtx=j;}).catch(()=>{});}}
+function bugClose(){$('#bugPop').classList.remove('on');if(bugOpener&&bugOpener.focus)bugOpener.focus();bugOpener=null;}
+async function bugSend(){
+  const text=$('#bugText').value.trim();
+  if(!text){$('#bugText').focus();toast(t('bug.empty'));return;}
+  $('#bugSend').disabled=true;
+  const payload={text:text.slice(0,2000)};
+  let ctx=bugCtx;
+  if(!ctx){try{ctx=await api('/api/support/context');if(ctx&&ctx.version)bugCtx=ctx;else ctx=null;}catch(e){ctx=null;}}
+  if(ctx){payload.version=ctx.version;payload.os=ctx.os;
+    if($('#bugLog').checked){if(ctx.update_log_tail)payload.update_log_tail=ctx.update_log_tail;
+      if(ctx.server_log_errors&&ctx.server_log_errors.length)payload.server_log_errors=ctx.server_log_errors.join('\n').slice(0,4000);}}
+  else{try{const v=await fetch('/api/version').then(r=>r.json());if(v&&v.version)payload.version=v.version;}catch(e){}
+    payload.os=navigator.platform||'?';}
+  try{
+    const r=await fetch(STORE+'/api/support/report',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const j=await r.json();if(!j.ok)throw new Error(j.error||'send');
+    bugClose();toast(t('bug.ok'));
+  }catch(e){
+    /* fallback: почта (mailto) — тема/тело из gear.bugsubj/gear.bugbody */
+    const ver=payload.version||'?',os=payload.os||navigator.platform||'?';
+    const href='mailto:help@rezon-ai.ru?subject='+encodeURIComponent(t('gear.bugsubj'))
+      +'&body='+encodeURIComponent(t('gear.bugbody').replace('{v}',ver).replace('{os}',os)+'\n'+text);
+    const err=$('#bugErr');err.style.display='';
+    err.innerHTML=esc(t('bug.net'))+' <a href="'+href+'" style="color:var(--bad)">help@rezon-ai.ru</a>';
+  }finally{$('#bugSend').disabled=false;}}
+$('#sysBug').onclick=bugOpen;
+$('#bugClose').onclick=bugClose;
+$('#bugSend').onclick=bugSend;
+$('#bugPop').addEventListener('click',e=>{if(e.target.id==='bugPop')bugClose();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#bugPop').classList.contains('on'))bugClose();});
 
 /* ═══ Рефералка (v0.37.0): блок «Пригласи друга» в «Системе» ═══ */
 let refInfo=null;
