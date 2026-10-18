@@ -498,7 +498,8 @@ def _reverify_downloaded(new_path: Path, sha_file: Path, sig_file: Path) -> bool
             return False
         return ed25519_verify(_load_embedded_pubkey(), data, sig_file.read_bytes())
     except Exception as e:
-        log.warning("selfupdate: helper: перепроверка sidecar'ов: %r", e)
+        log.warning("selfupdate: helper: перепроверка sidecar'ов: %r (файл: %s)",
+                    e, getattr(e, "filename", "?"))
         return False
 
 

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Maxgraph — память полного сохранения контекста.
 MCP (streamable-http) + REST API + неоновый веб-дашборд.
@@ -246,6 +246,15 @@ EMBED_ON = False
 EVENTS_CAP = 10000  # максимум строк в events.jsonl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+if _FROZEN:  # windowed-exe (v1.0.3): консоли нет — stderr никто не увидит.
+    try:     # Дублируем лог в data/maxgraph.log (ротация 2×1МБ), иначе падения слепые.
+        from logging.handlers import RotatingFileHandler
+        _fh = RotatingFileHandler(DATA_DIR / "maxgraph.log", maxBytes=1_000_000,
+                                  backupCount=2, encoding="utf-8")
+        _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.getLogger().addHandler(_fh)
+    except OSError:
+        pass
 log = logging.getLogger("maxgraph")
 
 # На магазине без явного секрета коды вычислимы офлайн по install_id — не стартуем
@@ -4194,10 +4203,14 @@ def _license_watchdog(env=None):
         time.sleep(86400)
 
 
-def _code_rec(code: str, tier: str, status: str = "new", note: str = "") -> dict:
-    return {"code": code, "tier": tier, "status": status, "note": note,
-            "createdAt": now_iso(), "soldAt": now_iso() if status == "sold" else None,
-            "activatedAt": None, "tenant": None}
+def _code_rec(code: str, tier: str, status: str = "new", note: str = "",
+              days: "int | None" = None) -> dict:
+    rec = {"code": code, "tier": tier, "status": status, "note": note,
+           "createdAt": now_iso(), "soldAt": now_iso() if status == "sold" else None,
+           "activatedAt": None, "tenant": None}
+    if days is not None:
+        rec["days"] = days  # срок лицензии при активации кода; 0 = бессрочно (v1.0.4)
+    return rec
 
 
 def _license_for_code(data: dict, code: str):
@@ -4297,7 +4310,7 @@ def _valid_email(value) -> str | None:
     return e if e and "@" in e and " " not in e else None
 
 
-def _gen_codes(count: int, tier: str, note: str = "") -> list:
+def _gen_codes(count: int, tier: str, note: str = "", days: "int | None" = None) -> list:
     with _codes_lock:
         data = _load_codes()
         existing = {c["code"] for c in data["codes"]}
@@ -4306,7 +4319,7 @@ def _gen_codes(count: int, tier: str, note: str = "") -> list:
             code = _new_code()
             if code in existing:
                 continue
-            rec = _code_rec(code, tier, "new", note)
+            rec = _code_rec(code, tier, "new", note, days=days)
             data["codes"].append(rec)
             existing.add(code)
             out.append(rec)
@@ -4539,7 +4552,24 @@ async def api_codes_generate(request: Request):
     count = _safe_int(body.get("count", 10), 10)
     if not 1 <= count <= 500:
         return JSONResponse({"error": "count must be 1..500"}, status_code=400)
-    return JSONResponse({"created": _gen_codes(count, tier, body.get("note", ""))}, headers=_NOCACHE)
+    # v1.0.4: срок лицензии при ручной выдаче — days 0..3650, 0 = бессрочно (явно)
+    days_raw = body.get("days")
+    days = None
+    if days_raw is not None:
+        try:
+            if isinstance(days_raw, bool):
+                raise ValueError
+            days = int(days_raw)
+            if float(days_raw) != days:
+                raise ValueError
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "days must be int 0..3650 (0 = бессрочно)"},
+                                status_code=400)
+        if not 0 <= days <= 3650:
+            return JSONResponse({"error": "days must be int 0..3650 (0 = бессрочно)"},
+                                status_code=400)
+    return JSONResponse({"created": _gen_codes(count, tier, body.get("note", ""), days=days)},
+                        headers=_NOCACHE)
 
 
 @mcp.custom_route("/api/codes", methods=["GET"])
@@ -5241,7 +5271,10 @@ async def api_payments_list(request: Request):
         if em:
             seen.add(em)
     out = [{k: v for k, v in p.items() if k != "raw"} for p in reversed(pays)]
-    return JSONResponse({"payments": out[:500]}, headers=_NOCACHE)
+    # v1.0.4: canceled/failed/expired — не продажи: уходят из payments в failed
+    ok = [p for p in out if p.get("status") not in _FAILED_STATUSES]
+    failed = [p for p in out if p.get("status") in _FAILED_STATUSES]
+    return JSONResponse({"payments": ok[:500], "failed": failed[:500]}, headers=_NOCACHE)
 
 
 @mcp.custom_route("/api/codes/export", methods=["GET", "POST"])
@@ -5421,9 +5454,10 @@ async def api_codes_redeem(request: Request):
                                                            "Вопросы — в поддержку: help@rezon-ai.ru"},
                                     status_code=409, headers=_NOCACHE)
             if not lic:
-                # ручной код (/api/codes/generate): лицензии нет — выпускаем бессрочную
+                # ручной код (/api/codes/generate): срок из записи кода — rec.days
+                # (v1.0.4; 0/отсутствует → бессрочная: generate_key days<=0 → exp=0)
                 lic = licensing.generate_key(LICENSE_SECRET, email or "buyer@unknown",
-                                             rec["tier"], 0)
+                                             rec["tier"], _safe_int(rec.get("days"), 0))
             rec["licenseKey"] = lic  # no-op, если лицензия уже была своя; бэкфилл из платежа
             tenant["licenseKey"] = lic
             tenant["paidAt"] = now_iso()
@@ -6443,22 +6477,51 @@ async def api_relay_config(request: Request):
 @mcp.custom_route("/api/tenants", methods=["GET"])
 async def api_tenants_list(request: Request):
     """Учёт активаций для админки (v0.18.0): tenant ↔ email ↔ код ↔ licenseKey,
-    флаг revoked. Bearer master ИЛИ admin-сессия (cookie, STORE_MODE)."""
+    флаг revoked. Bearer master ИЛИ admin-сессия (cookie, STORE_MODE).
+    v1.0.4: блок «Пользователи» — к каждому tenant его машины из machines.json
+    (по licenseKey), expires из payload ключа (0 = бессрочно), плюс unattached —
+    привязки, чей key_hash не совпал ни с одним tenant."""
     g = _store_gate()
     if g:
         return g
     if not _admin_auth(request):
         return _admin_401()
     data = _load_codes()
+    try:  # джойн machines.json — best-effort (как /api/installs): битый реестр не роняет выдачу
+        mregs = _load_machines().get("machines") or {}
+    except Exception:
+        mregs = {}
     rows = []
+    matched_kh = set()
     for t in data.get("tenants", []):
         lk = t.get("licenseKey") or ""
+        machines, exp = [], None
+        if lk:
+            kh = _key_hash(lk)
+            mrec = mregs.get(kh)
+            if mrec:
+                matched_kh.add(kh)
+                fp_class = "composite" if mrec.get("components") else "legacy"
+                machines = [{"fp": str(fp)[:8], "fp_class": fp_class,
+                             "first_seen": mrec.get("first_seen"),
+                             "updated": mrec.get("updated"),
+                             "review": bool(mrec.get("review"))}
+                            for fp in mrec.get("fps") or []]
+            payload, _e = licensing.verify_key(LICENSE_SECRET, lk, now=0)  # now=0: истёкший тоже читаем
+            if payload:
+                exp = int(payload.get("exp") or 0)
         rows.append({"id": t.get("id"), "email": t.get("email"), "tier": t.get("tier"),
                      "code": t.get("code"), "createdAt": t.get("createdAt"),
-                     "paidAt": t.get("paidAt"), "licenseKey": lk,
+                     "paidAt": t.get("paidAt"), "licenseKey": lk, "expires": exp,
+                     "machines": machines,
                      "revoked": bool(lk) and bool(_is_revoked(data, lk))})
+    unattached = [{"fp": str(fp)[:8], "first_seen": mrec.get("first_seen"),
+                   "updated": mrec.get("updated")}
+                  for kh, mrec in mregs.items() if kh not in matched_kh
+                  for fp in mrec.get("fps") or []]
     rows.sort(key=lambda r: r.get("createdAt") or "", reverse=True)
-    return JSONResponse({"tenants": rows[:500]}, headers=_NOCACHE)
+    return JSONResponse({"tenants": rows[:500], "unattached": unattached[:500]},
+                        headers=_NOCACHE)
 
 
 # ------------------------------------------------------------------ admin auth (v0.18.0) ----
