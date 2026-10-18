@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Maxgraph — память полного сохранения контекста.
 MCP (streamable-http) + REST API + неоновый веб-дашборд.
@@ -32,7 +32,8 @@ Env:
   INSTALL_FLAVOR — метка способа установки (docker|docker-desktop|python; rancher =
                   легаси-установки) в install-ping; ставится установщиком
                   (install.sh/install.ps1), пусто → autodetect по /.dockerenv
-  MEMORY_DIR    — каталог данных (default /data)
+  MEMORY_DIR    — каталог данных (default /data; native exe: ./data рядом с бинарником)
+  MG_HOST       — адрес bind (default: exe → 127.0.0.1, иначе 0.0.0.0)
   PORT          — порт (default 8787)
   READONLY      — READONLY=1: зеркало (resync.py перезаписывает memory.json из прода) —
                   мутации памяти отклоняются (HTTP 403 {"error":"readonly_mirror"}),
@@ -52,6 +53,7 @@ import logging
 import os
 import re
 import secrets
+import sys
 import threading
 import time
 import urllib.parse
@@ -96,9 +98,30 @@ try:
 except ImportError:
     ghhook = None
 
+_FROZEN = getattr(sys, "frozen", False)  # True в PyInstaller-бинарнике (native-клиент без Docker)
+# Ресурсы (VERSION, html, static/) в exe лежат в распакованном sys._MEIPASS; в исходниках — рядом с app.py
+_RESOURCE_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+
+
+def _default_data_dir(env=None, frozen=None) -> str:
+    """exe: данные рядом с бинарником (переносимая установка); сервер/Docker: /data."""
+    env = os.environ if env is None else env
+    frozen = _FROZEN if frozen is None else frozen
+    if env.get("MEMORY_DIR"):
+        return env["MEMORY_DIR"]
+    return str(Path(sys.executable).resolve().parent / "data") if frozen else "/data"
+
+
+def _bind_host(env=None, frozen=None) -> str:
+    """exe — только loopback (нет изоляции Docker-сети); сервер/Docker — 0.0.0.0."""
+    env = os.environ if env is None else env
+    frozen = _FROZEN if frozen is None else frozen
+    return env.get("MG_HOST") or ("127.0.0.1" if frozen else "0.0.0.0")
+
+
 def _find_version() -> str:
-    # Docker: /app/VERSION (копируется Dockerfile'ом); локальный запуск из app/: ../VERSION
-    for p in (Path(__file__).with_name("VERSION"), Path(__file__).resolve().parent.parent / "VERSION"):
+    # Docker: /app/VERSION (копируется Dockerfile'ом); exe: _MEIPASS/VERSION; локальный запуск из app/: ../VERSION
+    for p in (_RESOURCE_BASE / "VERSION", _RESOURCE_BASE.parent / "VERSION"):
         if p.exists():
             return p.read_text(encoding="utf-8").strip()
     return "0.0.0-dev"
@@ -148,13 +171,15 @@ def _require_store_token():
 
 
 VERSION = _find_version()
-DATA_DIR = Path(os.environ.get("MEMORY_DIR", "/data"))
+DATA_DIR = Path(_default_data_dir())
+HOST = _bind_host()  # exe → 127.0.0.1; иначе 0.0.0.0 (изоляция = docker-compose мэппинг); MG_HOST перекрывает
 MEMORY_FILE = DATA_DIR / "memory.json"
 PROJECTS_DIR = DATA_DIR / "projects"  # v0.34.0: шарды графа по проектам (суд 20261013-000330)
 EVENTS_FILE = DATA_DIR / "events.jsonl"
 PROJECT_ALIASES_FILE = DATA_DIR / "project-aliases.json"  # --- v0.50.0: алиасы legacy-slug → repo-тег ---
 INSTALLS_FILE = DATA_DIR / "installs.json"  # --- v0.14: install-ping учёт ---
 LEARN_EVENTS_FILE = DATA_DIR / "learn_events.jsonl"  # --- W2 v0.26.0: learn-events ---
+HEARTBEATS_FILE = DATA_DIR / "heartbeats.jsonl"  # --- T7 (native-client): heartbeat живости ---
 RANK_CONFIG_FILE = DATA_DIR / "rank_config.json"  # --- W3 v0.27.0: last-good словарь синонимов ---
 _ENV_TOKEN = bool((os.environ.get("MEMORY_TOKEN") or "").strip())
 TOKEN = _resolve_token()
@@ -2674,7 +2699,7 @@ def session_close(summary: str = "", done: list[str] | None = None,
 
 # --------------------------------------------------------- REST + dashboard -
 
-_DASH_LOCAL = Path(__file__).with_name("dashboard.html")
+_DASH_LOCAL = _RESOURCE_BASE / "dashboard.html"
 _DASH_DATA = DATA_DIR / "dashboard.html"  # hot-override без пересборки образа
 _PAGES = {"dashboard.html": _DASH_DATA, "landing.html": DATA_DIR / "landing.html",
           "billing.html": DATA_DIR / "billing.html",
@@ -2688,7 +2713,7 @@ def _page_html(name: str) -> str:
     override = _PAGES.get(name)
     if override is not None and override.exists():
         return override.read_text(encoding="utf-8")
-    return (Path(__file__).parent / name).read_text(encoding="utf-8")
+    return (_RESOURCE_BASE / name).read_text(encoding="utf-8")
 
 
 def _dashboard_html() -> str:
@@ -3602,7 +3627,7 @@ _INSTALL_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[
 # v0.16.3: серверный якорь триала по machine fingerprint (sha256 hex)
 _FP_RE = re.compile(r"^[0-9a-f]{64}$")
 # v0.39.0: способ установки в install-ping; неизвестное значение не храним
-_INSTALL_FLAVORS = frozenset({"docker", "docker-desktop", "rancher", "python"})
+_INSTALL_FLAVORS = frozenset({"docker", "docker-desktop", "rancher", "python", "native"})
 _INSTALLS_CAP = 10000   # потолок installs-дикта; вытеснение самых старых по last_seen
 _TRIALS_CAP = 100_000   # потолок fp-реестра; переполнение → пинг обслуживается, новый якорь не создаётся (не 5xx)
 _FP_KINDS = frozenset({"composite", "legacy", "container"})
@@ -4016,9 +4041,10 @@ def _telemetry_ping(post=None, env=None, data_dir=None):
         return
     payload = {"install_id": _install_id(data_dir), "version": VERSION,
                # v0.39.0: способ установки (доля python-фолбэков). INSTALL_FLAVOR
-               # ставит установщик (install.sh/install.ps1); пусто → autodetect.
+               # ставит установщик (install.sh/install.ps1); пусто → autodetect
+               # (native exe = PyInstaller frozen, v1.0.0).
                "install_flavor": (env.get("INSTALL_FLAVOR") or "").strip()
-               or ("docker" if os.path.exists("/.dockerenv") else "python")}
+               or ("native" if _FROZEN else "docker" if os.path.exists("/.dockerenv") else "python")}
     payload.update(_client_fp_fields())
     try:
         resp = (post or _post_json)(PUBLIC_BASE_URL + "/api/telemetry/install", payload, timeout=5)
@@ -4412,10 +4438,10 @@ def _store_gate():
     return None if STORE_MODE else PlainTextResponse("Not Found", status_code=404)
 
 
-_OG_FILE = Path(__file__).with_name("og.png")  # social-preview, копируется в образ Dockerfile'ом
+_OG_FILE = _RESOURCE_BASE / "og.png"  # social-preview; exe: из _MEIPASS (--add-data)
 
 
-_FONTS_DIR = Path(__file__).with_name("static") / "fonts"
+_FONTS_DIR = _RESOURCE_BASE / "static" / "fonts"
 _FONT_RE = re.compile(r"[a-z0-9-]+\.woff2")
 
 
@@ -4451,7 +4477,7 @@ async def og_image(request: Request):
                     headers={"Cache-Control": "public, max-age=86400"})
 
 
-_DEMO_SHOT_LOCAL = Path(__file__).with_name("static") / "demo-dashboard-dark.png"
+_DEMO_SHOT_LOCAL = _RESOURCE_BASE / "static" / "demo-dashboard-dark.png"
 _DEMO_SHOT_DATA = DATA_DIR / "static" / "demo-dashboard-dark.png"  # hot-override
 
 
@@ -4772,6 +4798,104 @@ async def api_telemetry_learn(request: Request):
             return JSONResponse({"ok": False, "error": "store_unavailable"},
                                 status_code=503)
     return JSONResponse({"ok": True, "accepted": len(accepted)}, headers=_NOCACHE)
+
+
+# --- T7 (эпик native-client): heartbeat живости клиентов ---
+_hb_lock = threading.Lock()
+_hb_prune_day = ""          # UTC-дата последнего retention-прогона
+_HB_RETENTION_SEC = 90 * 86400   # как learn-events
+_HB_BODY_CAP = 2048
+_HB_BYTES_CAP = 8 * 1024 * 1024  # stat-клапан до append (как learn): между
+                                 # суточными prune файл не растёт безмерно
+_HB_OS = frozenset({"windows", "macos", "linux"})
+_HB_ID_RE = re.compile(r"^[0-9A-Za-z-]{1,64}$")  # uuid клиента; послабление к _INSTALL_ID_RE
+_HB_VER_RE = re.compile(r"^\d+\.\d+\.\d+([-.+][0-9A-Za-z.-]+)?$")
+
+
+def _hb_prune(now):
+    """Retention 90д, раз в UTC-день при первой записи дня (конвенция
+    learn_events.jsonl): переписать файл без старых/битых строк, атомарно.
+    shortcut: отдельного cap строк нет — stat-клапан _HB_BYTES_CAP достаточен
+    для потока «1 событие / 6ч / установка»."""
+    global _hb_prune_day
+    day = time.strftime("%Y-%m-%d", time.gmtime(now))
+    if day == _hb_prune_day or not HEARTBEATS_FILE.exists():
+        _hb_prune_day = day
+        return
+    cutoff = now - _HB_RETENTION_SEC
+    kept = []
+    try:
+        lines = HEARTBEATS_FILE.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError, ValueError):
+        lines = []  # битый/нечитаемый файл → начинаем с чистого
+    for line in lines:
+        try:
+            ts = float(json.loads(line).get("ts") or 0)
+        except Exception:
+            continue  # битая строка выкидывается при prune
+        if ts >= cutoff:
+            kept.append(line)
+    try:  # атомарно: tmp + replace — крэш/disk-full не затирает файл;
+        # tmp с pid — два процесса на одном DATA_DIR не затирают чужой tmp
+        tmp = HEARTBEATS_FILE.with_name(f"heartbeats.{os.getpid()}.tmp")
+        tmp.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+        os.replace(tmp, HEARTBEATS_FILE)
+    except OSError:
+        pass  # read-only data/ — retention пропустим, запись ниже откажет честно
+    _hb_prune_day = day
+
+
+@mcp.custom_route("/api/telemetry/heartbeat", methods=["POST"])
+async def api_telemetry_heartbeat(request: Request):
+    """Анонимный heartbeat клиентов (T7; v0.41.0 — телеметрия всегда ON, без
+    оптаута): {install_id, version, os, flavor, ts}. Без fp/license key/IP —
+    только живость и факты установки. ts в файле — СЕРВЕРНЫЙ (часам клиента не
+    верим, как learn-events), клиентский храним рядом в cts. Только STORE_MODE
+    (self-hosted копии отвечают 404 через _store_gate)."""
+    g = _store_gate()
+    if g:
+        return g
+    ip = _client_ip(request)
+    if _rate_limited(ip, "heartbeat", 10, 3600):  # как у install-ping
+        return JSONResponse({"ok": False, "error": "rate_limited"}, status_code=429)
+    # лимит тела — кап по ФАКТУ длины (content-length может врать/отсутствовать)
+    body, err = await _read_capped(request, _HB_BODY_CAP)
+    if err is not None:
+        return JSONResponse({"ok": False, "error": "too_large"}, status_code=413)
+    try:
+        body = json.loads(body)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
+    if not isinstance(body, dict):  # [1,2] / "str" → 400, не 500
+        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
+    iid, ver = body.get("install_id"), body.get("version")
+    osname, flavor, cts = body.get("os"), body.get("flavor"), body.get("ts")
+    if (not isinstance(iid, str) or not _HB_ID_RE.fullmatch(iid)
+            or not isinstance(ver, str) or len(ver) > 20 or not _HB_VER_RE.fullmatch(ver)
+            or osname not in _HB_OS
+            or not isinstance(flavor, str) or flavor not in _INSTALL_FLAVORS
+            or isinstance(cts, bool) or not isinstance(cts, (int, float))):
+        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
+    now = time.time()
+    rec = {"ts": now, "cts": float(cts), "install_id": iid,
+           "version": ver, "os": osname, "flavor": flavor}
+    with _hb_lock:
+        _hb_prune(now)
+        try:  # stat-клапан ДО append — файл не растёт сверх капа
+            full = (HEARTBEATS_FILE.exists()
+                    and HEARTBEATS_FILE.stat().st_size > _HB_BYTES_CAP)
+        except OSError:
+            full = False
+        if full:
+            return JSONResponse({"ok": False, "error": "store_full"}, status_code=503)
+        try:
+            with HEARTBEATS_FILE.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except OSError:
+            # read-only data/ → честный отказ (как learn-events)
+            return JSONResponse({"ok": False, "error": "store_unavailable"},
+                                status_code=503)
+    return JSONResponse({"ok": True}, headers=_NOCACHE)
 
 
 # --- W3 v0.27.0: агрегация словаря синонимов из learn-events (SPEC-rank-config) ---
@@ -5910,6 +6034,67 @@ async def api_release_sig(request: Request):
     if guard is not None:
         return guard
     return _release_file("sig")
+
+
+# --- native releases (v1.0.0, T5): бинарники клиента без Docker ------------
+
+# Имя строго по шаблону клиента (selfupdate.artifact_name) + sidecar-файлы
+# + manifest.json для лендинга/скриптов. Всё прочее → 404 (не 400:
+# невалидное имя неотличимо от «нет такого роута» — без оракула разведки).
+_NATIVE_NAME_RE = re.compile(
+    r"^(?:maxgraph-\d+\.\d+\.\d+-(?:windows|macos|linux)-(?:amd64|arm64)"
+    r"(?:\.exe)?(?:\.sha256|\.sig)?|manifest\.json)$")
+
+
+def _native_release_file(fname: str) -> Response:
+    """Отдать native-артефакт из RELEASES_DIR/native (v1.0.0, T5).
+    Нет файла → 404 (selfupdate трактует как «артефакта ещё нет», fail-open)."""
+    p = os.path.join(RELEASES_DIR, "native", fname)
+    if fname.endswith(".sha256"):
+        # формат sha256sum (`<hex>  <name>`) — текст, как у latest.sha256
+        try:
+            with open(p, "rb") as f:
+                blob = f.read()
+        except OSError:
+            return JSONResponse({"ok": False, "error": "no artifact"}, status_code=404)
+        return PlainTextResponse(blob.decode("ascii", "replace"),
+                                 headers={"Cache-Control": "no-store"})
+    if not os.path.isfile(p):
+        return JSONResponse({"ok": False, "error": "no artifact"}, status_code=404)
+    if fname == "manifest.json":
+        return FileResponse(p, media_type="application/json",
+                            headers={"Cache-Control": "no-store"})
+    if fname.endswith(".sig"):
+        # ed25519 -rawin подпись — бинарь, как у latest.sig
+        return FileResponse(p, media_type="application/octet-stream",
+                            headers={"Cache-Control": "no-store"})
+    # сам артефакт: стриминг (M5 ревью: не читать целиком в RAM на анонимном роуте)
+    return FileResponse(p, media_type="application/octet-stream",
+                        headers={"Cache-Control": "no-store",
+                                 "Content-Disposition": 'attachment; filename="%s"' % fname})
+
+
+@mcp.custom_route("/api/releases/native/manifest", methods=["GET"])
+async def api_release_native_manifest(request: Request):
+    """Публично: манифест native-артефактов {"version", "artifacts":[...]} (v1.0.0).
+    Для лендинга/скриптов установки; 404 — манифест ещё не выложен."""
+    guard = _release_guard(request)
+    if guard is not None:
+        return guard
+    return _native_release_file("manifest.json")
+
+
+@mcp.custom_route("/api/releases/native/{fname}", methods=["GET"])
+async def api_release_native(request: Request):
+    """Публично: native-бинарь и sidecar'ы (.sha256/.sig) для selfupdate (v1.0.0).
+    Канал доставки — магазин, trust anchor — вшитый в клиента публичный ключ."""
+    guard = _release_guard(request)
+    if guard is not None:
+        return guard
+    fname = request.path_params.get("fname", "")
+    if not _NATIVE_NAME_RE.fullmatch(fname):  # $ в re пропускает \n в конце — fullmatch строже
+        return JSONResponse({"ok": False, "error": "no artifact"}, status_code=404)
+    return _native_release_file(fname)
 
 
 @mcp.custom_route("/api/license/activate", methods=["POST"])
@@ -7334,6 +7519,7 @@ class TokenAuth:
                     "/billing/create", "/billing/success", "/api/license/validate",
                     "/api/telemetry/install",  # v0.14: анонимный install-ping
                     "/api/telemetry/learn",  # v0.26.0: анонимные learn-events (W2)
+                    "/api/telemetry/heartbeat",  # T7: анонимный heartbeat живости (native-client)
                     "/api/version",  # v0.18.2: апдейт-чип дашборда (публичная версия)
                     "/api/admin/me",  # v0.18.0: страница входа админки (configured/authed — не секрет)
                     "/api/admin/login", "/api/admin/setup",  # v0.18.0: логин/первичная настройка (rate-limited)
@@ -7345,8 +7531,10 @@ class TokenAuth:
                     "/webhook/digiseller/sale", "/webhook/digiseller/message",  # уведомления (v0.9.1)
                     "/api/hooks/github"}  # v0.33.0: GitHub-вебхук витрины → TG владельцу
 
-    # Префиксные публичные пути: статика лендинга (self-hosted шрифты).
-    PUBLIC_PREFIXES = ("/static/",)
+    # Префиксные публичные пути: статика лендинга (self-hosted шрифты);
+    # native-релизы (v1.0.0, T5) — клиенты ходят за апдейтами без токена;
+    # имя файла дополнительно жёстко валидируется regex в хендлере.
+    PUBLIC_PREFIXES = ("/static/", "/api/releases/native/")
 
     if not STORE_MODE:
         # self-hosted: activate публичен (пользователь активирует свою копию).
@@ -7417,6 +7605,11 @@ def main():
         threading.Thread(target=_bootstrap_hosted, daemon=True, name="bootstrap-hosted").start()  # v0.28.0: ping → relay-pull при boot
         threading.Thread(target=_license_watchdog, daemon=True, name="license-watchdog").start()  # v0.18.0
         learn.start_learn_loop(post=_post_json, base_url=PUBLIC_BASE_URL)  # W2 (v0.26.0)
+        # T7: heartbeat раз в 6ч — всем установкам (docker/python/native), не только exe;
+        # flavor внутри: "native" при _FROZEN, иначе autodetect как у install-ping.
+        # native stdlib-only при импорте (pystray/PIL — лениво) и входит в Docker-образ (COPY app/).
+        import native
+        native.start_heartbeat(_post_json, PUBLIC_BASE_URL, DATA_DIR, lambda: VERSION)
     rankcfg.load(RANK_CONFIG_FILE)  # W3 (v0.27.0): last-good словарь синонимов
     env_key = os.environ.get("LICENSE_KEY", "").strip()  # лицензия из env (self-hosted pro)
     if env_key and not STORE_MODE and st.get("state") != "licensed":  # на магазине self-activation не нужен (LOW-1)
@@ -7456,11 +7649,30 @@ def main():
              "on" if actr_cfg["max_boost"] > 0 else "off (ACTR_MAX_BOOST=0)",
              actr_cfg["max_boost"], actr_cfg["half_life_days"], actr_cfg["flush_sec"],
              "" if not READONLY else ", flush off (READONLY mirror)")
-    log.info("maxgraph %s listening on 0.0.0.0:%s (store: %s, store_mode=%s, trust_proxy=%s, readonly=%s)",
-             VERSION, PORT, MEMORY_FILE, STORE_MODE, TRUST_PROXY, READONLY)
+    log.info("maxgraph %s listening on %s:%s (store: %s, store_mode=%s, trust_proxy=%s, readonly=%s)",
+             VERSION, HOST, PORT, MEMORY_FILE, STORE_MODE, TRUST_PROXY, READONLY)
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info", proxy_headers=True)
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info", proxy_headers=True)
 
 
 if __name__ == "__main__":
-    main()
+    # T4: helper-процесс подмены exe (Windows не даёт заменить бегущий файл):
+    # `maxgraph.exe --mg-apply-update <new_exe> <parent_pid> <sha256> <sig>` —
+    # ждёт смерти родителя, ПЕРЕПРОВЕРЯЕТ sha256+ed25519 (B-1), атомарно
+    # подменяет exe, перезапускает, healthcheck, откат.
+    if _FROZEN and sys.argv[1:2] == ["--mg-apply-update"]:
+        import selfupdate
+        sys.exit(selfupdate.apply_update_main(sys.argv[2:]))
+    # native exe: привязка к железу (hostfp) + автозапуск ОС + трей; MG_NO_TRAY=1 — headless
+    if _FROZEN:
+        import native  # stdlib-only при импорте; pystray/PIL — лениво в run_tray
+        native.ensure_hostfp()
+        native.ensure_autostart()
+        import selfupdate  # T4: фоновые обновления по подписанному каналу магазина
+        selfupdate.start_update_loop(lambda: VERSION, PUBLIC_BASE_URL, DATA_DIR, PORT)
+        if os.environ.get("MG_NO_TRAY") != "1":
+            native.run_tray(main)
+        else:
+            main()
+    else:
+        main()

@@ -1,42 +1,54 @@
 #!/usr/bin/env bash
-# install.sh — MaxGraph installer for macOS and Linux (Windows: install.ps1).
+# install-native.sh — MaxGraph NATIVE installer for macOS and Linux (no Docker).
+# The buyer's path: download the portable binary from the store, verify it, run it.
 # Run from the root of the cloned repo:
-#   bash install.sh [--yes] [--project-dir <user project root>] [--rules-lang ru|en]
+#   bash install-native.sh [--yes] [--project-dir <user project root>] [--rules-lang ru|en]
 #
-# Steps: working Docker? → if missing, with the user's consent install an engine
-# (macOS → official Docker Desktop from docker.com; Linux → official Docker
-# Engine script) → write hostfp.json + HOST_FP/INSTALL_FLAVOR into .env → pull the prebuilt
-# GHCR image (local build as fallback) → up -d → wait for healthz → print the
-# next-steps package (token + MCP config) for the installing AI agent.
-# --project-dir: the memory rules block is injected into <dir>/AGENTS.md between
-# <!-- maxgraph:start/end --> markers (idempotent).
+# Steps: store manifest -> pick <os>-<arch> -> download the binary + .sha256
+# sidecar + .sig (atomic: .part -> verify -> rename) into the install dir
+# (Linux: ~/.local/share/maxgraph, macOS: ~/Applications/maxgraph) -> verify
+# sha256 from the manifest (sha256sum / shasum -a 256) -> verify the ed25519
+# signature via OpenSSL 3 against the embedded release pubkey -> chmod +x ->
+# stop an old maxgraph process on reinstall -> start via nohup -> wait for
+# http://localhost:8787/healthz (up to 30s) -> read the token from
+# data/local_token.txt -> inject the memory rules into <project-dir>/AGENTS.md
+# (idempotent, <!-- maxgraph:start/end -->) -> write/register capture hooks ->
+# print the next-steps package (MAXGRAPH_NEXT_STEPS={...}).
 #
-# Modes: default = full install; --hostfp-only = only (re)compute hostfp.json
-# next to docker-compose.yml (heals an existing install — no rebuild; apply with
-# `docker compose up -d`; no rules injection, no package print).
+# Trust chain (owner's decision, no code-signing certificates):
+#   install time  = HTTPS + sha256 from the store manifest + ed25519 signature
+#   verified via OpenSSL 3 (trust anchor embedded below — NOT downloaded from
+#   the same host). Fail-closed: no OpenSSL 3 / bad signature -> exit 1.
+#   Windows (install-native.ps1) keeps sha256+HTTPS only: Windows has no
+#   OpenSSL out of the box (owner informed, security review 2026-10-18).
+#   The binary also verifies ed25519 itself on every auto-update.
+# curl does NOT set the macOS quarantine xattr -> Gatekeeper stays silent.
 #
-# Exit codes (read by the installing AI agent, see AGENTS.md):
-#   0 — MaxGraph is running in Docker (or hostfp.json written in --hostfp-only)
-#   3 — engine declined or impossible → Python fallback (AGENTS.md, step 1a)
-#   1 — unexpected error (see install.log)
+# MG_TEST_PUBKEY_FILE (tests only): path to an override ed25519 PEM pubkey
+# for verify_ed25519; production installs use the embedded key.
+#
+# Extra flags: --store-url <url> (default https://rezon-ai.ru; tests point it
+# at a mock), --no-start (everything except launching the binary — for tests),
+# --install-dir <dir> (overrides the default install dir).
+#
+# Exit codes: 0 — installed and running (or --no-start completed); 1 — error
+# (see install-native.log). Re-run = update to the latest version (idempotent).
 set -uo pipefail
-umask 077   # .env and downloads must not be world-readable
+umask 077   # downloads and the token must not be world-readable
 cd "$(dirname "$0")"
 
-TD="$(mktemp -d 2>/dev/null || mktemp -d -t mg-install)"   # private download dir, no predictable /tmp paths
-trap 'rm -rf "$TD"' EXIT
-
-LOG=install.log
-STATE=install-state.json
+LOG=install-native.log
 YES=0
-HOSTFP_ONLY=0
+NO_START=0
 PROJECT_DIR=""
 RULES_LANG=""
 RULES_INJECTED=0
+STORE_URL="https://rezon-ai.ru"
+INSTALL_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --yes|-y) YES=1 ;;
-    --hostfp-only) HOSTFP_ONLY=1 ;;
+    --no-start) NO_START=1 ;;
     --project-dir) shift
       case "${1:-}" in -*|"") echo "[maxgraph-install] FATAL: --project-dir needs a path" >&2; exit 1 ;;
         *) PROJECT_DIR="$1" ;; esac ;;
@@ -45,48 +57,43 @@ while [ $# -gt 0 ]; do
       case "${1:-}" in -*|"") echo "[maxgraph-install] FATAL: --rules-lang needs ru|en" >&2; exit 1 ;;
         *) RULES_LANG="$1" ;; esac ;;
     --rules-lang=*) RULES_LANG="${1#*=}" ;;
+    --store-url) shift
+      case "${1:-}" in -*|"") echo "[maxgraph-install] FATAL: --store-url needs a URL" >&2; exit 1 ;;
+        *) STORE_URL="$1" ;; esac ;;
+    --store-url=*) STORE_URL="${1#*=}" ;;
+    --install-dir) shift
+      case "${1:-}" in -*|"") echo "[maxgraph-install] FATAL: --install-dir needs a path" >&2; exit 1 ;;
+        *) INSTALL_DIR="$1" ;; esac ;;
+    --install-dir=*) INSTALL_DIR="${1#*=}" ;;
+    *) echo "[maxgraph-install] FATAL: unknown flag '$1'" >&2; exit 1 ;;
   esac
   shift
 done
 
+if [ "${MG_INSTALL_LIB_ONLY:-0}" != "1" ]; then   # тесты source'ят функции даже на Windows
 OS="$(uname -s)"
 case "$OS" in Darwin|Linux) ;; *)
-  echo "[maxgraph-install] Unsupported OS: $OS (on Windows use install.ps1)"; exit 1 ;;
+  echo "[maxgraph-install] Unsupported OS: $OS (on Windows use install-native.ps1)"; exit 1 ;;
 esac
-
-DOCKER="docker"   # becomes "sudo docker" on Linux until the group applies
-FLAVOR=""
+ARCH="$(uname -m)"
+case "$ARCH" in x86_64|amd64) ARCH=amd64 ;; arm64|aarch64) ARCH=arm64 ;; *)
+  echo "[maxgraph-install] Unsupported CPU arch: $ARCH"; exit 1 ;;
+esac
+if [ "$OS" = "Darwin" ]; then MG_OS=macos; else MG_OS=linux; fi
+if [ -z "$INSTALL_DIR" ]; then
+  if [ "$OS" = "Darwin" ]; then INSTALL_DIR="$HOME/Applications/maxgraph"
+  else INSTALL_DIR="$HOME/.local/share/maxgraph"; fi
+fi
+STORE_URL="${STORE_URL%/}"
+TOKEN_FILE="$INSTALL_DIR/data/local_token.txt"   # the binary creates ./data next to itself
+fi
 
 log() { echo "[maxgraph-install] $*" | tee -a "$LOG"; }
-
-write_state() {  # status flavor
-  printf '{"status":"%s","flavor":"%s","updated":"%s"}\n' \
-    "$1" "$2" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE"
-}
-
-docker_ok() { $DOCKER info >/dev/null 2>&1 && $DOCKER compose version >/dev/null 2>&1; }
-
-wait_engine() {  # first Docker Desktop start installs its helper and VM — allow 10 minutes
-  local i
-  for i in $(seq 1 120); do
-    docker_ok && return 0
-    sleep 5
-  done
-  return 1
-}
-
-consent() {  # $1 = question; --yes answers for the user (agent already asked in chat)
-  [ "$YES" = 1 ] && return 0
-  printf '%s [y/N] ' "$1"
-  local a
-  read -r a || return 1
-  case "$a" in y|Y|yes|YES|д|Д|да|ДА) return 0 ;; *) return 1 ;; esac
-}
+fail() { log "ERROR: $*"; exit 1; }
 
 # --- memory rules into the user's project (--project-dir) --------------------
-# Injected BEFORE any engine work: only the repo file is needed, and the block
-# must land on every exit path (including the Python fallback). Idempotent:
-# the <!-- maxgraph:start/end --> markers are replaced in place on re-runs.
+# Скопировано из install.sh без изменений: маркеры <!-- maxgraph:start/end -->,
+# идемпотентно, переносы строк файла наследуются, запись атомарная.
 
 rules_lang() {  # explicit flag wins; otherwise the OS locale decides
   case "$RULES_LANG" in
@@ -161,127 +168,11 @@ inject_rules() {
   RULES_INJECTED=1
 }
 
-python_fallback() {
-  write_state fallback-python "$FLAVOR"
-  cat <<'EOF' | tee -a "$LOG"
-
-Docker engine was NOT installed (declined or failed).
-Falling back to plain Python mode — tell the user explicitly what this loses:
-  • no automatic updates (manual only: git pull && pip install -U …)
-  • no autostart — the server must be started again after every reboot
-  • the server listens on 0.0.0.0 (reachable from the local network; token required)
-Switch to Docker later: install Docker and re-run this script — ./data is reused.
-Python mode (from the repo root):
-  pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"
-  MEMORY_DIR=./data python app/app.py
-EOF
-  exit 3
-}
-
-upsert_env() {  # key value — insert or replace; a non-empty HOST_FP is never overwritten
-  local key="$1" val="$2"
-  [ -f .env ] || cp .env.example .env
-  if grep -q "^${key}=" .env; then
-    if [ "$key" = "HOST_FP" ] && grep -qE '^HOST_FP=.+$' .env; then return 0; fi
-    grep -v "^${key}=" .env > .env.tmp; mv .env.tmp .env   # ";" не "&&": grep -v отдаёт 1 на пустом выводе
-  fi
-  printf '%s=%s\n' "$key" "$val" >> .env
-}
-
-compute_host_fp() {  # sha256 of the stable hardware id; raw id never leaves the machine
-  case "$OS" in
-    Darwin) printf %s "$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/{print $4}')" | shasum -a 256 | awk '{print $1}' ;;
-    Linux)  { cat /etc/machine-id 2>/dev/null || cat /var/lib/dbus/machine-id; } | grep -v '^uninitialized$' | tr -d '[:space:]' | sha256sum | awk '{print $1}' ;;
-  esac
-}
-
-# --- hostfp.json: композитный отпечаток хоста --------------------------------
-# Сырые идентификаторы не покидают машину: в файл идут только sha256-хеши
-# (salt "maxgraph-hostfp/v1" + нормализованное значение). Тот же алгоритм —
-# в install.ps1 и app/hostfp.py; нормализация и сортировка байт-в-байт
-# идентичны (LC_ALL=C sort = ordinal), иначе fp расплывётся между ОС.
-
-_HFP_SALT="maxgraph-hostfp/v1"
-
-_hfp_sha256() {  # stdin → hex
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}';
-  else shasum -a 256 | awk '{print $1}'; fi
-}
-
-_hfp_norm() {  # stdin → lowercase, trim, схлопнуть пробелы, срезать - : _
-  tr '[:upper:]' '[:lower:]' | tr -d '\-:_' | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'
-}
-
-_hfp_placeholder() {  # $1 = normalized value; 0 = плейсхолдер (в fp не идёт)
-  local v="$1"
-  [ -z "$v" ] && return 0
-  case "$v" in
-    "03000200040005000006000700080009"|"to be filled by o.e.m."|"default string"|\
-    "none"|"not applicable"|"n/a"|"unknown"|"system serial number"|"serialnumber"|"oem")
-      return 0 ;;
-  esac
-  case "$v" in *[!0]*) ;; *) return 0 ;; esac      # все-нули
-  case "$v" in *[!f]*) ;; *) return 0 ;; esac      # все-f
-  case "$v" in *[!0\ ]*) ;; *) return 0 ;; esac    # нули и пробелы
-  return 1
-}
-
-_hfp_mac_linux() {
-  local iface f
-  iface="$(ip route show default 2>/dev/null | awk '/default/{print $5; exit}')"
-  if [ -n "$iface" ] && [ -r "/sys/class/net/$iface/address" ]; then
-    cat "/sys/class/net/$iface/address"; return
-  fi
-  for f in /sys/class/net/*/address; do
-    case "$f" in */lo/*) continue ;; esac
-    [ -r "$f" ] && { cat "$f"; return; }
-  done
-}
-
-write_hostfp_json() {  # собрать компоненты ОС → hostfp.json рядом с compose
-  local os_tag mid="" uuid="" board="" chassis="" serial="" mac=""
-  if [ "$OS" = "Darwin" ]; then
-    os_tag="macos"
-    mid="$(ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | awk -F'"' '/IOPlatformUUID/{print $4; exit}')"
-    serial="$(ioreg -l 2>/dev/null | awk -F'"' '/IOPlatformSerialNumber/{print $4; exit}')"
-    mac="$(ifconfig en0 2>/dev/null | awk '/ether/{print $2; exit}')"
-  else
-    os_tag="linux"
-    mid="$(cat /etc/machine-id 2>/dev/null || cat /var/lib/dbus/machine-id 2>/dev/null)"
-    uuid="$(cat /sys/class/dmi/id/product_uuid 2>/dev/null)"
-    board="$(cat /sys/class/dmi/id/board_serial 2>/dev/null)"
-    chassis="$(cat /sys/class/dmi/id/chassis_serial 2>/dev/null)"
-    mac="$(_hfp_mac_linux)"
-  fi
-  local comps="" lines="" tag raw norm h
-  for spec in "os_install_id:$mid" "smbios_uuid:$uuid" "board_serial:$board" \
-              "chassis_serial:$chassis" "platform_serial:$serial" "disk_serial:" \
-              "mac:$mac"; do
-    tag="${spec%%:*}"; raw="${spec#*:}"
-    [ -z "$raw" ] && continue
-    norm="$(printf '%s' "$raw" | _hfp_norm)"
-    _hfp_placeholder "$norm" && continue
-    h="$(printf '%s' "$_HFP_SALT|$tag=$norm" | _hfp_sha256)"
-    comps="${comps:+$comps,}\"$tag\":\"$h\""
-    lines="${lines:+$lines
-}$tag=$norm"
-  done
-  [ -z "$lines" ] && { log "WARN: no usable hardware ids — hostfp.json not written"; return 1; }
-  local host_fp
-  host_fp="$(printf '%s' "$_HFP_SALT"$'\n'"$(printf '%s\n' "$lines" | LC_ALL=C sort)" | _hfp_sha256)"
-  [ -d hostfp.json ] && rmdir hostfp.json 2>/dev/null  # docker мог создать каталог-заглушку bind-монта
-  printf '{"v":1,"host_fp":"%s","components":{%s},"os":"%s","created":"%s"}\n' \
-    "$host_fp" "$comps" "$os_tag" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > hostfp.json \
-    || { log "WARN: cannot write hostfp.json"; return 1; }
-  chmod 600 hostfp.json 2>/dev/null || true
-  log "hostfp.json written (machine fingerprint, hashes only)"
-  return 0
-}
+# --- hooks (как в install.sh, но токен читается из $INSTALL_DIR/data) ---------
 
 write_hook_files() {  # ~/.maxgraph/: хук + hooks.env; регистрацию в конфигах
-  # хостов делает агент по docs/HOOKS.md (знает свой хост; вопросов про другие
-  # нейросети не задаём). hooks.env — единственное место с токеном (chmod 600),
-  # пишется один раз (не затираем ручные правки); хук обновляем всегда.
+  # хостов делает агент по docs/HOOKS.md. hooks.env — единственное место с
+  # токеном (chmod 600), пишется один раз (не затираем ручные правки).
   local d="$HOME/.maxgraph"
   [ -L "$d" ] && { log "WARN: $d is a symlink — refusing to write hooks.env"; return 1; }
   mkdir -p "$d" || { log "WARN: cannot create $d"; return 1; }
@@ -292,7 +183,7 @@ write_hook_files() {  # ~/.maxgraph/: хук + hooks.env; регистрацию
     log "WARN: hooks/maxgraph_hook.py not found in the clone"; return 1
   fi
   local token=""
-  [ -f data/local_token.txt ] && token="$(tr -d '[:space:]' < data/local_token.txt)"
+  [ -f "$TOKEN_FILE" ] && token="$(tr -d '[:space:]' < "$TOKEN_FILE")"
   if [ ! -f "$d/hooks.env" ] && [ -n "$token" ]; then
     ( umask 077; { printf 'MG_SERVER=http://localhost:8787\n'; printf 'MG_TOKEN=%s\n' "$token"; } \
       > "$d/hooks.env" )   # 600 с рождения: токен недолжен быть читаем даже на секунду
@@ -300,8 +191,7 @@ write_hook_files() {  # ~/.maxgraph/: хук + hooks.env; регистрацию
   log "Hooks ready: ~/.maxgraph (agent registers them into its host — docs/HOOKS.md)"
 }
 
-register_hooks() {  # авто-регистрация хуков во всех НАЙДЕННЫХ хостах (молча,
-  # без вопросов про другие программы; агент — фолбэк для нестандартных хостов)
+register_hooks() {  # авто-регистрация хуков во всех НАЙДЕННЫХ хостах (молча; агент — фолбэк)
   [ -f hooks/register_hook.py ] || return 1
   if ! command -v python3 >/dev/null 2>&1; then
     log "python3 not found — hooks not registered automatically (agent registers by docs/HOOKS.md)"
@@ -312,7 +202,7 @@ register_hooks() {  # авто-регистрация хуков во всех �
 
 print_next_steps() {  # финальный пакет для агента-установщика (см. AGENTS.md)
   local token="" cfg=""
-  [ -f data/local_token.txt ] && token="$(tr -d '[:space:]' < data/local_token.txt)"
+  [ -f "$TOKEN_FILE" ] && token="$(tr -d '[:space:]' < "$TOKEN_FILE")"
   [ -n "$token" ] || token="<см. data/local_token.txt>"
   cfg="\"url\":\"http://localhost:8787/mcp\",\"headers\":{\"Authorization\":\"Bearer $token\"}"
   local rules_text
@@ -337,8 +227,8 @@ print_next_steps() {  # финальный пакет для агента-уст
    Dashboard: http://localhost:8787/app#$token (token is in the link — opens signed in).
 =======================================================================
 EOF
-  # машиночитаемая строка — ТОЛЬКО stdout; в install.log токен не пишем (его
-  # прикрепляют к багрепортам). json_escape: пути с \ и " ломали JSON.
+  # машиночитаемая строка — ТОЛЬКО stdout; в install-native.log токен не пишем
+  # (его прикрепляют к багрепортам). json_escape: пути с \ и " ломали JSON.
   printf 'MAXGRAPH_NEXT_STEPS={"mcp_url":"http://localhost:8787/mcp","token":"%s","dashboard":"http://localhost:8787/app#%s","rules_injected":%s,"project_dir":"%s"}\n' \
     "$(json_escape "$token")" "$(json_escape "$token")" "$([ "$RULES_INJECTED" = 1 ] && printf true || printf false)" \
     "$(json_escape "$PROJECT_DIR")"
@@ -346,152 +236,166 @@ EOF
     "$([ "$RULES_INJECTED" = 1 ] && printf true || printf false)" "$PROJECT_DIR" >> "$LOG"
 }
 
-install_engine_macos() {
-  if command -v brew >/dev/null 2>&1; then
-    log "Installing Docker Desktop via Homebrew…"
-    brew install --cask docker || return 1
+# --- native download ----------------------------------------------------------
+
+_sha256_file() {  # $1 = path → hex
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}';
+  else shasum -a 256 "$1" | awk '{print $1}'; fi
+}
+
+# --- ed25519 verify (M-1, security review 2026-10-18) ------------------------
+# Боевой release-ключ ed25519 (trust anchor). ВШИТ константой — trust anchor
+# НЕЛЬЗЯ качать с того же хоста, что и артефакт. Копия app/release.pub.pem;
+# при ротации ключа обновить И ЗДЕСЬ (и перевыпустить установщик).
+MG_RELEASE_PUB_PEM='-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAxFQmmGesTXd9ynmG4C2dF/aWb8RCm5yD3jgA7AzkIHI=
+-----END PUBLIC KEY-----'
+
+verify_ed25519() {  # $1 = файл, $2 = .sig; fail-closed (fail → exit 1)
+  command -v openssl >/dev/null 2>&1 \
+    || fail "OpenSSL not found - cannot verify the ed25519 signature. Install OpenSSL 3+ (macOS: brew install openssl) and re-run."
+  local over
+  over="$(openssl version 2>/dev/null | awk '{print $2}')"
+  case "$over" in 3.*|[4-9].*) ;; *)
+    fail "OpenSSL >= 3 required for ed25519 verify (found: ${over:-unknown}; macOS ships LibreSSL - use: brew install openssl)." ;;
+  esac
+  local pubf tmpf=""
+  if [ -n "${MG_TEST_PUBKEY_FILE:-}" ]; then
+    pubf="$MG_TEST_PUBKEY_FILE"   # тестовый ключ (НЕ для прода)
   else
-    log "Homebrew not found — downloading the official Docker Desktop dmg from docker.com…"
-    local arch mnt
-    arch="$(uname -m)"; [ "$arch" = "arm64" ] || arch=amd64
-    ( cd "$TD" && curl -fsSLo Docker.dmg "https://desktop.docker.com/mac/main/${arch}/Docker.dmg" ) || return 1
-    mnt="$(hdiutil attach -nobrowse "$TD/Docker.dmg" | tail -1 | awk -F'\t' '{print $NF}')"
-    [ -n "$mnt" ] || return 1
-    # curl sets no quarantine xattr → Gatekeeper stays silent; verify the signature ourselves (fail-closed)
-    if ! codesign --verify --deep --strict "$mnt/Docker.app" || ! spctl -a -t exec -vv "$mnt/Docker.app"; then
-      hdiutil detach -quiet "$mnt"
-      log "Signature/Gatekeeper check failed for Docker.app"
-      return 1
-    fi
-    cp -R "$mnt/Docker.app" /Applications/ 2>/dev/null \
-      || sudo cp -R "$mnt/Docker.app" /Applications/ \
-      || { hdiutil detach -quiet "$mnt"; return 1; }
-    hdiutil detach -quiet "$mnt"
-    chmod -R a+rX "/Applications/Docker.app" 2>/dev/null \
-      || sudo chmod -R a+rX "/Applications/Docker.app" 2>/dev/null || true   # umask 077: не запереть .app от других пользователей Mac
+    tmpf="$(mktemp "${TMPDIR:-/tmp}/mg-pub.XXXXXX.pem")" \
+      || fail "cannot create a temp file for the release pubkey"
+    printf '%s\n' "$MG_RELEASE_PUB_PEM" > "$tmpf" || { rm -f "$tmpf"; fail "cannot write the release pubkey"; }
+    pubf="$tmpf"
   fi
-  log "Starting Docker Desktop (first start asks for the admin password to install its helper)…"
-  open -a Docker
+  if ! openssl pkeyutl -verify -pubin -inkey "$pubf" -rawin -in "$1" -sigfile "$2" >/dev/null 2>&1; then
+    [ -n "$tmpf" ] && rm -f "$tmpf"
+    log "ERROR: ed25519 signature INVALID for $1"
+    return 1   # не fail(): вызывающий чистит .part и падает сам
+  fi
+  [ -n "$tmpf" ] && rm -f "$tmpf"
+  log "ed25519 signature verified (release key)."
 }
 
-install_engine_linux() {
-  command -v sudo >/dev/null 2>&1 || { log "sudo is required but not available"; return 1; }
-  if command -v docker >/dev/null 2>&1; then
-    log "Docker CLI exists but the daemon is down — trying to start it…"
-    sudo systemctl start docker 2>/dev/null || sudo service docker start 2>/dev/null || true
-    DOCKER="sudo docker"   # группа docker могла ещё не примениться — проверяем через sudo
-    wait_engine && return 0
-    DOCKER="docker"
-  fi
-  log "Installing Docker Engine via the official convenience script (get.docker.com)…"
-  curl -fsSL https://get.docker.com -o "$TD/get-docker.sh" || return 1
-  sudo sh "$TD/get-docker.sh" || return 1
-  sudo usermod -aG docker "$USER" 2>/dev/null || true   # takes effect after re-login
-  DOCKER="sudo docker"                                   # this session keeps using sudo
+fetch_manifest() {  # выставляет глобальный MANIFEST (fail внутри command
+  # substitution убил бы только subshell — поэтому без stdout-контракта)
+  local url="$STORE_URL/api/releases/native/manifest"
+  local body code
+  body="$(curl -fsS -w '\n%{http_code}' "$url" 2>/dev/null)" || true
+  code="$(printf '%s' "$body" | tail -1)"
+  body="$(printf '%s' "$body" | sed '$d')"
+  case "$code" in
+    200) MANIFEST="$body" ;;
+    404) fail "Store manifest not found (404): $url" ;;
+    *)   fail "Cannot fetch the store manifest ($url): HTTP $code" ;;
+  esac
 }
 
-# --- engine -----------------------------------------------------------------
+# Манифест машинно-генерируемый и плоский: {"version":"X.Y.Z","artifacts":[
+# {"name":"...","os":"...","arch":"...","bytes":N,"sha256":"..."},...]}.
+# Парсим без jq (его может не быть): схлопываем whitespace и вырезаем объект
+# с нужными os/arch. Если формат магазина усложнится — здесь чинить.
+select_artifact() {  # $1 = manifest → выставляет ART_NAME / ART_SHA / MG_VERSION
+  local norm entry
+  norm="$(printf '%s' "$1" | tr -d ' \t\r\n')"
+  MG_VERSION="$(printf '%s' "$norm" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p' | head -1)"
+  printf '%s' "$MG_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+    || fail "Store manifest has no valid semver 'version' ('$MG_VERSION')"
+  entry="$(printf '%s' "$norm" | grep -oE '\{[^{}]*"os":"'"$MG_OS"'"[^{}]*\}' | grep '"arch":"'"$ARCH"'"' | head -1)"
+  [ -n "$entry" ] || fail "No $MG_OS-$ARCH artifact in the store manifest (version $MG_VERSION)"
+  ART_NAME="$(printf '%s' "$entry" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
+  ART_SHA="$(printf '%s' "$entry" | sed -n 's/.*"sha256":"\([^"]*\)".*/\1/p' | tr 'A-F' 'a-f')"
+  case "$ART_NAME" in *[!A-Za-z0-9._-]*|"") fail "Artifact name is unsafe: '$ART_NAME'" ;; esac   # path-traversal guard
+  printf '%s' "$ART_SHA" | grep -qE '^[0-9a-f]{64}$' || fail "Artifact $ART_NAME: sha256 is missing or malformed"
+}
 
-if [ "$HOSTFP_ONLY" = 1 ]; then
-  # лечение существующей установки без пересборки: досчитать hostfp.json рядом
-  # с compose-файлом; дальше — `docker compose up -d`, чтобы контейнер подхватил
-  write_hostfp_json || exit 1
-  exit 0
+download_verified() {  # выставляет глобальный BIN (log пишет в stdout —
+  # command substitution здесь был бы ловушкой)
+  # Атомарно: .part -> проверка sha256 из манифеста -> rename. Обрыв закачки
+  # оставляет .part, а не «полурабочий» бинарь; rename после верификации.
+  local bin="$INSTALL_DIR/$ART_NAME" part="$INSTALL_DIR/$ART_NAME.part" url="$STORE_URL/api/releases/native/$ART_NAME"
+  mkdir -p "$INSTALL_DIR" || fail "Cannot create $INSTALL_DIR"
+  log "Downloading $ART_NAME (version $MG_VERSION)…"
+  local code
+  code="$(curl -fsS -o "$part" -w '%{http_code}' "$url" 2>/dev/null)" || code="000"
+  case "$code" in
+    200) ;;
+    404) rm -f "$part"; fail "Artifact not found on the store (404): $url" ;;
+    *)   rm -f "$part"; fail "Download failed ($url): HTTP $code" ;;
+  esac
+  local actual
+  actual="$(_sha256_file "$part")"
+  if [ "$actual" != "$ART_SHA" ]; then
+    rm -f "$part"
+    fail "sha256 mismatch for $ART_NAME: expected $ART_SHA, got $actual"
+  fi
+  log "sha256 verified against the store manifest."
+  # ed25519-подпись (.sig) — обязательна (M-1): trust anchor вшит выше.
+  code="$(curl -fsS -o "$part.sig" -w '%{http_code}' "$url.sig" 2>/dev/null)" || code="000"
+  if [ "$code" != "200" ]; then
+    rm -f "$part" "$part.sig"
+    fail "Signature not found on the store (HTTP $code): $url.sig"
+  fi
+  if ! verify_ed25519 "$part" "$part.sig"; then
+    rm -f "$part" "$part.sig"
+    fail "ed25519 signature verification failed for $ART_NAME - refusing to install."
+  fi
+  rm -f "$part.sig"
+  # sidecar .sha256 (формат sha256sum) — для ручных проверок пользователем; best effort
+  curl -fsS -o "$bin.sha256" "$url.sha256" 2>/dev/null || rm -f "$bin.sha256"
+  # Переустановка: гасим старый maxgraph-процесс до замены файла.
+  # MINOR-3: ТОЧНЫЙ матч по argv[0] ("./$ART_NAME" из $INSTALL_DIR или полный
+  # путь) — pgrep -f по подстроке пути убивал чужие процессы с похожей командой.
+  local old_pids
+  old_pids="$(ps -eo pid=,args= 2>/dev/null | awk -v a="./$ART_NAME" -v b="$bin" '$2 == a || $2 == b {print $1}')"
+  if [ -n "$old_pids" ]; then
+    log "Stopping the running MaxGraph for the update…"
+    kill $old_pids 2>/dev/null || true
+    sleep 2
+    kill -9 $old_pids 2>/dev/null || true
+  fi
+  chmod +x "$part"
+  mv -f "$part" "$bin" || { rm -f "$part"; fail "Cannot install to $bin"; }
+  log "Installed to $bin"
+  BIN="$bin"
+}
+
+wait_healthz() {  # до 30 секунд; строгое «ok» — не подстрока (MINOR-5)
+  local i body
+  for i in $(seq 1 15); do
+    body="$(curl -fsS http://localhost:8787/healthz 2>/dev/null | tr -d '[:space:]')"
+    [ "$body" = "ok" ] && return 0
+    sleep 2
+  done
+  return 1
+}
+
+# --- main ---------------------------------------------------------------------
+
+# MG_INSTALL_LIB_ONLY=1 — только функции (тесты source'ят скрипт и дёргают
+# verify_ed25519 с MG_TEST_PUBKEY_FILE; боевой запуск не трогаем).
+if [ "${MG_INSTALL_LIB_ONLY:-0}" = "1" ]; then return 0 2>/dev/null || exit 0; fi
+
+log "Store: $STORE_URL; install dir: $INSTALL_DIR ($MG_OS-$ARCH)"
+MANIFEST=""
+BIN=""
+fetch_manifest
+select_artifact "$MANIFEST"
+download_verified
+bin="$BIN"
+
+if [ "$NO_START" = 1 ]; then
+  log "no-start: skipping the binary launch, healthz wait and token read (test mode)."
+else
+  log "Starting MaxGraph (nohup, detached)…"
+  ( cd "$INSTALL_DIR" && nohup "./$ART_NAME" >/dev/null 2>&1 & )
+  wait_healthz || { log "healthz did not answer within 30s — check the binary output in $INSTALL_DIR"; exit 1; }
+  log "MaxGraph is up (http://localhost:8787)."
 fi
 
 inject_rules || true   # правила не критичны для запуска; предупреждение уже в логе
-
-if docker_ok; then
-  FLAVOR=docker
-  log "Docker is present and running."
-else
-  if [ "$OS" = "Darwin" ] && [ -d /Applications/Docker.app ]; then
-    log "Docker Desktop found but not running — starting it…"
-    open -a Docker
-    if wait_engine; then FLAVOR=docker; fi
-  fi
-  if [ -z "$FLAVOR" ]; then
-    if [ "$OS" = "Darwin" ]; then
-      attempt=1
-      while [ "$attempt" -le 2 ]; do
-        if [ "$attempt" = 1 ]; then
-          consent "Docker not found. Install the official Docker Desktop from docker.com (~600 MB; on first start Docker asks for your admin password to install its helper)?" || { attempt=2; continue; }
-        else
-          consent "Docker Desktop is the recommended engine for MaxGraph (the Python fallback loses auto-updates and autostart). Install Docker Desktop?" || break
-        fi
-        install_engine_macos && { FLAVOR=docker-desktop; break; }
-        log "Docker Desktop did not finish installing"
-        attempt=$((attempt+1))
-      done
-    else
-      consent "Docker not found. Install Docker Engine via the official get.docker.com script (sudo required; adds your user to the docker group — permanent root-equivalent rights)?" \
-        || python_fallback
-      install_engine_linux && FLAVOR=docker
-    fi
-    [ -n "$FLAVOR" ] || python_fallback
-    log "Waiting for the docker engine (first start can take minutes)…"
-    wait_engine || { log "Engine did not come up in 10 minutes"; python_fallback; }
-  fi
-fi
-
-# --- config + app -------------------------------------------------------------
-
-log "Writing .env (HOST_FP, INSTALL_FLAVOR) + hostfp.json…"
-EMPTY_SHA256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-fp="$(compute_host_fp)"
-if [ -n "$fp" ] && [ "$fp" != "$EMPTY_SHA256" ]; then   # sha256 of an empty string is a constant, not an id
-  upsert_env HOST_FP "$fp"
-else
-  log "WARN: no machine-id found — HOST_FP not set"
-fi
-upsert_env INSTALL_FLAVOR "$FLAVOR"
-write_hostfp_json || true   # отпечаток не критичен для запуска: без него установка unanchored
-mgv="$(cat VERSION 2>/dev/null || true)"
-if ! printf '%s' "$mgv" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then   # мусор в VERSION не должен отравить ref образа
-  [ -n "$mgv" ] && log "WARN: VERSION is not semver ('$mgv') — MG_VERSION empty (image: latest)"
-  mgv=""
-fi
-upsert_env MG_VERSION "$mgv"   # pin готового образа GHCR; пусто → latest
-chmod 600 .env 2>/dev/null || true
-
-running="$($DOCKER exec maxgraph cat /app/VERSION 2>/dev/null || true)"
-printf '%s' "$running" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || running=""   # мусор/чужой контейнер → гвард молчит
-lowest="$(printf '%s\n%s\n' "$running" "$mgv" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)"   # BSD/macOS: sort -V нет
-if [ -n "$running" ] && [ -n "$mgv" ] && [ "$running" != "$mgv" ] \
-   && [ "$lowest" = "$mgv" ]; then
-  upsert_env MG_VERSION "$running"   # автообновлённая установка + старый клон: даунгрейдить нельзя
-  log "Running MaxGraph $running is NEWER than this clone ($mgv) — the clone is stale (git pull for a fresh one). Leaving the running server untouched."
-  write_hook_files || true
-  register_hooks || true
-  write_state done "$FLAVOR"
-  print_next_steps
-  exit 0
-fi
-
-log "Starting MaxGraph (pulling the prebuilt image first; local build is the fallback)…"
-if ! $DOCKER compose pull >/dev/null 2>&1; then
-  log "Prebuilt image unavailable — building locally (a few minutes)…"
-fi
-if ! $DOCKER compose up -d; then
-  log "up failed — retrying with a full local build…"
-  if ! $DOCKER compose up -d --build; then
-    log "compose failed — see install.log"
-    write_state error "$FLAVOR"
-    exit 1
-  fi
-fi
-
-ok=0
-for _ in $(seq 1 60); do
-  curl -fsS http://localhost:8787/healthz >/dev/null 2>&1 && { ok=1; break; }
-  sleep 2
-done
-[ "$ok" = 1 ] || { log "healthz did not answer — check: $DOCKER compose logs maxgraph"; write_state error "$FLAVOR"; exit 1; }
-
-write_hook_files || true   # хуки не критичны для запуска; агент зарегистрирует по docs/HOOKS.md
-register_hooks || true     # авто-регистрация в найденных хостах (не роняет установку)
-write_state done "$FLAVOR"
-log "MaxGraph is running (engine: $FLAVOR)."
+write_hook_files || true
+register_hooks || true
+log "MaxGraph native installed (version $MG_VERSION)."
 print_next_steps
-[ "$DOCKER" != "docker" ] && log "Note: re-login for 'docker' without sudo (group membership)."
 exit 0

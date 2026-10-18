@@ -1,92 +1,53 @@
 #Requires -Version 5.1
 <#
-install.ps1 — MaxGraph installer for Windows (macOS/Linux: install.sh).
+install-native.ps1 — MaxGraph NATIVE installer for Windows (no Docker).
+The buyer's path: download the portable exe from the store, verify it, run it.
 Run from the root of the cloned repo:
-  powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 [-Yes] [-ProjectDir <user project root>] [-RulesLang ru|en]
+  powershell -NoProfile -ExecutionPolicy Bypass -File install-native.ps1 [-Yes] [-ProjectDir <user project root>] [-RulesLang ru|en]
 
-Steps: working Docker? (this script never elevates itself) → if missing, with
-the user's consent: download the official Docker Desktop installer from
-docker.com (verified by its Authenticode signature) and run it — Docker's
-installer requests admin rights itself, enables WSL2 and asks for the reboot
-when one is needed; a reboot resumes this installer automatically (HKCU
-RunOnce, only with an unchanged script) → hostfp.json + HOST_FP/INSTALL_FLAVOR
-into .env → pull the prebuilt GHCR image (local build as fallback) → up -d →
-wait for healthz → print the next-steps package (token + MCP config) for the
-installing AI agent.
--ProjectDir: the memory rules block is injected into <dir>\AGENTS.md between
-<!-- maxgraph:start/end --> markers (idempotent).
+Steps: store manifest -> pick windows-amd64 -> download exe + .sha256 sidecar
+into %LOCALAPPDATA%\MaxGraph (atomic: .part -> verify -> rename) -> verify
+sha256 from the manifest (Get-FileHash) -> stop an old maxgraph process on
+reinstall -> start the exe hidden -> wait for http://localhost:8787/healthz
+(up to 30s) -> read the token from data\local_token.txt -> inject the memory
+rules into <ProjectDir>\AGENTS.md (idempotent, <!-- maxgraph:start/end -->) ->
+write/register capture hooks -> print the next-steps package
+(MAXGRAPH_NEXT_STEPS={...}).
 
-Modes: default = full install; -HostfpOnly = only (re)compute hostfp.json next
-to docker-compose.yml (heals an existing install — no rebuild; apply with
-`docker compose up -d`; no rules injection, no package print).
+Trust chain (owner's decision, no code-signing certificates):
+  install time  = HTTPS + sha256 from the store manifest.
+  ed25519 is NOT verified here: Windows PowerShell has no ed25519; the exe
+  verifies the ed25519 signature itself on every auto-update.
+Invoke-WebRequest does NOT set Mark-of-the-Web -> SmartScreen stays silent.
+NEVER add a Zone.Identifier stream (no Set-Content -Stream Zone.Identifier).
 
-Exit codes (read by the installing AI agent, see AGENTS.md):
-  0 — MaxGraph is running in Docker (or hostfp.json written with -HostfpOnly)
-  2 — Docker Desktop needs a reboot or has a dialog waiting: the installer
-      continues automatically at next logon (or re-run install.ps1)
-  3 — engine declined or impossible → Python fallback (AGENTS.md, step 1a)
-  1 — unexpected error (see install.log)
+Extra params: -StoreUrl <url> (default https://rezon-ai.ru; tests point it at
+a mock), -NoStart (everything except launching the exe — for tests),
+-InstallDir <dir> (default %LOCALAPPDATA%\MaxGraph).
+
+Exit codes: 0 — installed and running (or -NoStart completed); 1 — error
+(see install-native.log). Re-run = update to the latest version (idempotent).
 #>
-param([switch]$Yes, [switch]$Resume, [switch]$HostfpOnly, [string]$ProjectDir, [string]$RulesLang)
+param([switch]$Yes, [string]$ProjectDir, [string]$RulesLang,
+      [string]$StoreUrl = 'https://rezon-ai.ru', [switch]$NoStart, [string]$InstallDir)
 
 $ErrorActionPreference = 'Stop'
-$PSNativeCommandUseErrorActionPreference = $false   # pwsh 7.4+: упавшие нативные команды не должны бросать (мы читаем $LASTEXITCODE)
+$PSNativeCommandUseErrorActionPreference = $false   # pwsh 7.4+: упавшие нативные команды не должны бросать
+$ProgressPreference = 'SilentlyContinue'   # иначе PS5.1 рисует прогресс-бар и качает в разы медленнее
 Set-Location $PSScriptRoot
-$StateFile = Join-Path $PSScriptRoot 'install-state.json'
-$script:Flavor = ''
+if ([string]::IsNullOrWhiteSpace($InstallDir)) { $InstallDir = Join-Path $env:LOCALAPPDATA 'MaxGraph' }
+$StoreUrl = $StoreUrl.TrimEnd('/')
+$script:TokenFile = Join-Path $InstallDir 'data\local_token.txt'   # exe кладёт ./data рядом с собой
+$script:RulesInjected = $false
 $script:TranscriptOn = $false
-$RunOnceKey = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'   # per-user: nothing in this script needs admin
-$DockerDesktopExe = "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
 
 function Log([string]$m) { Write-Host "[maxgraph-install] $m" }
-
-function Write-State([string]$status) {
-  $o = [ordered]@{ status = $status; flavor = $script:Flavor;
-                   updated = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
-  if ($status -eq 'reboot-pending') {  # integrity anchor for the RunOnce resume
-    $o['script_sha256'] = (Get-FileHash -Path $PSCommandPath -Algorithm SHA256).Hash
-  }
-  ($o | ConvertTo-Json -Compress) | Set-Content -Path $StateFile -Encoding UTF8
-}
-
 function Stop-Log { if ($script:TranscriptOn) { try { Stop-Transcript | Out-Null } catch {} } }
-
-function Clear-RunOnce { Remove-ItemProperty $RunOnceKey -Name 'MaxGraphInstall' -ErrorAction SilentlyContinue }
-
-function Arm-RunOnce {  # armed BEFORE Docker's installer runs: a reboot at any point must not strand the install
-  Write-State 'reboot-pending'
-  $cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Yes -Resume"
-  Set-ItemProperty $RunOnceKey -Name 'MaxGraphInstall' -Value $cmd
-}
-
-function Python-Fallback {
-  Clear-RunOnce
-  Write-State 'fallback-python'
-  Write-Host ''
-  Write-Host 'Docker engine was NOT installed (declined or failed).'
-  Write-Host 'Falling back to plain Python mode — tell the user explicitly what this loses:'
-  Write-Host '  - no automatic updates (manual only: git pull && pip install -U ...)'
-  Write-Host '  - no autostart - the server must be started again after every reboot'
-  Write-Host '  - the server listens on 0.0.0.0 (reachable from the local network; token required)'
-  Write-Host 'Switch to Docker later: install Docker and re-run this script - .\data is reused.'
-  Write-Host 'Python mode (from the repo root):'
-  Write-Host '  pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"'
-  Write-Host '  $env:MEMORY_DIR="./data"; python app/app.py'
-  Stop-Log
-  exit 3
-}
-
-function Consent([string]$msg) {
-  if ($Yes) { return $true }
-  $a = Read-Host "$msg [y/N]"
-  return ($a -match '^(y|yes|д|да)$')
-}
+function Fail([string]$m) { Log "ERROR: $m"; Stop-Log; exit 1 }
 
 # --- memory rules into the user's project (-ProjectDir) ----------------------
-# Injected BEFORE any engine work: only the repo file is needed, and the block
-# must land on every exit path (including the Python fallback). Idempotent:
-# the <!-- maxgraph:start/end --> markers are replaced in place on re-runs.
-$script:RulesInjected = $false
+# Скопировано из install.ps1 без изменений: маркеры <!-- maxgraph:start/end -->,
+# идемпотентно, кодировка исходного AGENTS.md сохраняется, запись атомарная.
 
 function Get-RulesBlock([string]$lang) {
   $md = Join-Path $PSScriptRoot 'maxgraph-agent.md'
@@ -187,6 +148,8 @@ function Inject-Rules {
   $script:RulesInjected = $true
 }
 
+# --- hooks (как в install.ps1, но токен читается из $InstallDir\data) ---------
+
 function Write-HookFiles {  # ~/.maxgraph: хук + hooks.env; регистрацию в конфигах хостов делает агент по docs/HOOKS.md
   $d = Join-Path $env:USERPROFILE '.maxgraph'
   if ((Test-Path $d) -and ((Get-Item $d -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
@@ -200,8 +163,7 @@ function Write-HookFiles {  # ~/.maxgraph: хук + hooks.env; регистра�
   $envFile = Join-Path $d 'hooks.env'
   if (-not (Test-Path $envFile)) {   # пишем один раз: ручные правки не затираем; без BOM
     $token = ''
-    $tf = Join-Path $PSScriptRoot 'data\local_token.txt'
-    if (Test-Path $tf) { $token = ([System.IO.File]::ReadAllText($tf) -replace '\s','') }   # весь whitespace: внутренний перевод строки инъецирует лишнюю строку в hooks.env
+    if (Test-Path $script:TokenFile) { $token = ([System.IO.File]::ReadAllText($script:TokenFile) -replace '\s','') }   # весь whitespace: внутренний перевод строки инъецирует лишнюю строку в hooks.env
     if ($token) {
       [System.IO.File]::WriteAllText($envFile, "MG_SERVER=http://localhost:8787`nMG_TOKEN=$token`n", (New-Object System.Text.UTF8Encoding($false)))
       try {  # ACL как chmod 600 в sh: только текущий пользователь
@@ -230,8 +192,7 @@ function Register-Hooks {  # авто-регистрация хуков во в�
 
 function Show-NextSteps {  # final package for the installing agent (see AGENTS.md)
   $token = ''
-  $tf = Join-Path $PSScriptRoot 'data\local_token.txt'
-  if (Test-Path $tf) { $token = ([System.IO.File]::ReadAllText($tf)).Trim() }
+  if (Test-Path $script:TokenFile) { $token = ([System.IO.File]::ReadAllText($script:TokenFile)).Trim() }
   if (-not $token) { $token = '<see data\local_token.txt>' }
   $cfg = '"url":"http://localhost:8787/mcp","headers":{"Authorization":"Bearer ' + $token + '"}'
   $rulesText = if ($script:RulesInjected) { "already in the project AGENTS.md ($ProjectDir)" } else { 'NOT injected - paste the block from maxgraph-agent.md between <!-- maxgraph:start --> and <!-- maxgraph:end --> in the project AGENTS.md' }
@@ -251,289 +212,125 @@ function Show-NextSteps {  # final package for the installing agent (see AGENTS.
   Write-Host '======================================================================='
   $ri = $script:RulesInjected
   # машиночитаемая строка — через ConvertTo-Json (пути с \ и " ломали ручную сборку);
-  # вызывать ПОСЛЕ Stop-Log: токен не должен попадать в транскрипт install.log
+  # вызывать ПОСЛЕ Stop-Log: токен не должен попадать в транскрипт install-native.log
   $meta = [ordered]@{ mcp_url = 'http://localhost:8787/mcp'; token = $token; dashboard = "http://localhost:8787/app#$token"; rules_injected = $ri; project_dir = $ProjectDir }
   Write-Host ("MAXGRAPH_NEXT_STEPS=" + ($meta | ConvertTo-Json -Compress))
 }
 
-function Docker-Ok {
-  if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return $false }
-  # PS 5.1: stderr нативной команды при редиректе + EAP=Stop → terminating error
-  # (боевой прогон 2026-10-18); try/catch — логика не меняется, читаем $LASTEXITCODE
-  try { & docker compose version *> $null } catch { return $false }
-  if ($LASTEXITCODE -ne 0) { return $false }
-  try { & docker info *> $null } catch { return $false }
-  return ($LASTEXITCODE -eq 0)
+# --- native download ----------------------------------------------------------
+
+function Get-Manifest {
+  $url = "$StoreUrl/api/releases/native/manifest"
+  try { return Invoke-RestMethod -Uri $url -TimeoutSec 30 }
+  catch {
+    $resp = $_.Exception.Response
+    if ($resp -and [int]$resp.StatusCode -eq 404) { Fail "Store manifest not found (404): $url" }
+    Fail "Cannot fetch the store manifest ($url): $($_.Exception.Message)"
+  }
 }
 
-function Wait-Engine([int]$minutes = 10) {
-  for ($i = 0; $i -lt ($minutes * 12); $i++) {
-    if (Docker-Ok) { return $true }
-    Start-Sleep 5
+function Select-Artifact($manifest, [string]$osName, [string]$archName) {
+  if (-not $manifest.version -or $manifest.version -notmatch '^\d+\.\d+\.\d+$') {
+    Fail "Store manifest has no valid semver 'version' ($(($manifest.version)))"
+  }
+  $arts = @($manifest.artifacts)
+  if ($arts.Count -eq 0) { Fail 'Store manifest has an empty artifacts list' }
+  foreach ($a in $arts) {
+    if ($a.os -eq $osName -and $a.arch -eq $archName) {
+      if ($a.name -notmatch '^[\w.\-]+$') { Fail "Artifact name is unsafe: '$($a.name)'" }   # path-traversal guard
+      if ($a.sha256 -notmatch '^[0-9a-fA-F]{64}$') { Fail "Artifact $($a.name): sha256 is missing or malformed" }
+      return $a
+    }
+  }
+  Fail "No $osName-$archName artifact in the store manifest (version $($manifest.version))"
+}
+
+function Download-Verified($artifact) {
+  # Атомарно: .part -> проверка sha256 из манифеста -> rename. Обрыв закачки
+  # оставляет .part, а не «полурабочий» exe; rename после верификации.
+  $exe = Join-Path $InstallDir $artifact.name
+  $part = "$exe.part"
+  try { New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null } catch { Fail "Cannot create ${InstallDir}: $($_.Exception.Message)" }
+  $url = "$StoreUrl/api/releases/native/$($artifact.name)"
+  Log "Downloading $($artifact.name) (version $($script:ManifestVersion), $($artifact.bytes) bytes)..."
+  try {
+    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $part -TimeoutSec 600
+  } catch {
+    Remove-Item $part -Force -ErrorAction SilentlyContinue
+    $resp = $_.Exception.Response
+    if ($resp -and [int]$resp.StatusCode -eq 404) { Fail "Artifact not found on the store (404): $url" }
+    Fail "Download failed ($url): $($_.Exception.Message)"
+  }
+  # ed25519-подпись (.sig) здесь НЕ проверяем: в Windows PowerShell нет ed25519
+  # (Windows без OpenSSL из коробки — владелец осведомлён, решение security
+  # review 2026-10-18, M-1; sh-установщик ed25519 проверяет — install-native.sh).
+  # Цепочка доверия: HTTPS + sha256 манифеста на установке; ed25519 проверяет
+  # сам exe на каждом автообновлении.
+  $actual = (Get-FileHash -Path $part -Algorithm SHA256).Hash.ToLower()
+  if ($actual -ne $artifact.sha256.ToLower()) {
+    Remove-Item $part -Force -ErrorAction SilentlyContinue
+    Fail "sha256 mismatch for $($artifact.name): expected $($artifact.sha256), got $actual"
+  }
+  Log 'sha256 verified against the store manifest.'
+  # sidecar .sha256 (формат sha256sum) — для ручных проверок пользователем; best effort
+  try { Invoke-WebRequest -UseBasicParsing -Uri "$url.sha256" -OutFile "$exe.sha256" -TimeoutSec 60 } catch {}
+  # Переустановка: старый maxgraph-процесс держит exe открытым — гасим его до rename
+  $old = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })
+  foreach ($p in $old) {
+    Log "Stopping the running MaxGraph (pid $($p.Id)) for the update..."
+    try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { Log "WARN: cannot stop pid $($p.Id): $($_.Exception.Message)" }
+  }
+  if ($old.Count -gt 0) { Start-Sleep -Seconds 2 }
+  try { [System.IO.File]::Copy($part, $exe, $true) } catch { Remove-Item $part -Force -ErrorAction SilentlyContinue; Fail "Cannot install to ${exe}: $($_.Exception.Message)" }
+  Remove-Item $part -Force -ErrorAction SilentlyContinue
+  Log "Installed to $exe"
+  return $exe
+}
+
+function Wait-Healthz([int]$seconds = 30) {
+  for ($i = 0; $i -lt [math]::Ceiling($seconds / 2); $i++) {
+    try {
+      $r = Invoke-WebRequest -UseBasicParsing 'http://localhost:8787/healthz' -TimeoutSec 5
+      # строгое равенство тела «ok», не подстрока/только 200 (MINOR-5)
+      if ($r.StatusCode -eq 200 -and ([string]$r.Content).Trim() -eq 'ok') { return $true }
+    } catch {}
+    Start-Sleep 2
   }
   return $false
 }
 
-function Install-DockerDesktop {
-  $arch = 'amd64'   # PROCESSOR_ARCHITECTURE sees the PROCESS — an x86-emulated PowerShell on an ARM64 box would fetch the wrong installer
-  if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6432 -eq 'ARM64') { $arch = 'arm64' }
-  $url = "https://desktop.docker.com/win/main/$arch/Docker%20Desktop%20Installer.exe"
-  # fresh private dir: no predictable path for a local swap between checks
-  $dir = Join-Path $env:TEMP ("mg-docker-" + [guid]::NewGuid().ToString('N'))
-  New-Item -ItemType Directory -Path $dir -Force | Out-Null
-  $tmp = Join-Path $dir 'DockerDesktopInstaller.exe'
-  try {
-    Log "Downloading the official Docker Desktop installer from docker.com ($arch, ~600 MB)..."
-    try {
-      Invoke-WebRequest -UseBasicParsing $url -OutFile $tmp
-    } catch {
-      Log "Download failed: $($_.Exception.Message)"
-      return $false
-    }
-    $sig = Get-AuthenticodeSignature $tmp
-    $cn = $null
-    if ($sig.SignerCertificate) {
-      $cn = $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
-    }
-    if ($sig.Status -ne 'Valid' -or $cn -notin @('Docker Inc', 'Docker, Inc.')) {
-      Log "Authenticode check failed (status=$($sig.Status), CN=$cn) - aborted"
-      return $false
-    }
-    Arm-RunOnce
-    Log 'Running the official Docker Desktop installer - it requests admin rights itself and enables WSL2. If it offers a reboot, agree: this installer continues automatically after logon.'
-    $p = Start-Process $tmp -Wait -PassThru
-    if ($p.ExitCode -ne 0) {
-      Log "Docker Desktop installer exited with code $($p.ExitCode) - aborted"
-      Clear-RunOnce
-      return $false
-    }
-    return $true
-  } finally {
-    Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
-  }
-}
+# --- main ---------------------------------------------------------------------
 
-function Refresh-DockerPath {  # Docker's installer updates the machine PATH; this session keeps the old one
-  $bin = "$env:ProgramFiles\Docker\Docker\resources\bin"
-  if (Test-Path (Join-Path $bin 'docker.exe')) { $env:PATH = "$bin;$env:PATH" }
-}
-
-function Upsert-Env([string]$key, [string]$val) {
-  $envFile = Join-Path $PSScriptRoot '.env'
-  if (-not (Test-Path $envFile)) { Copy-Item (Join-Path $PSScriptRoot '.env.example') $envFile }
-  $re = "^$([regex]::Escape($key))="
-  $lines = @(Get-Content $envFile)
-  $existing = @($lines | Where-Object { $_ -match $re }) | Select-Object -First 1
-  if ($key -eq 'HOST_FP' -and $existing -match "$re.+") { return }  # never overwrite a non-empty HOST_FP
-  $lines = @($lines | Where-Object { $_ -notmatch $re }) + "$key=$val"
-  # no BOM: docker compose trips on a BOM in .env
-  [System.IO.File]::WriteAllLines($envFile, $lines, (New-Object System.Text.UTF8Encoding($false)))
-}
-
-function Write-HostfpJson {  # композитный отпечаток хоста → hostfp.json рядом с compose
-  # Сырые идентификаторы не покидают машину: в файл идут только sha256-хеши
-  # (salt + нормализованное значение). Алгоритм байт-в-байт тот же, что в
-  # install.sh и app/hostfp.py: нормализация (lowercase/trim/схлопнуть пробелы/
-  # срезать -:_), отброс плейсхолдеров, сортировка строк — ordinal.
-  $Salt = 'maxgraph-hostfp/v1'
-  function _norm([object]$v) {
-    if ($null -eq $v) { return '' }
-    $s = ([string]$v).Trim().ToLower() -replace '\s+', ' '
-    ($s -replace '[-:_]', '').Trim()
-  }
-  function _isPlaceholder([string]$n) {
-    if ($n -eq '') { return $true }
-    if (@('03000200040005000006000700080009','to be filled by o.e.m.','default string',
-          'none','not applicable','n/a','unknown','system serial number','serialnumber',
-          'oem') -contains $n) { return $true }
-    if ($n -match '^[0]+$') { return $true }    # все-нули
-    if ($n -match '^[f]+$') { return $true }    # все-f (незаписанный UUID)
-    if ($n -match '^[0 ]+$') { return $true }   # нули и пробелы
-    return $false
-  }
-  function _sha256([string]$text) {
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try { return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text)))).Replace('-','').ToLower() }
-    finally { $sha.Dispose() }
-  }
-  # user-mode сбор отпечатка хоста, без admin-прав; с машины уходят только хеши
-  $mguid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -ErrorAction SilentlyContinue).MachineGuid
-  $uuid = (Get-CimInstance Win32_ComputerSystemProduct -ErrorAction SilentlyContinue).UUID
-  $board = (Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue).SerialNumber
-  $disk = (Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue |
-           Where-Object { $_.MediaType -match 'Fixed' } | Select-Object -First 1).SerialNumber
-  if (-not $disk) { $disk = (Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue | Select-Object -First 1).SerialNumber }
-  $mac = (Get-NetAdapter -Physical -ErrorAction SilentlyContinue |
-          Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1).MacAddress
-  if (-not $mac) { $mac = (Get-CimInstance Win32_NetworkAdapter -Filter 'PhysicalAdapter=True' -ErrorAction SilentlyContinue |
-                   Where-Object { $_.MACAddress } | Select-Object -First 1).MACAddress }
-  $raw = [ordered]@{ os_install_id = $mguid; smbios_uuid = $uuid; board_serial = $board
-                     disk_serial = $disk; mac = $mac }
-  $comps = [ordered]@{}
-  $lines = [System.Collections.Generic.List[string]]::new()
-  foreach ($tag in $raw.Keys) {
-    $n = _norm $raw[$tag]
-    if (_isPlaceholder $n) { continue }
-    $comps[$tag] = _sha256 "$Salt|$tag=$n"
-    $lines.Add("$tag=$n")
-  }
-  if ($lines.Count -eq 0) { Log 'WARN: no usable hardware ids — hostfp.json not written'; return $false }
-  $arr = $lines.ToArray()
-  [Array]::Sort($arr, [StringComparer]::Ordinal)
-  $hostFp = _sha256 ($Salt + "`n" + ($arr -join "`n"))
-  $path = Join-Path $PSScriptRoot 'hostfp.json'
-  if (Test-Path $path -PathType Container) { Remove-Item $path -Force }  # каталог-заглушка от docker bind-монта
-  $out = [ordered]@{ v = 1; host_fp = $hostFp; components = $comps; os = 'windows'
-                     created = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
-  # no BOM: docker compose и python-читатель трипаются о BOM
-  [System.IO.File]::WriteAllText($path, ($out | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
-  Log 'hostfp.json written (machine fingerprint, hashes only)'
-  return $true
-}
-
-function Finish-Install {  # shared final for both engine paths: .env → compose → healthz
-  Clear-RunOnce
-  Log 'Writing .env (HOST_FP, INSTALL_FLAVOR) + hostfp.json...'
-  $guid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -ErrorAction SilentlyContinue).MachineGuid
-  if ($guid) {
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    $fp = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$guid"))).Replace('-', '').ToLower()
-    Upsert-Env 'HOST_FP' $fp   # the raw MachineGuid never leaves the host - only its sha256
-  } else {
-    Log 'WARN: no MachineGuid - HOST_FP not set'
-  }
-  Upsert-Env 'INSTALL_FLAVOR' $script:Flavor
-  try { Write-HostfpJson | Out-Null } catch { Log "WARN: hostfp.json failed: $($_.Exception.Message)" }  # не критично: без него установка unanchored
-  $mgv = ([string](Get-Content (Join-Path $PSScriptRoot 'VERSION') -ErrorAction SilentlyContinue)).Trim()
-  if ($mgv -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {   # мусор в VERSION не должен отравить ref образа
-    if ($mgv) { Log "WARN: VERSION is not semver ('$mgv') - MG_VERSION empty (image: latest)" }
-    $mgv = ''
-  }
-  Upsert-Env 'MG_VERSION' $mgv   # pin of the GHCR image; empty → latest
-
-  $running = ''
-  try { $running = ([string](& docker exec maxgraph cat /app/VERSION 2>$null)).Trim() } catch { $running = '' }   # PS 5.1: native stderr + EAP=Stop → terminating; нам достаточно пустой строки
-  if ($running -match '^[0-9]+\.[0-9]+\.[0-9]+$' -and $mgv) {
-    try {
-      if ([version]$running -gt [version]$mgv) {   # автообновлённая установка + старый клон: даунгрейдить нельзя
-        Upsert-Env 'MG_VERSION' $running
-        Log "Running MaxGraph $running is NEWER than this clone ($mgv) - the clone is stale (git pull for a fresh one). Leaving the running server untouched."
-        Write-HookFiles
-        Register-Hooks
-        Write-State 'done'; Stop-Log; Show-NextSteps; exit 0
-      }
-    } catch {}
-  }
-
-  Log 'Starting MaxGraph (pulling the prebuilt image first; local build is the fallback)...'
-  try { & docker compose pull *> $null } catch { $global:LASTEXITCODE = 1 }
-  if ($LASTEXITCODE -ne 0) { Log 'Prebuilt image unavailable - building locally (a few minutes)...' }
-  try { & docker compose up -d } catch { $global:LASTEXITCODE = 1 }
-  if ($LASTEXITCODE -ne 0) {
-    Log 'up failed - retrying with a full local build...'
-    try { & docker compose up -d --build } catch { $global:LASTEXITCODE = 1 }
-  }
-  if ($LASTEXITCODE -ne 0) {
-    Log 'compose failed - see install.log'
-    Write-State 'error'; Stop-Log; exit 1
-  }
-  $ok = $false
-  for ($i = 0; $i -lt 60; $i++) {
-    try {
-      if ((Invoke-WebRequest -UseBasicParsing 'http://localhost:8787/healthz' -TimeoutSec 5).StatusCode -eq 200) { $ok = $true; break }
-    } catch {}
-    Start-Sleep 2
-  }
-  if (-not $ok) {
-    Log 'healthz did not answer - check: docker compose logs maxgraph'
-    Write-State 'error'; Stop-Log; exit 1
-  }
-  Write-HookFiles   # хуки не критичны для запуска; агент зарегистрирует по docs/HOOKS.md
-  Register-Hooks    # авто-регистрация в найденных хостах (не роняет установку)
-  Write-State 'done'
-  Log "MaxGraph is running (engine: $script:Flavor)."
-  Stop-Log
-  Show-NextSteps   # после Stop-Log: токен пакета не попадает в install.log
-  exit 0
-}
-
-# --- resume integrity: RunOnce resume only with an unchanged script ---
-if ($Resume) {
-  $st = $null
-  if (Test-Path $StateFile) { try { $st = Get-Content $StateFile -Raw | ConvertFrom-Json } catch {} }
-  $cur = (Get-FileHash -Path $PSCommandPath -Algorithm SHA256).Hash
-  if (-not $st -or $st.status -ne 'reboot-pending' -or $st.script_sha256 -ne $cur) {
-    Log 'Resume refused: the installer changed since the reboot (or no pending state).'
-    Log 'Re-run install.ps1 manually to continue with fresh consent.'
-    Clear-RunOnce
-    exit 1
-  }
-}
-
-Start-Transcript -Path (Join-Path $PSScriptRoot 'install.log') -Append | Out-Null
+Start-Transcript -Path (Join-Path $PSScriptRoot 'install-native.log') -Append | Out-Null
 $script:TranscriptOn = $true
 
-if ($HostfpOnly) {
-  # лечение существующей установки без пересборки: досчитать hostfp.json рядом
-  # с compose-файлом; дальше — `docker compose up -d`, чтобы контейнер подхватил
-  $okHfp = $false
-  try { $okHfp = Write-HostfpJson } catch { Log "ERROR: $($_.Exception.Message)" }
-  Stop-Log
-  if ($okHfp) { exit 0 } else { exit 1 }
-}
-
-try { Inject-Rules } catch { Log "WARN: rules injection failed: $($_.Exception.Message)" }
-
 try {
-  if (Docker-Ok) {
-    $script:Flavor = 'docker'
-    if ($Resume) { $script:Flavor = 'docker-desktop' }   # resume of the install we armed
-    Finish-Install
+  Log "Store: $StoreUrl; install dir: $InstallDir"
+  $manifest = Get-Manifest
+  $script:ManifestVersion = $manifest.version
+  $artifact = Select-Artifact $manifest 'windows' 'amd64'
+  $exe = Download-Verified $artifact
+
+  if ($NoStart) {
+    Log 'NoStart: skipping exe launch, healthz wait and token read (test mode).'
+  } else {
+    Log 'Starting MaxGraph (hidden window)...'
+    Start-Process -FilePath $exe -WorkingDirectory $InstallDir -WindowStyle Hidden
+    if (-not (Wait-Healthz 30)) {
+      Log 'healthz did not answer within 30s - check the exe output in the install dir.'
+      Stop-Log
+      exit 1
+    }
+    Log 'MaxGraph is up (http://localhost:8787).'
   }
 
-  if (Test-Path $DockerDesktopExe) {
-    Log 'Docker Desktop found but not running - starting it...'
-    Refresh-DockerPath
-    Start-Process $DockerDesktopExe   # as the user, no admin needed
-    if (Wait-Engine 10) {
-      $script:Flavor = 'docker'
-      if ($Resume) { $script:Flavor = 'docker-desktop' }   # resume of the reboot we armed
-      Finish-Install
-    }
-    Log 'Docker Desktop is installed but its engine is not up. Finish its first-run dialog (a sign-in offer can be skipped), then re-run install.ps1.'
-    Clear-RunOnce
-    Write-State 'error'; Stop-Log; exit 1
-  }
-
-  if ([Environment]::OSVersion.Version.Build -lt 19044) {
-    Log 'NOTE: Docker Desktop requires Windows 10 21H2+ or Windows 11. Will try; on failure we fall back to Python mode.'
-  }
-
-  for ($attempt = 1; $attempt -le 2; $attempt++) {
-    if ($attempt -eq 1) {
-      $q = 'Docker not found. Download and run the official Docker Desktop installer from docker.com (~600 MB; Docker''s installer requests admin rights itself; one reboot may be needed - this installer continues automatically afterwards)?'
-    } else {
-      $q = 'Docker Desktop is the recommended engine for MaxGraph (the Python fallback loses auto-updates and autostart). Install the official Docker Desktop from docker.com?'
-    }
-    if (-not (Consent $q)) { continue }
-    if (-not (Install-DockerDesktop)) { continue }
-    Refresh-DockerPath
-    if (Test-Path $DockerDesktopExe) {
-      Log 'Starting Docker Desktop (first start can take minutes)...'
-      Start-Process $DockerDesktopExe
-    }
-    if (Wait-Engine 10) { $script:Flavor = 'docker-desktop'; Finish-Install }
-    # Engine not up: Docker's installer asked for a reboot (RunOnce is armed)
-    # or its first-run dialog is still waiting on the user.
-    Log 'If Docker Desktop asked for a reboot - reboot now: this installer continues automatically after logon. Otherwise finish the Docker Desktop dialog, then re-run install.ps1.'
-    Stop-Log
-    exit 2
-  }
-  Python-Fallback
-} catch {
-  Log "ERROR: $($_.Exception.Message)"
-  Clear-RunOnce
-  Write-State 'fallback-python'
+  try { Inject-Rules } catch { Log "WARN: rules injection failed: $($_.Exception.Message)" }
+  Write-HookFiles   # хуки не критичны для запуска; агент зарегистрирует по docs/HOOKS.md
+  Register-Hooks    # авто-регистрация в найденных хостах (не роняет установку)
+  Log "MaxGraph native installed (version $script:ManifestVersion)."
   Stop-Log
-  exit 3
+  Show-NextSteps   # после Stop-Log: токен пакета не попадает в install-native.log
+  exit 0
+} catch {
+  Fail $_.Exception.Message
 }

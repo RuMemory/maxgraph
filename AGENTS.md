@@ -13,30 +13,17 @@ git clone https://github.com/RuMemory/maxgraph.git && cd maxgraph
 - macOS / Linux: `bash install.sh --yes --project-dir "<cwd>"`
 - Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes -ProjectDir "<cwd>"`
 
-Установщик сам: проверит Docker (нет — с согласия пользователя поставит официальный движок с docker.com), вычислит отпечаток хоста (с машины уходят только хеши), поднимет сервер, вставит правила в проект и в конце напечатает **пакет следующих шагов**: токен, готовый MCP-конфиг и машиночитаемую строку `MAXGRAPH_NEXT_STEPS={...}`.
+Установщик сам: скачает программу MaxGraph с официального магазина (целостность проверяется по контрольной сумме), поставит её в пользовательскую папку — права администратора не нужны — и запустит. Дальше программа работает сама: иконка в трее у часов (меню «Открыть дашборд / Перезапуск / Выход»), автозапуск вместе с системой, автообновления. Docker не нужен и не предлагается. Перезагрузок нет. В конце установщик напечатает **пакет следующих шагов**: токен, готовый MCP-конфиг и машиночитаемую строку `MAXGRAPH_NEXT_STEPS={...}`.
 
-**Docker не найден → сначала спроси пользователя** (на его языке): «Docker на машине не найден. Установщик скачает официальный установщик Docker с docker.com (~600 МБ; права администратора запросит сам установщик Docker; на Windows возможна одна перезагрузка — после входа установка продолжится автоматически). Ставим?» Согласие → та же команда. Отказ → спроси ещё раз: Docker — рекомендуемый путь; Python никогда не предлагай как равноправный и не помечай «рекомендуемым». Повторный отказ → шаг 1a.
+macOS / Linux: для проверки скачанного файла нужен openssl версии 3 или новее. Если его нет или он старый — установщик скажет об этом и попросит поставить (на macOS: `brew install openssl`); после установки просто перезапусти ту же команду.
 
-Рассказывай пользователю прогресс по ходу: первая установка движка может занять до часа на медленном интернете — молчаливый час выглядит как зависание.
+Рассказывай пользователю прогресс по ходу: первое скачивание может занять пару минут на медленном интернете — молчание выглядит как зависание.
 
-Коды выхода: `0` — сервер запущен → шаг 2. `2` — Docker Desktop ждёт перезагрузку Windows или свой диалог: после входа установка продолжится автоматически (предупреди об этом); если нет — пользователь завершает диалоги Docker Desktop и повторно запускает install.ps1. `3` — Python-фолбэк → шаг 1a. `1` — ошибка → читай `install.log`.
-
-### 1a. Python-фолбэк (только когда Docker отклонён или невозможен; нужен Python 3.12+)
-
-```bash
-pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"   # mcp<2 обязательно: в 2.x FastMCP переименован
-```
-
-Запуск из корня клона и обязательно с `MEMORY_DIR=./data` (иначе данные уйдут в `/data` и не подхватятся при переходе на Docker):
-
-- Windows: `$env:MEMORY_DIR="./data"; python app/app.py`
-- macOS/Linux: `MEMORY_DIR=./data python app/app.py`
-
-Честно скажи пользователю, что теряется без Docker: автообновления, автозапуск после перезагрузки, изоляция сети (сервер слушает 0.0.0.0 — виден в локальной сети, доступ по токену). Переход на Docker позже: поставить Docker и перезапустить установщик — `./data` подхватится. Правила в проект уже вставлены установщиком; токен — `data/local_token.txt` после первого запуска → шаг 2.
+Коды выхода: `0` — программа установлена и запущена → шаг 2. `1` — ошибка → читай `install.log`, исправь причину и повтори ту же команду.
 
 ## 2. Подключи MCP к хосту пользователя
 
-Эндпоинт `http://localhost:8787/mcp`, заголовок `Authorization: Bearer <токен>` (токен — в пакете установщика / строке `MAXGRAPH_NEXT_STEPS` / файле `data/local_token.txt`).
+Эндпоинт `http://localhost:8787/mcp`, заголовок `Authorization: Bearer <токен>` (токен — в пакете установщика / строке `MAXGRAPH_NEXT_STEPS`).
 
 - DeepSeek Harness (DSH): установщик уже вписал MCP-ряд и хуки в `~/.dsh/profiles/*/cordis.patch.yml` (и чинит битые ряды при повторном запуске) — ничего не копируй руками. Проверка: инструменты `mcp__maxgraph__*` появляются после полного рестарта DSH.
 - Claude Code: `claude plugin marketplace add RuMemory/maxgraph && claude plugin install maxgraph@maxgraph`
@@ -65,10 +52,10 @@ pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"   # mcp<2 обя�
 
 ## Удаление (по просьбе пользователя)
 
-1. В папке установки: `bash uninstall.sh` / `powershell -File uninstall.ps1` — снимает контейнеры/образы и служебные остатки; данные памяти (`./data`) по умолчанию СОХРАНЯЮТСЯ, полное стирание — только после явного «да» пользователя или с `--wipe-data`.
+1. В папке установки: `bash uninstall.sh` / `powershell -File uninstall.ps1` — снимает программу и служебные остатки; данные памяти по умолчанию СОХРАНЯЮТСЯ, полное стирание — только после явного «да» пользователя или с `--wipe-data`.
 2. Удали запись `maxgraph` из MCP-конфигов клиентов и регистрации захват-хуков (команда с `maxgraph_hook.py`) из конфига своего хоста — что именно удалять: `docs/HOOKS.md`, раздел «Удаление».
 3. Удали блок между `<!-- maxgraph:start -->` и `<!-- maxgraph:end -->` из `AGENTS.md` проекта.
-4. Если данные сохранялись — перенеси `./data` из папки установки ДО её удаления; папку удаляй после подтверждения пользователя.
+4. Если данные сохранялись — перенеси данные памяти из папки установки ДО её удаления; папку удаляй после подтверждения пользователя.
 
 ---
 
@@ -87,30 +74,17 @@ Run the installer from the clone root. `--project-dir` is the root of the USER's
 - macOS / Linux: `bash install.sh --yes --project-dir "<cwd>"`
 - Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes -ProjectDir "<cwd>"`
 
-The installer itself: checks Docker (if missing — installs the official engine from docker.com, with the user's consent via you), computes the host fingerprint (hashes only leave the machine), starts the server, injects the rules into the project, and prints a **next-steps package**: token, ready MCP config, and a machine-readable line `MAXGRAPH_NEXT_STEPS={...}`.
+The installer itself: downloads the MaxGraph program from the official store (integrity is verified by checksum), installs it into the user's folder — no admin rights needed — and launches it. From there the program runs itself: a tray icon near the clock (menu "Open dashboard / Restart / Quit"), autostart with the system, automatic updates. Docker is NOT needed and is never offered. No reboots. At the end the installer prints a **next-steps package**: token, ready MCP config, and a machine-readable line `MAXGRAPH_NEXT_STEPS={...}`.
 
-**Docker missing → ask the user FIRST** (in their language): "Docker not found. The installer will download the official Docker installer from docker.com (~600 MB; Docker's installer requests admin rights itself; on Windows one reboot may be required — the installation continues automatically afterwards). Proceed?" Consent → same command. Refusal → ask once more: Docker is the recommended path; NEVER offer Python as an equal or recommended option. Second refusal → step 1a.
+macOS / Linux: verifying the downloaded file requires openssl version 3 or newer. If it is missing or too old, the installer will say so and ask to install it (on macOS: `brew install openssl`); after that simply re-run the same command.
 
-Narrate progress to the user: the first engine install can take up to an hour on slow internet — a silent hour looks like a hang.
+Narrate progress to the user: the first download can take a couple of minutes on slow internet — silence looks like a hang.
 
-Exit codes: `0` — server is running → step 2. `2` — Docker Desktop awaits a Windows reboot or its own dialog: the installer resumes automatically at logon (warn the user); otherwise the user finishes the Docker Desktop dialogs and re-runs install.ps1. `3` — Python fallback → step 1a. `1` — error → read `install.log`.
-
-### 1a. Python fallback (only when Docker is declined or impossible; Python 3.12+ required)
-
-```bash
-pip install "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7"   # mcp<2 is mandatory: FastMCP was renamed in 2.x
-```
-
-Run from the clone root, always with `MEMORY_DIR=./data` (otherwise data lands in `/data` and won't carry over to a later Docker switch):
-
-- Windows: `$env:MEMORY_DIR="./data"; python app/app.py`
-- macOS/Linux: `MEMORY_DIR=./data python app/app.py`
-
-Tell the user honestly what is lost without Docker: auto-updates, autostart after reboot, network isolation (the server listens on 0.0.0.0 — visible in the LAN, token required). Later: install Docker and re-run the installer — `./data` is picked up. The rules are already injected by the installer; the token is `data/local_token.txt` after the first launch → step 2.
+Exit codes: `0` — the program is installed and running → step 2. `1` — error → read `install.log`, fix the cause and re-run the same command.
 
 ## 2. Connect MCP to the user's host
 
-Endpoint `http://localhost:8787/mcp`, header `Authorization: Bearer <token>` (token — in the installer package / the `MAXGRAPH_NEXT_STEPS` line / `data/local_token.txt`).
+Endpoint `http://localhost:8787/mcp`, header `Authorization: Bearer <token>` (token — in the installer package / the `MAXGRAPH_NEXT_STEPS` line).
 
 - DeepSeek Harness (DSH): the installer already wrote the MCP row and hooks into `~/.dsh/profiles/*/cordis.patch.yml` (and repairs broken rows on re-run) — do not hand-copy anything. Check: `mcp__maxgraph__*` tools appear after a full DSH restart.
 - Claude Code: `claude plugin marketplace add RuMemory/maxgraph && claude plugin install maxgraph@maxgraph`
@@ -139,10 +113,10 @@ Dashboard with the live graph: the link from the installer package (already carr
 
 ## Uninstall (on the user's request)
 
-1. In the install folder: `bash uninstall.sh` / `powershell -File uninstall.ps1` — removes containers/images and service leftovers; memory data (`./data`) is KEPT by default, full wipe only after the user's explicit "yes" or with `--wipe-data`.
+1. In the install folder: `bash uninstall.sh` / `powershell -File uninstall.ps1` — removes the program and service leftovers; memory data is KEPT by default, full wipe only after the user's explicit "yes" or with `--wipe-data`.
 2. Remove the `maxgraph` entry from the clients' MCP configs and the capture-hook registrations (the `maxgraph_hook.py` command) from your host's config — what to remove: `docs/HOOKS.md`, "Removal".
 3. Remove the block between `<!-- maxgraph:start -->` and `<!-- maxgraph:end -->` from the project's `AGENTS.md`.
-4. If data was kept — move `./data` out of the install folder BEFORE deleting it; delete the folder after the user's confirmation.
+4. If data was kept — move the memory data out of the install folder BEFORE deleting it; delete the folder after the user's confirmation.
 
 ---
 
