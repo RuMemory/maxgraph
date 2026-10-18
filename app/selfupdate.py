@@ -421,6 +421,16 @@ def _healthz(port: int, timeout: float = 2.0) -> bool:
         return False
 
 
+def _start_detached(exe: Path):
+    """Запуск exe ВНЕ дерева процессов helper'а. Windows: os.startfile (ShellExecute) —
+    дети DETACHED-спавна умирали вместе с завершающимся helper'ом (2026-10-18:
+    подмена проходила, новый exe не переживал выход helper'а). Unix: как раньше."""
+    if sys.platform == "win32":
+        os.startfile(str(exe))  # noqa: S606 — путь наш, подпись проверена выше
+        return None
+    return _spawn_detached([str(exe)])
+
+
 def _retry_fileop(fn, attempts: int = 30, delay: float = 1.0):
     """Файловая операция с ретраями на OSError: на Windows ОС/антивирус держит
     свежий exe несколько секунд после смерти процесса (PermissionError 13 на
@@ -558,7 +568,7 @@ def apply_update_main(argv) -> int:
     if not _reverify_downloaded(new_path, Path(sha_arg), Path(sig_arg)):
         log.error("selfupdate: helper: sha256/подпись %s не сошлись — отказ, ничего не трогаем",
                   new_path)
-        _spawn_detached([str(exe)])  # родитель уже мёртв — поднимаем целый exe обратно
+        _start_detached(exe)  # родитель уже мёртв — поднимаем целый exe обратно
         return 2
     try:
         # rename бегущего exe на Windows разрешён, но ОС/антивирус может
@@ -574,7 +584,7 @@ def apply_update_main(argv) -> int:
             log.error("selfupdate: ОТКАТ подмены не удался: %r "
                       "(восстанови %s → %s вручную)", e2, prev, exe)
         if exe.exists():
-            _spawn_detached([str(exe)])  # родитель мёртв — поднимаем что есть
+            _start_detached(exe)  # родитель мёртв — поднимаем что есть
         return 1
     for p in (sha_arg, sig_arg):       # sidecar'ы отработали — чистим
         try:
@@ -583,11 +593,11 @@ def apply_update_main(argv) -> int:
             pass
 
     _wait_port_free(port)  # сокет умершего родителя может ещё держать порт
-    proc = _spawn_detached([str(exe)])
+    proc = _start_detached(exe)
     deadline = time.monotonic() + 30
     ok = False
     while time.monotonic() < deadline:
-        if proc.poll() is not None:
+        if proc is not None and proc.poll() is not None:
             break  # новый exe упал сразу
         if _healthz(port):
             ok = True
@@ -606,7 +616,7 @@ def apply_update_main(argv) -> int:
         _retry_fileop(lambda: exe.unlink(missing_ok=True))
         _retry_fileop(lambda: os.replace(prev, exe))
         _wait_port_free(port)
-        _spawn_detached([str(exe)])
+        _start_detached(exe)
         log.info("selfupdate: откат выполнен")
     except OSError as e:
         log.error("selfupdate: ОТКАТ НЕ УДАЛСЯ после ретраев: %r "
