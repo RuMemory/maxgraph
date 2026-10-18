@@ -3420,6 +3420,26 @@ async def api_ingest(request: Request):
                         "observations": [f"завершена, {n} событий"],
                     }], project=slug, source="hook")
                     changed = changed or ch
+                # v0.50.1 (страховка протокола): SessionEnd пришёл, а session_close
+                # за день не было (нет тега session-close) → одна строка-маркер в
+                # карточку сессии дня: «без итогов». Механика без LLM; дедуп —
+                # подстрока маркера (повторный SessionEnd не плодит строки). Если
+                # агент закроет позже — маркер остаётся как факт «сначала не
+                # закрыл» (тег session-close его не стирает).
+                sent = ents.get(name)
+                if (sent is not None
+                        and sent.get("entityType") == "session"  # F2: не чужая сущность с тем же именем
+                        and _SESSION_CLOSE_TAG not in (sent.get("tags") or [])):
+                    marker = "завершена без итогов агента (автозапись страховки)"
+                    # F1: дедуп по startswith, не по подстроке — пользовательский
+                    # текст с такой подстрокой внутри не подавит/не подделает маркер
+                    if not any(str(o).startswith(marker) for o in sent.get("observations", [])):
+                        sent.setdefault("observations", []).append(
+                            f"{marker}, {now_iso()[:10]}")
+                        changed = True
+                        _event("session_unclosed_marker",  # F3: маркер виден в аудите
+                               detail=f"SessionEnd без session_close: {name}",
+                               project=slug, source="hook")
                 # В2.1 (work_state): SessionEnd data.open_tasks → task-сущности
                 # (status open). Уже ОТКРЫТАЯ задача проекта с тем же title (без
                 # регистра) не дублируется — open_tasks присылают на каждом конце
