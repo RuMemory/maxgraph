@@ -13,8 +13,12 @@
      ПЕРЕПРОВЕРЯЕТ sha256+ed25519 тех байтов, которые ставит (B-1: локальный
      вызов helper'а с неподписанным файлом → отказ; закрывает и TOCTOU
      «verify в update_loop, move до 120с спустя»), затем атомарно:
-     текущий → maxgraph.prev.ext, new → текущий, запуск, healthcheck 30с
-     (GET http://localhost:{PORT}/healthz), провал → откат prev → текущий.
+     текущий → maxgraph.prev.ext, new → текущий (все rename/move — с ретраями
+     _retry_fileop: на Windows ОС/антивирус держит свежий exe секунды после
+     смерти процесса, PermissionError 13), перед запуском ждём освобождения
+     порта (_wait_port_free), запуск, healthcheck 30с
+     (GET http://localhost:{PORT}/healthz), провал → откат prev → текущий
+     (тоже с ретраями — машина не должна остаться без exe).
      prev.exe НЕ удаляется — это и есть механизм отката; живёт до следующего
      успешного обновления (MINOR-6, решение: не чинить).
 
@@ -33,6 +37,7 @@ import logging
 import os
 import platform as _platform
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -404,6 +409,52 @@ def _healthz(port: int, timeout: float = 2.0) -> bool:
         return False
 
 
+def _retry_fileop(fn, attempts: int = 30, delay: float = 1.0):
+    """Файловая операция с ретраями на OSError: на Windows ОС/антивирус держит
+    свежий exe несколько секунд после смерти процесса (PermissionError 13 на
+    rename/move). Промежуточные фейлы — log.warning; исчерпание attempts —
+    последнее исключение наружу (откат обязан знать о неудаче)."""
+    for i in range(attempts):
+        try:
+            return fn()
+        except OSError as e:
+            if i >= attempts - 1:
+                raise
+            log.warning("selfupdate: файловая операция не удалась (%r), "
+                        "попытка %s/%s — повтор через %ss", e, i + 1, attempts, delay)
+            time.sleep(delay)
+
+
+def _wait_port_free(port: int, timeout: float = 30.0) -> bool:
+    """Ждать освобождения localhost:port до timeout секунд: старый процесс
+    мёртв, но ОС может ещё держать его сокет — новый exe иначе не сбиндится.
+    Свободен = connect отказан И bind удаётся. False по таймауту (запускаем
+    всё равно — дальше решит healthcheck)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        busy = False
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                busy = True  # кто-то ещё слушает порт
+        except OSError:
+            pass
+        if not busy:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                busy = True
+            finally:
+                s.close()
+        if not busy:
+            return True
+        if time.monotonic() >= deadline:
+            log.warning("selfupdate: порт %s занят более %ss — запускаю всё равно",
+                        port, timeout)
+            return False
+        time.sleep(0.5)
+
+
 def _helper_data_dir() -> Path:
     """DATA_DIR как в app.py (_default_data_dir): MEMORY_DIR, иначе ./data
     рядом с exe. Helper наследует env и cwd родителя → относительный
@@ -412,6 +463,19 @@ def _helper_data_dir() -> Path:
     if env_dir:
         return Path(env_dir).resolve()
     return Path(sys.executable).resolve().parent / "data"
+
+
+def _setup_helper_log() -> None:
+    """Лог helper'а в DATA_DIR/update.log: stdout detached-процесса нечитаем —
+    инцидент 2026-10-18 диагностировался вслепую. Только в frozen exe."""
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        fh = logging.FileHandler(_helper_data_dir() / "update.log", encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.getLogger().addHandler(fh)
+    except OSError:
+        pass
 
 
 def _reverify_downloaded(new_path: Path, sha_file: Path, sig_file: Path) -> bool:
@@ -436,6 +500,7 @@ def apply_update_main(argv) -> int:
     argv = [<new_exe>, <parent_pid>, <sha256_file>, <sig_file>].
     B-1: fail-closed — мусорный pid, путь вне DATA_DIR/updates, отсутствующие
     sidecar'ы или битая sha256/подпись → отказ (2), ничего не трогаем."""
+    _setup_helper_log()
     if len(argv) < 4:
         log.error("selfupdate: helper: нужны <new_exe> <parent_pid> <sha256_file> <sig_file>")
         return 2
@@ -475,15 +540,18 @@ def apply_update_main(argv) -> int:
                   new_path)
         return 2
     try:
-        os.replace(exe, prev)          # rename бегущего exe на Windows разрешён
-        shutil.move(str(new_path), exe)
+        # rename бегущего exe на Windows разрешён, но ОС/антивирус может
+        # держать файлы секунды после смерти родителя → ретраи
+        _retry_fileop(lambda: os.replace(exe, prev))
+        _retry_fileop(lambda: shutil.move(str(new_path), exe))
     except OSError as e:
-        log.error("selfupdate: подмена не удалась: %r", e)
+        log.error("selfupdate: подмена не удалась после ретраев: %r", e)
         try:
             if not exe.exists() and prev.exists():
-                os.replace(prev, exe)  # не оставляем машину без exe
-        except OSError:
-            pass
+                _retry_fileop(lambda: os.replace(prev, exe))  # не оставляем машину без exe
+        except OSError as e2:
+            log.error("selfupdate: ОТКАТ подмены не удался: %r "
+                      "(восстанови %s → %s вручную)", e2, prev, exe)
         return 1
     for p in (sha_arg, sig_arg):       # sidecar'ы отработали — чистим
         try:
@@ -491,6 +559,7 @@ def apply_update_main(argv) -> int:
         except OSError:
             pass
 
+    _wait_port_free(port)  # сокет умершего родителя может ещё держать порт
     proc = _spawn_detached([str(exe)])
     deadline = time.monotonic() + 30
     ok = False
@@ -511,12 +580,14 @@ def apply_update_main(argv) -> int:
     except Exception:
         pass
     try:
-        exe.unlink(missing_ok=True)
-        os.replace(prev, exe)
+        _retry_fileop(lambda: exe.unlink(missing_ok=True))
+        _retry_fileop(lambda: os.replace(prev, exe))
+        _wait_port_free(port)
         _spawn_detached([str(exe)])
         log.info("selfupdate: откат выполнен")
     except OSError as e:
-        log.error("selfupdate: ОТКАТ НЕ УДАЛСЯ: %r (восстанови %s → %s вручную)", e, prev, exe)
+        log.error("selfupdate: ОТКАТ НЕ УДАЛСЯ после ретраев: %r "
+                  "(восстанови %s → %s вручную)", e, prev, exe)
     return 1
 
 

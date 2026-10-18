@@ -358,10 +358,20 @@ def _dashboard_url(port: int, token: str = "") -> str:
     return f"http://localhost:{port}/app" + (f"#{token}" if token else "")
 
 
+def _wait_forever(event_factory=threading.Event) -> None:
+    """Держать main-поток живым навсегда (daemon-поток сервера умрёт вместе
+    с процессом — поэтому при падении иконки main-поток НЕ должен выйти).
+    event_factory — точка подмены для тестов."""
+    event_factory().wait()
+
+
 def run_tray(main_callable, port: int | None = None) -> None:
     """Иконка в трее + сервер в daemon-потоке.
 
     Блокирует main thread: pystray требует главный поток под иконку (особенно macOS).
+    Падение pystray НЕ роняет сервер: main-поток уходит в headless-ожидание
+    (_wait_forever) — сервер важнее иконки (helper обновления стартует exe
+    detached, иконка в такой сессии может быть недоступна).
     """
     import pystray
     from PIL import Image, ImageDraw
@@ -398,4 +408,9 @@ def run_tray(main_callable, port: int | None = None) -> None:
         pystray.MenuItem("Перезапуск", _restart),
         pystray.MenuItem("Выход", _quit),
     )
-    pystray.Icon(APP_NAME, _icon_image(), APP_NAME, menu).run()
+    try:
+        pystray.Icon(APP_NAME, _icon_image(), APP_NAME, menu).run()
+    except Exception as exc:
+        # сервер важнее иконки: main-поток НЕ выходит (daemon-сервер живёт)
+        log.error("трей недоступен — сервер работает headless: %r", exc, exc_info=True)
+        _wait_forever()

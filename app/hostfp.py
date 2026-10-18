@@ -33,6 +33,7 @@ import hmac
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 SALT = "maxgraph-hostfp/v1"
@@ -219,7 +220,7 @@ def read_hostfp_file(path) -> dict | None:
 
 def candidate_paths(env=None) -> list:
     """Где искать hostfp.json: $HOSTFP_PATH → монтирование compose → cwd (python-
-    режим из корня репо) → $MEMORY_DIR. Первый валидный побеждает."""
+    режим из корня репо) → $MEMORY_DIR → data рядом с exe (native). Первый валидный побеждает."""
     env = os.environ if env is None else env
     out = []
     p = (env.get("HOSTFP_PATH") or "").strip()
@@ -230,6 +231,8 @@ def candidate_paths(env=None) -> list:
     md = (env.get("MEMORY_DIR") or "").strip()
     if md:
         out.append(str(Path(md) / "hostfp.json"))
+    if getattr(sys, "frozen", False):  # native exe: данные рядом с бинарником (как app._default_data_dir)
+        out.append(str(Path(sys.executable).resolve().parent / "data" / "hostfp.json"))
     seen, uniq = set(), []
     for p in out:
         if p not in seen:
