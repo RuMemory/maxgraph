@@ -325,6 +325,7 @@ print_next_steps() {  # финальный пакет для агента-уст
 
 ================ MAXGRAPH — NEXT STEPS (for the agent) ================
 1. Connect MCP to the user's host:
+   DSH: already done — row mcp-maxgraph in ~/.dsh/profiles/*/cordis.patch.yml (see "hooks:" log lines)
    url: http://localhost:8787/mcp
    header: Authorization: Bearer $token
    JSON config (any host): {"mcpServers":{"maxgraph":{"type":"http",$cfg}}}

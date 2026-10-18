@@ -27,6 +27,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -60,8 +61,15 @@ def _toml_str(s: str) -> str:
 
 
 def _yaml_str(s: str) -> str:
-    """YAML double-quoted скаляр; пути уже с forward slashes."""
-    return '"' + s.replace('"', '\\"') + '"'
+    """YAML double-quoted скаляр; пути уже с forward slashes. Бэкслеш
+    экранируется ПЕРВЫМ (security-ревизия F1: иначе бэкслеш перед закрывающей
+    кавычкой экранирует её саму и ломает весь файл)."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+# Допустимый алфавит токена для YAML-ряда (F1): наш mg_local_<hex> и типовые
+# bearer-строки; всё прочее — не пишем в чужой конфиг, сообщаем skip.
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9._~+/=-]+$")
 
 
 # --- формы записей per host ---------------------------------------------------
@@ -164,18 +172,23 @@ def _backup_once(path: Path) -> None:
     if path.exists() and not bak.exists():
         try:
             bak.write_bytes(path.read_bytes())
+            shutil.copymode(path, bak)   # F3: бэкап с секретами — не шире прав оригинала
         except OSError:
             pass
 
 
 def _atomic_write(path: Path, text: str) -> None:
     """tmp + os.replace в цель симлинка; права исходного сохраняем (в конфигах
-    бывают API-ключи с 0600 — не размягчаем до umask)."""
+    бывают API-ключи с 0600 — не размягчаем до umask). Имя tmp уникально по pid
+    (F4: два конкурентных прогона не пишут в один файл), fsync до replace."""
     path = _real(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     _backup_once(path)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
     try:
         if path.exists():
             shutil.copymode(path, tmp)
@@ -198,9 +211,10 @@ def _marked(text: str) -> bool:
 
 def _restore_text(path: Path, text: str) -> None:
     """Откат к только что прочитанному содержимому (R2-Low: НЕ из старого
-    .bak-maxgraph — он со времени первой записи мог устареть)."""
+    .bak-maxgraph — он со времени первой записи мог устареть). Тот же
+    атомарный путь, что и запись (F4: write_text напрямую не атомарен)."""
     try:
-        _real(path).write_text(text, encoding="utf-8")
+        _atomic_write(path, text)
     except OSError:
         pass
 
@@ -360,31 +374,86 @@ _DSH_MCP_BLOCK = """- insert:
           Authorization: {auth}
 """
 
-# Наши MCP-ряды: id из актуальной доки и из старой (remotemem-эпохи PAIRING.md)
-_MCP_IDS = ("id: mcp-maxgraph", "id: mcp-remotemem")
-_MCP_SERVERS = ("serverName: maxgraph", "serverName: remotemem")
+# Наши MCP-ряды: id из актуальной доки и из старой (remotemem-эпохи PAIRING.md).
+# Матчим ТОЧНЫЕ значения (F2: «maxgraph-dev»/«mcp-maxgraph-backup» — не наши),
+# только в некомментарных строках.
+_MCP_ID_RE = re.compile(r"^\s*-?\s*id:\s*[\"']?(mcp-maxgraph|mcp-remotemem)[\"']?\s*(#.*)?$",
+                        re.M)
+_MCP_SERVER_RE = re.compile(r"^\s*serverName:\s*[\"']?(maxgraph|remotemem)[\"']?\s*(#.*)?$",
+                            re.M)
+_HOOKS_ID_RE = re.compile(r"^\s*-?\s*id:\s*[\"']?hooks-maxgraph[\"']?\s*(#.*)?$", re.M)
+_BLOCK_SCALAR_RE = re.compile(r":\s*[|>][+-]?\d?\s*(#.*)?$")
+
+
+def _no_comments(text: str) -> str:
+    """Текст без строк-комментариев (F2/L4: маркер в комментарии ≠ наша запись)."""
+    return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+
+
+def _strip_block_scalars(lines: list) -> list:
+    """Убрать СОДЕРЖИМОЕ блочных скаляров (key: | / >) — там текст, а не
+    структура (L-b: маркеры внутри note: | чужого ряда не делают его нашим)."""
+    out = []
+    scalar_indent = None
+    for ln in lines:
+        stripped = ln.strip()
+        ind = len(ln) - len(ln.lstrip(" "))
+        if scalar_indent is not None:
+            if not stripped or ind > scalar_indent:
+                continue            # содержимое скаляра
+            scalar_indent = None
+        out.append(ln)
+        if _BLOCK_SCALAR_RE.search(ln):
+            scalar_indent = ind
+    return out
+
+
+def _is_our_mcp_row(lines: list) -> bool:
+    """Наш ряд = пакет dsh-mcp-client И (наш id ИЛИ наш serverName), маркеры —
+    в структурных строках (не в скалярах/комментариях). Без пакета не считаем:
+    чужой ряд, упоминающий наши маркеры, трогать нельзя (F2)."""
+    t = _no_comments("\n".join(_strip_block_scalars(lines)))
+    return "dsh-mcp-client" in t and (bool(_MCP_ID_RE.search(t))
+                                    or bool(_MCP_SERVER_RE.search(t)))
+
+
+def _is_our_hooks_row(lines: list) -> bool:
+    """L-a: точный id hooks-maxgraph (hooks-maxgraph-backup — не наш)."""
+    return bool(_HOOKS_ID_RE.search(_no_comments("\n".join(_strip_block_scalars(lines)))))
 
 
 def _mcp_token() -> str:
     """Токен для MCP-ряда DSH: env MEMORY_TOKEN, иначе data/local_token.txt
     рядом с корнем репо (установщик зовёт скрипт из корня клона, после подъёма
-    сервера). Весь whitespace режем: внутренний перевод строки сломает YAML."""
-    tok = (os.environ.get("MEMORY_TOKEN") or "").strip()
-    if tok:
-        return tok
-    try:
-        f = Path(__file__).resolve().parent.parent / "data" / "local_token.txt"
-        return "".join(f.read_text(encoding="utf-8").split())
-    except OSError:
-        return ""
+    сервера). Нормализация одинаковая для обоих источников (F6): весь
+    whitespace режем — внутренний перевод строки сломает YAML."""
+    tok = os.environ.get("MEMORY_TOKEN") or ""
+    if not tok.strip():
+        try:
+            f = Path(__file__).resolve().parent.parent / "data" / "local_token.txt"
+            tok = f.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+    return "".join(tok.split())
 
 
 def _dsh_row_spans(lines: list) -> list:
     """(start, end, indent) каждого YAML list-item ('- ' с любым отступом).
-    Ряд тянется до следующего item с тем же или меньшим отступом."""
-    items = [(i, len(ln) - len(ln.lstrip(" ")))
-             for i, ln in enumerate(lines)
-             if ln.strip().startswith("- ") or ln.strip() == "-"]
+    Ряд тянется до следующего item с тем же или меньшим отступом. Строки внутри
+    блочных скаляров (key: | / key: >) — не структура (F2)."""
+    items = []
+    scalar_indent = None
+    for i, ln in enumerate(lines):
+        stripped = ln.strip()
+        ind = len(ln) - len(ln.lstrip(" "))
+        if scalar_indent is not None:
+            if not stripped or ind > scalar_indent:
+                continue            # содержимое блочного скаляра
+            scalar_indent = None    # отступ вернулся — скаляр кончился
+        if _BLOCK_SCALAR_RE.search(ln):
+            scalar_indent = ind
+        if stripped.startswith("- ") or stripped == "-":
+            items.append((i, ind))
     spans = []
     for k, (i, ind) in enumerate(items):
         end = len(lines)
@@ -410,10 +479,7 @@ def _dsh_mcp_rows(lines: list) -> list:
     insert = оверрайд несуществующего ряда)."""
     hits = []
     for s, e, ind in _dsh_row_spans(lines):
-        text = "".join(lines[s:e])
-        if "dsh-mcp-client" not in text:
-            continue
-        if any(m in text for m in _MCP_SERVERS) or any(m in text for m in _MCP_IDS):
+        if _is_our_mcp_row(lines[s:e]):
             hits.append((s, e, ind))
     out = []
     for s, e, ind in _innermost(hits):
@@ -425,7 +491,8 @@ def _dsh_mcp_rows(lines: list) -> list:
                 continue
             li = len(ln) - len(ln.lstrip(" "))
             if li < cur:
-                if ln.strip() in ("- insert:", "insert:"):
+                head = ln.split("#", 1)[0].strip()   # L-c: терпим хвостовой комментарий
+                if head in ("- insert:", "insert:"):
                     mounted = True
                     break
                 cur = li
@@ -434,21 +501,20 @@ def _dsh_mcp_rows(lines: list) -> list:
 
 
 def _dsh_drop_spans(lines: list, spans: list) -> list:
-    """Удалить спаны рядов + опустевшие после этого строки '- insert:'."""
+    """Удалить спаны рядов + опустевшие после этого TOP-LEVEL '- insert:' строки
+    (F5: чужой mapping-ключ insert: или вложенный - insert: не трогаем)."""
     for s, e in sorted(spans, reverse=True):
         del lines[s:e]
     out, i = [], 0
     while i < len(lines):
         ln = lines[i]
-        if ln.strip() in ("- insert:", "insert:"):
-            ind = len(ln) - len(ln.lstrip(" "))
+        if ln.strip() == "- insert:" and not ln.startswith(" "):
             j = i + 1
             has_child = False
             while j < len(lines):
                 nl = lines[j]
                 if nl.strip() and not nl.lstrip().startswith("#"):
-                    if len(nl) - len(nl.lstrip(" ")) > ind:
-                        has_child = True
+                    has_child = nl.startswith(" ")
                     break
                 j += 1
             if not has_child:
@@ -497,6 +563,7 @@ def _apply_dsh(spec: dict, remove: bool, dry: bool) -> str:
         if changed:
             _write_json(hooks_json, data, dry)
     token = _mcp_token()
+    token_ok = bool(token) and bool(_TOKEN_RE.fullmatch(token))   # F1: чужой алфавит не пишем
     results = []
     for prof in profiles:
         p = Path(prof)
@@ -505,16 +572,12 @@ def _apply_dsh(spec: dict, remove: bool, dry: bool) -> str:
         active = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
         if remove:
             # удаляем ТОЛЬКО наши ряды (hooks и mcp) — row-level, чтобы чужие
-            # ряды в общем insert-блоке не пострадали
+            # ряды в общем insert-блоке не пострадали; маркеры — только в
+            # некомментарных строках и точными значениями (F2)
             spans = _dsh_row_spans(lines)
             drop = []
             for s, e, _ind in spans:
-                block_text = "".join(lines[s:e])
-                is_hooks = any("hooks-maxgraph" in l for l in lines[s:e])
-                is_mcp = ("dsh-mcp-client" in block_text
-                          and any(m in block_text for m in _MCP_SERVERS)) \
-                    or any(m in block_text for m in _MCP_IDS)
-                if is_hooks or is_mcp:
+                if _is_our_hooks_row(lines[s:e]) or _is_our_mcp_row(lines[s:e]):
                     drop.append((s, e))
             drop = _innermost(drop)
             if not drop:
@@ -522,12 +585,20 @@ def _apply_dsh(spec: dict, remove: bool, dry: bool) -> str:
                 continue
             if not dry:
                 _atomic_write(p, "".join(_dsh_drop_spans(lines, drop)))
+                # пост-проверка (F2): наши маркеры ушли, структура жива — иначе откат
+                check = p.read_text(encoding="utf-8")
+                check_lines = check.splitlines(keepends=True)
+                gone = not _is_our_hooks_row(check_lines) and not _dsh_mcp_rows(check_lines)
+                if not gone or not _dsh_top_level_ok(check):
+                    _restore_text(p, text)
+                    results.append(f"{p}: ERROR post-check failed — reverted")
+                    continue
             results.append(f"{p}: removed")
             continue
         status = []
         add_blocks = []
         # --- hooks ---
-        if any("hooks-maxgraph" in ln for ln in active):
+        if _is_our_hooks_row(lines):
             status.append("hooks already registered")
         else:
             add_blocks.append(_DSH_BLOCK.format(
@@ -542,6 +613,8 @@ def _apply_dsh(spec: dict, remove: bool, dry: bool) -> str:
             status.append("mcp already registered")
         elif not token:
             status.append("mcp skipped (no token — data/local_token.txt)")
+        elif not token_ok:
+            status.append("mcp skipped (bad token charset)")
         else:
             if broken:
                 lines = _dsh_drop_spans(lines, _innermost(broken))
@@ -577,6 +650,11 @@ def _apply_dsh(spec: dict, remove: bool, dry: bool) -> str:
                 _restore_text(p, text)
                 results.append(f"{p}: ERROR post-check failed — reverted")
                 continue
+            if os.name != "nt" and "Bearer" in new_text:
+                try:
+                    os.chmod(_real(p), 0o600)   # F3: файл с токеном — только owner
+                except OSError:
+                    pass
         results.append(f"{p}: " + ", ".join(status))
     return "; ".join(results)
 
