@@ -4,13 +4,13 @@
 
 🇬🇧 [English version](README_EN.md) · Русский
 
-![license](https://img.shields.io/badge/license-BSL--1.1-orange) ![docker](https://img.shields.io/badge/docker-ready-38d39f) ![MCP](https://img.shields.io/badge/MCP-streamable--http-ff5bd8) [![MaxGraph on AI Agents Listing](https://aiagentslisting.com/maxgraph/badge.svg?claim=0128507fb17c64bdcb4cc6873e9c029f)](https://aiagentslisting.com/mcp/maxgraph)
+![license](https://img.shields.io/badge/license-BSL--1.1-orange) ![native](https://img.shields.io/badge/windows%20%C2%B7%20macos%20%C2%B7%20linux-native-38d39f) ![MCP](https://img.shields.io/badge/MCP-streamable--http-ff5bd8) [![MaxGraph on AI Agents Listing](https://aiagentslisting.com/maxgraph/badge.svg?claim=0128507fb17c64bdcb4cc6873e9c029f)](https://aiagentslisting.com/mcp/maxgraph)
 
 ## Хватит объяснять нейросети всё сначала
 
 Каждая новая сессия с ИИ начинается с пустого чата: агент не помнит ни проект, ни решения, ни вчерашние договорённости. MaxGraph это исправляет. Он запоминает твой проект между сессиями, и агент начинает там, где ты закончил.
 
-Для разработчика: это MCP-сервер с графом знаний и семантическим поиском, который поднимается в Docker за две минуты и подключается к любому агенту, умеющему работать с внешними инструментами.
+Для разработчика: это MCP-сервер с графом знаний и семантическим поиском, который ставится одной командой за две минуты и подключается к любому агенту, умеющему работать с внешними инструментами.
 
 🌐 [rezon-ai.ru](https://rezon-ai.ru) · Триал 7 дней, без карты · Экономия токенов примерно 43 % при работе с MaxGraph
 
@@ -46,23 +46,23 @@
 
 ## Установка
 
-Нужен только Docker:
+Ничего ставить заранее не нужно (Docker не требуется). Одна команда — установщик сам скачает программу с официального магазина, проверит контрольную сумму, поставит в пользовательскую папку и запустит:
 
 ```bash
 git clone https://github.com/RuMemory/maxgraph && cd maxgraph
-docker compose pull   # готовый образ; нет сети до ghcr — пропусти, соберётся локально
-docker compose up -d
+bash install.sh --yes       # Linux / macOS
 ```
 
-Нет Docker? Установщик поставит движок сам (официальный Docker Desktop с docker.com на Windows/macOS, Docker Engine на Linux): `bash install.sh` или `powershell -File install.ps1` из папки репозитория. Устанавливает ИИ-агент? Ему — [AGENTS.md](AGENTS.md).
-
-Токен доступа генерируется сам при первом запуске, возьми его из логов:
-
-```bash
-docker compose logs maxgraph | grep "автогенерация"   # или: cat data/local_token.txt
+```powershell
+# Windows (PowerShell)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes
 ```
 
-Открой дашборд `http://localhost:8787/app` и введи токен. Обновления ставятся сами, раз в сутки. Не нужны — отключи: `AUTO_UPDATE=0`.
+Дальше программа живёт сама: иконка в трее, автозапуск с системой, автообновления. Устанавливает ИИ-агент? Ему — [AGENTS.md](AGENTS.md).
+
+Токен доступа генерируется сам при первом запуске — установщик печатает его в пакете следующих шагов (он же лежит в `data/local_token.txt` внутри папки установки).
+
+Открой дашборд `http://localhost:8787/app` и введи токен. Обновления ставятся сами. Не нужны — отключи: `MG_NO_UPDATE=1`.
 
 ## Подключение в один шаг
 

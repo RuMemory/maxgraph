@@ -358,6 +358,22 @@ def _dashboard_url(port: int, token: str = "") -> str:
     return f"http://localhost:{port}/app" + (f"#{token}" if token else "")
 
 
+def request_update_now(data_dir=None) -> bool:
+    """Пункт трея «Проверить обновления»: пустой маркер DATA_DIR/.update-now —
+    selfupdate.update_loop слушает его внутри интервала и триггерится мгновенно
+    (тот же канал, что у кнопки дашборда /api/update/trigger). True = маркер стоит."""
+    try:
+        if data_dir is None:
+            import app as _app
+            data_dir = _app.DATA_DIR
+        (Path(data_dir) / ".update-now").touch()
+        log.info("tray: .update-now создан — цикл обновлений проверит магазин сейчас")
+        return True
+    except Exception as exc:  # трей не должен падать от ФС-ошибки
+        log.warning("tray: не удалось создать .update-now: %s", exc)
+        return False
+
+
 def _wait_forever(event_factory=threading.Event) -> None:
     """Держать main-поток живым навсегда (daemon-поток сервера умрёт вместе
     с процессом — поэтому при падении иконки main-поток НЕ должен выйти).
@@ -402,9 +418,13 @@ def run_tray(main_callable, port: int | None = None) -> None:
         # shortcut: uvicorn крутится в daemon-потоке — глушим жёстко, graceful shutdown нет
         os._exit(0)
 
+    def _check_updates(icon=None, item=None):
+        request_update_now()  # маркер DATA_DIR/.update-now — мгновенный триггер update_loop
+
     threading.Thread(target=main_callable, daemon=True, name="server").start()
     menu = pystray.Menu(
         pystray.MenuItem("Открыть дашборд", _open_dashboard, default=True),
+        pystray.MenuItem("Проверить обновления", _check_updates),
         pystray.MenuItem("Перезапуск", _restart),
         pystray.MenuItem("Выход", _quit),
     )

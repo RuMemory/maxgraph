@@ -374,8 +374,15 @@ def _spawn_detached(argv):
     kwargs = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                   stderr=subprocess.DEVNULL, close_fds=True)
     if sys.platform == "win32":
+        # CREATE_NO_WINDOW (0x08000000) вдобавок к DETACHED_PROCESS: формально
+        # Windows игнорирует его вместе с DETACHED_PROCESS, но это страховка на
+        # случай дочернего процесса console-системы (старые билды exe без
+        # --windowed, python.exe из исходников) — консольное окно не должно
+        # мелькать у пользователя ни при автозапуске, ни при обновлении
+        # (кейс покупателя 1.0.1: кнопка обновления открывала консоль helper'а).
         kwargs["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-                                   | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+                                   | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+                                   | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
     else:
         kwargs["start_new_session"] = True
     return subprocess.Popen(argv, **kwargs)

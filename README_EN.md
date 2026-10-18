@@ -4,13 +4,13 @@
 
 🇷🇺 [Русская версия](README.md) · English
 
-![license](https://img.shields.io/badge/license-BSL--1.1-orange) ![docker](https://img.shields.io/badge/docker-ready-38d39f) ![MCP](https://img.shields.io/badge/MCP-streamable--http-ff5bd8) [![MaxGraph on AI Agents Listing](https://aiagentslisting.com/maxgraph/badge.svg?claim=0128507fb17c64bdcb4cc6873e9c029f)](https://aiagentslisting.com/mcp/maxgraph)
+![license](https://img.shields.io/badge/license-BSL--1.1-orange) ![native](https://img.shields.io/badge/windows%20%C2%B7%20macos%20%C2%B7%20linux-native-38d39f) ![MCP](https://img.shields.io/badge/MCP-streamable--http-ff5bd8) [![MaxGraph on AI Agents Listing](https://aiagentslisting.com/maxgraph/badge.svg?claim=0128507fb17c64bdcb4cc6873e9c029f)](https://aiagentslisting.com/mcp/maxgraph)
 
 ## Stop explaining everything to your AI from scratch
 
 Every new session starts with an empty chat: the agent remembers neither the project, nor the decisions, nor yesterday's agreements. MaxGraph fixes that. It remembers your project between sessions, and the agent picks up where you left off.
 
-For developers: an MCP server with a knowledge graph and semantic search. It comes up in Docker in two minutes and connects to any agent that can use external tools.
+For developers: an MCP server with a knowledge graph and semantic search. It installs with a single command in two minutes and connects to any agent that can use external tools.
 
 🌐 [rezon-ai.ru](https://rezon-ai.ru) · 7-day trial, no card · Working with MaxGraph saves about 43 % of tokens
 
@@ -46,23 +46,23 @@ Ready-made setup examples for each client: [docs/PROVIDERS.md](docs/PROVIDERS.md
 
 ## Installation
 
-All you need is Docker:
+Nothing to install upfront (no Docker needed). One command — the installer downloads the program from the official store, verifies its checksum, installs it into your user folder and launches it:
 
 ```bash
 git clone https://github.com/RuMemory/maxgraph && cd maxgraph
-docker compose pull   # prebuilt image; skip if ghcr is unreachable — it will build locally
-docker compose up -d
+bash install.sh --yes       # Linux / macOS
 ```
 
-No Docker? The installer sets up an engine itself (official Docker Desktop from docker.com on Windows/macOS, Docker Engine on Linux): `bash install.sh` or `powershell -File install.ps1` from the repo folder. An AI agent doing the install reads [AGENTS.md](AGENTS.md).
-
-The access token is generated on first launch, take it from the logs:
-
-```bash
-docker compose logs maxgraph | grep "автогенерация"   # or: cat data/local_token.txt
+```powershell
+# Windows (PowerShell)
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes
 ```
 
-Open the dashboard at `http://localhost:8787/app` and enter the token. Updates install themselves once a day. Don't want them — disable with `AUTO_UPDATE=0`.
+From there the program runs itself: a tray icon, autostart with the system, automatic updates. An AI agent doing the install reads [AGENTS.md](AGENTS.md).
+
+The access token is generated on first launch — the installer prints it in the next-steps package (it also lives in `data/local_token.txt` inside the install folder).
+
+Open the dashboard at `http://localhost:8787/app` and enter the token. Updates install themselves. Don't want them — disable with `MG_NO_UPDATE=1`.
 
 ## One-step connection
 

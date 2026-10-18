@@ -2441,6 +2441,13 @@ RU: у тебя есть постоянная память. Старт сесс�
 
 mcp = FastMCP("maxgraph", host="0.0.0.0", port=PORT, streamable_http_path="/mcp",
               stateless_http=True, instructions=_MCP_INSTRUCTIONS)
+# FastMCP (mcp 1.x) НЕ принимает version= и не пробрасывает её в низкоуровневый
+# Server → serverInfo.version при initialize отдавал версию MCP SDK (покупатель
+# видел "1.30.0" вместо версии продукта). Выставляем версию продукта напрямую.
+try:
+    mcp._mcp_server.version = VERSION
+except Exception:  # стабы в тестах (FastMCP-заглушка без _mcp_server) — не ломаем
+    pass
 
 
 @mcp.prompt()

@@ -564,6 +564,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
       <div class="sys-actions">
         <button class="btn ghost" id="sysExport" data-i18n="gear.export">Экспорт NDJSON</button>
         <button class="btn ghost" id="sysPrompt" data-i18n="gear.prompt">Промпт для агента</button>
+        <button class="btn ghost" id="sysBug" data-i18n="gear.bug">Сообщить о баге</button>
       </div>
     </div>
   </div>
@@ -653,6 +654,7 @@ ru:{
  'nav.overview':'Обзор','nav.catalog':'Каталог','nav.timeline':'Хроника','nav.tasks':'Дела',
  'hdr.search':'Поиск по памяти, воспоминаниям и связям...','hdr.project':'Проект','hdr.all':'все',
  'gear.export':'Экспорт NDJSON','gear.prompt':'Промпт для агента',
+ 'gear.bug':'Сообщить о баге','gear.bugsubj':'MaxGraph: баг','gear.bugbody':'Версия: {v}\nОС: {os}\n\nОпиши проблему:\n',
  'ov.graph':'Карта памяти','ov.gsearch':'Найти на карте…','ov.linkhint':'+ drag между узлами — новая связь',
  'ov.k1':'Воспоминания','ov.k2':'Связи','ov.k3':'Факты','ov.obs':'Факты','ov.linked':'Связанные','ov.more':'Открыть в каталоге →',
  'ov.recent':'Недавние воспоминания','ov.tocatalog':'В каталог →','ov.feed':'Лента памяти','ov.live':'обновляется','ov.allhistory':'Вся история (Хроника)',
@@ -701,6 +703,7 @@ en:{
  'nav.overview':'Overview','nav.catalog':'Catalog','nav.timeline':'Timeline','nav.tasks':'Tasks',
  'hdr.search':'Search memories, entities and relations...','hdr.project':'Project','hdr.all':'all',
  'gear.export':'Export NDJSON','gear.prompt':'Agent prompt',
+ 'gear.bug':'Report a bug','gear.bugsubj':'MaxGraph: bug','gear.bugbody':'Version: {v}\nOS: {os}\n\nDescribe the problem:\n',
  'ov.graph':'Memory map','ov.gsearch':'Find on map…','ov.linkhint':'+ drag between nodes — new relation',
  'ov.k1':'Memories','ov.k2':'Relations','ov.k3':'Facts','ov.obs':'Facts','ov.linked':'Linked','ov.more':'Open in catalog →',
  'ov.recent':'Recent memories','ov.tocatalog':'To catalog →','ov.feed':'Memory feed','ov.live':'live','ov.allhistory':'Full history (Timeline)',
@@ -1167,6 +1170,15 @@ $('#sysClose').onclick=()=>sysOpen(false);
 $('#veil').onclick=()=>sysOpen(false);
 $('#sysExport').onclick=doExport;
 $('#sysPrompt').onclick=copyPrompt;
+// «Сообщить о баге»: mailto с предзаполненной темой и телом (версия — из
+// публичного /api/version, ОС — navigator.platform; без авторизации не нужно).
+$('#sysBug').onclick=async()=>{
+  let ver='?';
+  try{const v=await fetch('/api/version').then(r=>r.json());if(v&&v.version)ver=v.version;}catch(e){}
+  const body=t('gear.bugbody').replace('{v}',ver).replace('{os}',navigator.platform||'?');
+  location.href='mailto:help@rezon-ai.ru?subject='+encodeURIComponent(t('gear.bugsubj'))
+    +'&body='+encodeURIComponent(body);
+};
 
 /* ═══ Рефералка (v0.37.0): блок «Пригласи друга» в «Системе» ═══ */
 let refInfo=null;

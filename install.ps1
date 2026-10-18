@@ -185,9 +185,23 @@ function Register-Hooks {  # авто-регистрация хуков во в�
   if (-not $py) { Log 'python not found - hooks not registered automatically (agent registers by docs/HOOKS.md)'; return }
   $rhArgs = @($rh, '--auto')
   if ($py -eq 'py') { $rhArgs = @('-3') + $rhArgs }
+  # Кейс покупателя 1.0.1: register_hook.py без env MEMORY_TOKEN ищет токен в
+  # <корень клона>\data\local_token.txt, а native-exe пишет его в
+  # $InstallDir\data\local_token.txt → MCP-ряд в DSH молча пропускался
+  # ("mcp skipped (no token)"). Передаём токен явно через env (register_hook
+  # читает MEMORY_TOKEN первым), только на время дочернего процесса; явно
+  # заданный пользователем MEMORY_TOKEN не переопределяем.
+  $hadTok = -not [string]::IsNullOrWhiteSpace($env:MEMORY_TOKEN)
+  $oldTok = $env:MEMORY_TOKEN
   try {
+    if (-not $hadTok -and (Test-Path $script:TokenFile)) {
+      $env:MEMORY_TOKEN = ([System.IO.File]::ReadAllText($script:TokenFile) -replace '\s','')
+    }
     & $py @rhArgs 2>$null | ForEach-Object { Log "hooks: $_" }
   } catch { Log "WARN: hook registration failed: $($_.Exception.Message)" }   # не роняет установку
+  finally {
+    if ($hadTok) { $env:MEMORY_TOKEN = $oldTok } else { Remove-Item Env:MEMORY_TOKEN -ErrorAction SilentlyContinue }
+  }
 }
 
 function Show-NextSteps {  # final package for the installing agent (see AGENTS.md)
@@ -322,6 +336,20 @@ try {
       exit 1
     }
     Log 'MaxGraph is up (http://localhost:8787).'
+    # exe сам прописывает автозапуск (native.ensure_autostart → HKCU Run\MaxGraph).
+    # Кейс покупателя 1.0.1: сервер после перезапуска был мёртв. Проверяем, что
+    # запись реально есть: AV/политики могли её блокировать. WARNING, не fail —
+    # сервер уже работает, автозапуск чинится повторным запуском установщика.
+    try {
+      $runVal = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'MaxGraph' -ErrorAction Stop).MaxGraph
+      if ([string]::IsNullOrWhiteSpace($runVal)) {
+        Log 'WARNING: autostart entry HKCU Run\MaxGraph is EMPTY - MaxGraph will NOT start with Windows'
+      } else {
+        Log "Autostart OK: HKCU Run\MaxGraph = $runVal"
+      }
+    } catch {
+      Log 'WARNING: autostart entry HKCU Run\MaxGraph NOT FOUND - MaxGraph will NOT start with Windows (re-run the installer; check AV/policy)'
+    }
   }
 
   try { Inject-Rules } catch { Log "WARN: rules injection failed: $($_.Exception.Message)" }

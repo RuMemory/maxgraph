@@ -84,7 +84,12 @@ jobs:
           }
           if (Test-Path app/static) { $pyArgs += @('--add-data', 'app/static;static') }
           Write-Host "add-data: $pyArgs"
-          pyinstaller -y --onefile --name maxgraph --paths app @pyArgs app/app.py
+          # --windowed: без консольного окна ни при автозапуске, ни при обновлении
+          # (кейс покупателя 1.0.1: кнопка обновления открывала консоль helper'а).
+          # Логи helper'а идут в data/update.log (FileHandler), stdout не нужен.
+          # На unix НЕ добавляем: macOS onefile+windowed собирает .app-бандл и
+          # ломает контракт dist/maxgraph (smoke + mv), а окна там и так нет.
+          pyinstaller -y --onefile --windowed --name maxgraph --paths app @pyArgs app/app.py
           Move-Item dist/maxgraph.exe "dist/$env:ART"
 
       # Смоук: это сервер, --help нет — проверяем существование и размер >10 МБ.
