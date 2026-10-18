@@ -1,12 +1,18 @@
 openapi: 3.0.3
 info:
   title: Maxgraph Memory API
-  version: 0.15.0
+  version: 0.50.1
   description: |
     Персональная память полного сохранения контекста (граф знаний + журнал событий).
-    Все эндпоинты требуют заголовок `Authorization: Bearer <MEMORY_TOKEN>`.
+    Все эндпоинты, кроме `/healthz` и `/api/version`, требуют заголовок
+    `Authorization: Bearer <MEMORY_TOKEN>`.
     Для ChatGPT GPTs Actions: сервер должен быть доступен по публичному HTTPS
     (например, через Tailscale Funnel или обратный прокси) — подробнее в docs/GPTS.md.
+
+    Проекты (изоляция Ф1): GET-эндпоинты памяти принимают `?project=<kebab-slug>`
+    (плюс `all_projects=1` у graph/search/timeline/stats — явный кросс-поиск),
+    POST — поле `"project"` в теле. Без `project` — плоский граф, как до Ф1.
+    Невалидный slug → 400.
 servers:
   - url: https://memory.example.com
     description: Твой инстанс Maxgraph (замени на свой HTTPS-URL)
@@ -30,17 +36,75 @@ paths:
           content:
             text/plain:
               schema: { type: string, example: ok }
+  /api/version:
+    get:
+      operationId: getVersion
+      tags: [memory-read]
+      summary: Текущая версия инстанса (публично, без авторизации)
+      security: []
+      responses:
+        '200':
+          description: Версия сервера
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: string, example: 0.50.1 }
   /api/graph:
     get:
       operationId: readGraph
       tags: [memory-read]
       summary: Прочитать весь граф знаний
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+          description: kebab-slug проекта — только этот проект (+ сущность project:<slug>)
+        - name: all_projects
+          in: query
+          schema: { type: boolean, default: false }
+          description: '1/true — явный кросс-поиск по всем проектам'
       responses:
         '200':
           description: Все сущности и связи
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Graph' }
+        '400': { description: Невалидный project slug }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/export:
+    get:
+      operationId: exportMemory
+      tags: [memory-read]
+      summary: Полный бэкап — состояние графа (NDJSON) + журнал событий (JSONL)
+      description: |
+        Отдаёт `{app, version, exportedAt, memory_ndjson, events_jsonl}` —
+        сырые данные для бэкапа или миграции. Ответ также приходит с заголовком
+        `Content-Disposition: attachment` (файл `maxgraph-export-<дата>.json`).
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+          description: kebab-slug проекта — экспорт только этого проекта
+      responses:
+        '200':
+          description: Бэкап графа и журнала
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  app: { type: string, example: maxgraph }
+                  version: { type: string }
+                  exportedAt: { type: string, format: date-time }
+                  memory_ndjson:
+                    type: string
+                    description: 'Сущности и связи, по одному JSON-объекту на строку ({"type": "entity"|"relation", ...})'
+                  events_jsonl:
+                    type: string
+                    description: События журнала, по одному JSON-объекту на строку
+        '400': { description: Невалидный project slug }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/search:
     get:
@@ -53,6 +117,8 @@ paths:
         сортировка score desc → updatedAt desc → name. У сущностей ответа +
         `score`, `snippet`, `highlights` (позиции [[start,end],…] внутри snippet).
         Пустой `q` — все сущности с фильтрами, без FTS-полей.
+        При заданных `EMBED_URL`+`EMBED_KEY` поиск гибридный (В2.2): FTS + косинус
+        эмбеддингов, `score` — blended 0..1; при сбое — автоматический фоллбек на FTS.
       parameters:
         - name: q
           in: query
@@ -67,13 +133,112 @@ paths:
           in: query
           schema: { type: integer, default: 20, maximum: 500 }
           description: Топ-N при непустом q
+        - name: project
+          in: query
+          schema: { type: string }
+          description: kebab-slug проекта — искать только в нём
+        - name: all_projects
+          in: query
+          schema: { type: boolean, default: false }
+          description: '1/true — явный кросс-поиск по всем проектам'
       responses:
         '200':
           description: Найденные сущности (с score/snippet/highlights при непустом q) и связи между ними
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Graph' }
+        '400': { description: Невалидный project slug }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/session-context:
+    get:
+      operationId: sessionContext
+      tags: [memory-read]
+      summary: Бюджетный контекстный блок проекта (v0.49.0) — REST-аналог MCP session_start
+      description: |
+        Возвращает `{context_block, meta}` — готовый к вставке в промпт блок:
+        проект → решения владельца (decision, дословно) → открытые баги →
+        открытые задачи → прошлые сессии → недавние события. Порядок внутри
+        решений/багов/задач — актуальность (свежесть × частота обращений, ACT-R).
+        `len(context_block) ≤ budget_chars` всегда; усечение построчное с маркером
+        «… (ещё N, усечено бюджетом)», флаг `meta.truncated`.
+        Используется клиент-хуками (обратное направление памяти). Rate-limit
+        120 запросов/мин с IP.
+      parameters:
+        - name: project
+          in: query
+          required: true
+          schema: { type: string }
+          description: kebab-slug проекта (обязателен — без него весь граф намеренно не читается)
+        - name: budget_chars
+          in: query
+          schema: { type: integer, default: 4000, minimum: 500, maximum: 20000 }
+          description: Жёсткий бюджет длины context_block (клэмп 500..20000)
+      responses:
+        '200':
+          description: Контекстный блок и метаданные
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionContext' }
+        '400': { description: project не задан или невалидный slug }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429':
+          description: Per-IP rate-limit 120 запросов/мин; повторить после Retry-After
+          headers:
+            Retry-After:
+              schema: { type: integer, example: 60 }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string, example: too_many_requests }
+  /api/recall:
+    post:
+      operationId: recall
+      tags: [memory-read]
+      summary: Точечный recall по запросу (v0.49.0) — лучшие факты лучших сущностей
+      description: |
+        Поиск top-10 → до 5 сущностей со score>0 → до 2 лучших фактов на сущность
+        (факт ≤300 символов; устаревшие [~дата] исключены); суммарно ≤1500 символов.
+        Операция чтения: работает и на READONLY-зеркале. Rate-limit 120 запросов/мин
+        с IP, тело ≤64KB.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project, query]
+              properties:
+                project: { type: string, description: kebab-slug проекта (обязателен) }
+                query: { type: string, description: Поисковый запрос (режется до 500 символов) }
+      responses:
+        '200':
+          description: Подобранные факты
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  facts:
+                    type: array
+                    items: { $ref: '#/components/schemas/RecallFact' }
+                  query: { type: string }
+                  project: { type: string }
+        '400': { description: Битый JSON / нет project или query / невалидный slug }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { description: Тело больше 64KB }
+        '429':
+          description: Per-IP rate-limit 120 запросов/мин; повторить после Retry-After
+          headers:
+            Retry-After:
+              schema: { type: integer, example: 60 }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string, example: too_many_requests }
   /api/timeline:
     get:
       operationId: listTimeline
@@ -83,6 +248,14 @@ paths:
         - name: limit
           in: query
           schema: { type: integer, default: 100, maximum: 500 }
+        - name: project
+          in: query
+          schema: { type: string }
+          description: kebab-slug проекта — только события этого проекта
+        - name: all_projects
+          in: query
+          schema: { type: boolean, default: false }
+          description: '1/true — явно все проекты'
       responses:
         '200':
           description: События журнала
@@ -94,24 +267,42 @@ paths:
                   events:
                     type: array
                     items: { $ref: '#/components/schemas/Event' }
+        '400': { description: Невалидный project slug }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/stats:
     get:
       operationId: getStats
       tags: [memory-read]
-      summary: Счётчики графа, версия, аптайм, статус лицензии
+      summary: Счётчики графа, версия, аптайм, статус лицензии и семантики
+      parameters:
+        - name: project
+          in: query
+          schema: { type: string }
+          description: kebab-slug проекта — счётчики только по нему
+        - name: all_projects
+          in: query
+          schema: { type: boolean, default: false }
+          description: '1/true — по всем проектам'
       responses:
         '200':
           description: Статистика сервера
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Stats' }
+        '400': { description: Невалидный project slug }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/entities:
     post:
       operationId: createEntities
       tags: [memory-write]
       summary: Создать сущности (уже существующие пропускаются)
+      description: |
+        `name` — kebab-case id навсегда (не меняется). entityType: канонические
+        project/session/bug/decision/request/event/task (синонимы RU/EN
+        канонизируются: bugfix→bug, решение→decision, задача→task; свободный тип
+        сохраняется как есть); bug получает status open/fixed, task — open/done
+        (default open). При заданном `project` сущность `project:<slug>`
+        создаётся автоматически; существующее имя в чужом проекте — warning без merge.
       requestBody:
         required: true
         content:
@@ -123,19 +314,27 @@ paths:
                 entities:
                   type: array
                   items: { $ref: '#/components/schemas/EntityIn' }
+                project: { type: string, description: kebab-slug проекта (изоляция Ф1) }
       responses:
         '200':
           description: Созданные сущности
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CreatedEntities' }
+        '400': { description: Невалидный project slug }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '402': { $ref: '#/components/responses/WriteBlocked' }
+        '403': { description: READONLY-зеркало (readonly_mirror) }
   /api/entity/update:
     post:
       operationId: updateEntity
       tags: [memory-write]
-      summary: Обновить title/entityType/tags существующей сущности
+      summary: Обновить title/entityType/tags/status существующей сущности
+      description: |
+        `status` — только для bug (open/fixed) и task (open/done); для остальных
+        типов игнорируется с warning в ответе. `restore` (В3.2): снять маркер
+        [~дата] с наблюдений (откат supersedes) — строки с маркером или без;
+        ненайденные — в `restoreNotFound` ответа.
       requestBody:
         required: true
         content:
@@ -148,6 +347,12 @@ paths:
                 title: { type: string }
                 entityType: { type: string }
                 tags: { type: array, items: { type: string } }
+                status: { type: string, enum: [open, fixed, done], description: open/fixed для bug, open/done для task }
+                restore:
+                  type: array
+                  items: { type: string }
+                  description: Строки наблюдений, с которых снять маркер [~дата]
+                project: { type: string, description: kebab-slug проекта }
       responses:
         '200':
           description: Обновлённая сущность или ошибка
@@ -157,9 +362,13 @@ paths:
                 type: object
                 properties:
                   updated: { $ref: '#/components/schemas/Entity' }
+                  restoreNotFound: { type: array, items: { type: string } }
+                  warning: { type: string }
                   error: { type: string }
+        '400': { description: Невалидный project slug / restore не список строк }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '402': { $ref: '#/components/responses/WriteBlocked' }
+        '403': { description: READONLY-зеркало (readonly_mirror) }
   /api/task/add:
     post:
       operationId: taskAdd
@@ -168,7 +377,9 @@ paths:
       description: |
         Создаёт сущность `entityType: task` со `status: open` (default); имя —
         `task-<slug(title)>` (kebab, транслит RU), при коллизии — суффикс `-2`.
-        Открытые задачи попадают в секцию «Открытые задачи» `session_start`.
+        `links` (В3.4) — имена связанных сущностей (баг, решение, сессия): связи
+        «relates to» создаются в том же вызове, неизвестные имена — в `links_skipped`.
+        Открытые задачи попадают в секцию «Открытые задачи» session-context.
       requestBody:
         required: true
         content:
@@ -179,6 +390,10 @@ paths:
               properties:
                 title: { type: string, description: Текст задачи (≤200 символов) }
                 note: { type: string, description: Первый факт-контекст (опционально) }
+                links:
+                  type: array
+                  items: { type: string }
+                  description: Имена связанных сущностей — связи "relates to" в том же вызове
                 project: { type: string, description: kebab-slug проекта (изоляция Ф1) }
       responses:
         '200':
@@ -189,8 +404,9 @@ paths:
                 type: object
                 properties:
                   created: { $ref: '#/components/schemas/Entity' }
+                  links_skipped: { type: array, items: { type: string } }
                   error: { type: string }
-        '400': { description: Невалидный project slug }
+        '400': { description: Невалидный project slug / links не список строк }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '402': { $ref: '#/components/responses/WriteBlocked' }
         '403': { description: READONLY-зеркало (readonly_mirror) }
@@ -252,11 +468,66 @@ paths:
                   total: { type: integer }
         '400': { description: Невалидный project slug }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/session/close:
+    post:
+      operationId: sessionClose
+      tags: [memory-write]
+      summary: Закрыть сессию дня одним вызовом (В3.1) — REST-аналог MCP session_close
+      description: |
+        Session-сущность дня создаётся или домердживается (в т.ч. в stub от
+        SessionEnd-хука), `summary` + `done` становятся наблюдениями, `links`
+        получают связи "discussed". Без `links` связи собираются механически из
+        сегодняшнего пульса. Повторный вызов за день — домердж, а не новая сущность.
+        Ответ: `session` (имя), `merged`, `already_closed`, `linked`, `links_auto`,
+        `links_skipped`, `open_tasks_hint` (открытые задачи, тронутые сегодня).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                summary: { type: string, description: Итог сессии одной строкой }
+                done:
+                  type: array
+                  items: { type: string }
+                  description: Что сделано (каждый пункт — наблюдение)
+                links:
+                  type: array
+                  items: { type: string }
+                  description: Имена затронутых сущностей — связи "discussed"
+                project: { type: string, description: kebab-slug проекта }
+      responses:
+        '200':
+          description: Сессия дня создана/домерджена
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { type: string, description: Имя session-сущности дня }
+                  merged: { type: boolean }
+                  already_closed: { type: boolean }
+                  linked: { type: integer }
+                  links_auto: { type: integer }
+                  links_skipped: { type: array, items: { type: string } }
+                  open_tasks_hint: { type: array, items: { type: string } }
+                  error: { type: string }
+        '400': { description: Невалидный project slug / done или links не списки строк }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/WriteBlocked' }
+        '403': { description: READONLY-зеркало (readonly_mirror) }
   /api/observations:
     post:
       operationId: addObservations
       tags: [memory-write]
       summary: Добавить факты к сущностям (дубликаты пропускаются)
+      description: |
+        Одно наблюдение = один атомарный факт. `supersedes` (В3.2): факт устарел
+        (цена, версия, решение) — передай старую строку в `supersedes` того же item:
+        она пометится [~дата], уйдёт из поиска/session-context, но останется в
+        архиве (вернуть — `/api/entity/update` с `restore`; физически удалить —
+        `/api/delete/observations`). Ненайденные строки — в `supersedesNotFound`.
       requestBody:
         required: true
         content:
@@ -273,6 +544,11 @@ paths:
                     properties:
                       entityName: { type: string }
                       contents: { type: array, items: { type: string } }
+                      supersedes:
+                        type: array
+                        items: { type: string }
+                        description: Точные старые строки фактов — пометить [~дата] как устаревшие
+                project: { type: string, description: kebab-slug проекта }
       responses:
         '200':
           description: Результат по каждой сущности
@@ -282,14 +558,18 @@ paths:
                 type: object
                 properties:
                   results: { type: array, items: { type: object } }
+                  supersedesNotFound: { type: array, items: { type: string } }
                   errors: { type: array, items: { type: string } }
+        '400': { description: Невалидный project slug / supersedes не список строк }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '402': { $ref: '#/components/responses/WriteBlocked' }
+        '403': { description: READONLY-зеркало (readonly_mirror) }
   /api/relations:
     post:
       operationId: createRelations
       tags: [memory-write]
       summary: Создать связи между сущностями (дубликаты пропускаются)
+      description: Активный залог — "uses", "depends on", "configured by", а не "is used by".
       requestBody:
         required: true
         content:
@@ -301,6 +581,7 @@ paths:
                 relations:
                   type: array
                   items: { $ref: '#/components/schemas/RelationIn' }
+                project: { type: string, description: kebab-slug проекта (события пульса получат его метку) }
       responses:
         '200':
           description: Созданные связи
@@ -313,8 +594,10 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/Relation' }
                   skipped: { type: integer }
+        '400': { description: Невалидный project slug }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '402': { $ref: '#/components/responses/WriteBlocked' }
+        '403': { description: READONLY-зеркало (readonly_mirror) }
   /api/delete/entities:
     post:
       operationId: deleteEntities
@@ -329,6 +612,7 @@ paths:
               required: [entityNames]
               properties:
                 entityNames: { type: array, items: { type: string } }
+                project: { type: string, description: kebab-slug — удаляются только сущности этого проекта }
       responses:
         '200':
           description: Имена удалённых сущностей
@@ -338,13 +622,15 @@ paths:
                 type: object
                 properties:
                   deleted: { type: array, items: { type: string } }
+        '400': { description: Невалидный project slug }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '402': { $ref: '#/components/responses/WriteBlocked' }
+        '403': { description: READONLY-зеркало (readonly_mirror) }
   /api/delete/observations:
     post:
       operationId: deleteObservations
       tags: [memory-write]
-      summary: Удалить конкретные факты у сущностей
+      summary: Удалить конкретные факты у сущностей (точное совпадение строки)
       requestBody:
         required: true
         content:
@@ -361,10 +647,61 @@ paths:
                     properties:
                       entityName: { type: string }
                       observations: { type: array, items: { type: string } }
+                project: { type: string, description: kebab-slug проекта }
       responses:
         '200': { description: Результат удаления, content: { application/json: { schema: { type: object } } } }
+        '400': { description: Невалидный project slug }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '402': { $ref: '#/components/responses/WriteBlocked' }
+        '403': { description: READONLY-зеркало (readonly_mirror) }
+  /api/delete/observations-by-id:
+    post:
+      operationId: deleteObservationsById
+      tags: [memory-write]
+      summary: Точечный forget по id наблюдения (v0.50.0)
+      description: |
+        `id` наблюдения стабилен (sha256 текста как хранится, включая
+        [~дата]-маркер); его отдают MCP-инструменты `search_nodes`/`open_nodes`
+        с `with_ids=true`. Ответ: `results[]` с `deleted`/`notFound` по каждой
+        сущности; отсутствующая сущность — в `errors[]`.
+        До 100 items, до 1000 id в каждом; тело ≤256KB.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [entity, ids]
+                    properties:
+                      entity: { type: string, description: Имя сущности }
+                      ids:
+                        type: array
+                        maxItems: 1000
+                        items: { type: string }
+                        description: id наблюдений из выдачи search_nodes/open_nodes с with_ids=true
+                project: { type: string, description: kebab-slug проекта }
+      responses:
+        '200':
+          description: Результат по каждой сущности
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results: { type: array, items: { type: object } }
+                  errors: { type: array, items: { type: string } }
+        '400': { description: Битый JSON / невалидный slug / items не список (≤100) / ids >1000 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '402': { $ref: '#/components/responses/WriteBlocked' }
+        '403': { description: READONLY-зеркало (readonly_mirror) }
+        '413': { description: Тело больше 256KB }
   /api/delete/relations:
     post:
       operationId: deleteRelations
@@ -381,10 +718,13 @@ paths:
                 relations:
                   type: array
                   items: { $ref: '#/components/schemas/RelationIn' }
+                project: { type: string, description: kebab-slug — только связи с обоими концами в этом проекте }
       responses:
         '200': { description: Результат удаления, content: { application/json: { schema: { type: object } } } }
+        '400': { description: Невалидный project slug }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '402': { $ref: '#/components/responses/WriteBlocked' }
+        '403': { description: READONLY-зеркало (readonly_mirror) }
   /api/ingest:
     post:
       operationId: ingestHookEvents
@@ -395,7 +735,8 @@ paths:
         доставка). Идемпотентно: content-hash (SHA256 `{hook,project,ts,data}`) —
         повторная доставка засчитывается в `dedup` без дублей в пульсе.
         Каждое событие → дайджест ≤200 символов в пульс (`hook_*`, source="hook");
-        `SessionEnd` дополнительно создаёт сущность сессии дня (1 раз на проект).
+        `SessionEnd` дополнительно создаёт сущность сессии дня (1 раз на проект),
+        `data.open_tasks` (список строк, В2.1) → открытые task-сущности.
       requestBody:
         required: true
         content:
@@ -421,7 +762,7 @@ paths:
                       ts: { type: string, description: ISO-время события от клиента (идёт только в content-hash) }
                       data:
                         type: object
-                        description: Поля события (prompt/tool/input/response/...); на сервере живёт только в content-hash, в пульс — дайджест ≤200 символов
+                        description: Поля события (prompt/tool/input/response/open_tasks/...); на сервере живёт только в content-hash, в пульс — дайджест ≤200 символов
       responses:
         '200':
           description: Батч принят (повторы засчитаны в dedup)
@@ -485,11 +826,14 @@ components:
         name: { type: string, description: kebab-case id, неизменен }
         title: { type: string }
         entityType: { type: string, example: project }
+        type: { type: string, description: канонический тип после нормализации (Ф3) }
+        status: { type: string, enum: [open, fixed, done], description: 'только для bug (open/fixed) и task (open/done)' }
+        project: { type: string, description: kebab-slug проекта-владельца (Ф1) }
         tags: { type: array, items: { type: string } }
         observations: { type: array, items: { type: string } }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
-        score: { type: number, description: 'только в ответах поиска (Ф6): BM25-подобный скор, >0' }
+        score: { type: number, description: 'только в ответах поиска (Ф6): скор >0 (в гибридном режиме В2.2 — blended 0..1)' }
         snippet: { type: string, description: 'только в ответах поиска: лучший фрагмент observation (≤160 символов)' }
         highlights:
           type: array
@@ -505,7 +849,7 @@ components:
       properties:
         name: { type: string, description: kebab-case id навсегда }
         title: { type: string, description: человеческое имя }
-        entityType: { type: string, default: general }
+        entityType: { type: string, default: general, description: project/session/bug/decision/request/event/task или свободный тип }
         tags: { type: array, items: { type: string } }
         observations: { type: array, items: { type: string } }
     Relation:
@@ -538,6 +882,30 @@ components:
         kind: { type: string, example: create_entity }
         name: { type: string }
         detail: { type: string }
+        project: { type: string, description: kebab-slug проекта (если событие проектное) }
+    SessionContext:
+      type: object
+      properties:
+        context_block:
+          type: string
+          description: Готовый к вставке в промпт текст (секции проект → решения → баги → задачи → сессии → события)
+        meta:
+          type: object
+          properties:
+            project: { type: string }
+            budget_chars: { type: integer }
+            used_chars: { type: integer }
+            sections: { type: object, description: '{project|decisions|bugs|tasks|sessions|events: {items, total}}; items<total без truncated=true — кэп секции' }
+            truncated: { type: boolean }
+            aliased_to: { type: string, description: 'канонический repo-тег, если project — legacy-алиас (v0.50.0)' }
+    RecallFact:
+      type: object
+      properties:
+        entity: { type: string, description: Имя сущности-источника }
+        title: { type: string }
+        type: { type: string, description: канонический тип сущности }
+        score: { type: number, description: скор сущности из поиска (>0) }
+        text: { type: string, description: до 2 лучших фактов через " | " (каждый ≤300 символов) }
     Stats:
       type: object
       properties:
@@ -547,12 +915,21 @@ components:
         relations: { type: integer }
         observations: { type: integer }
         uptimeSec: { type: integer }
-        fileBytes: { type: integer }
+        fileBytes: { type: integer, description: memory.json + шарды projects/ }
+        project: { type: string, description: 'присутствует, если запрошен ?project=' }
         license:
           type: object
           properties:
             state: { type: string, example: licensed }
             daysLeft: { type: integer, nullable: true }
+        embed: { type: boolean, description: включён ли семантический поиск (В2.2) }
+        embedDetail:
+          type: object
+          description: Источник эмбеддингов или причина «выкл»
+          properties:
+            on: { type: boolean }
+            source: { type: string, nullable: true, enum: [env, relay], description: env — свой EMB_URL endpoint; relay — облако магазина }
+            reason: { type: string, nullable: true, enum: [readonly, no_config] }
     CreatedEntities:
       type: object
       properties:

@@ -154,13 +154,22 @@ def _real(path: Path) -> Path:
     return Path(os.path.realpath(path))
 
 
+def _read_cfg(path: Path) -> str:
+    """utf-8-sig: BOM от PowerShell-редакторов на Windows ломал всё молча —
+    regex'ы структуры (`^\\s*-?\\s*id:` не перешагнут \\ufeff), json.loads падает,
+    top-level-проверка DSH отказывала в ремонте (боевой кейс покупателя
+    2026-10-18: файл с BOM → «skip (top level is not a list)», ряд не чинился).
+    Пишем всегда без BOM (utf-8) — все хосты его читают."""
+    return path.read_text(encoding="utf-8-sig")
+
+
 def _load_json(path: Path):
     """dict или None: файла нет → {} (создадим), битый/не-dict → None (не трогаем)."""
     path = _real(path)
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(_read_cfg(path))
     except Exception:
         return None
     return data if isinstance(data, dict) else None
@@ -336,7 +345,7 @@ def _toml_blocks(text: str) -> list:
 
 def _apply_toml(cfg_path: Path, spec: dict, remove: bool, dry: bool) -> str:
     cfg_path = _real(cfg_path)
-    text = cfg_path.read_text(encoding="utf-8") if cfg_path.exists() else ""
+    text = _read_cfg(cfg_path) if cfg_path.exists() else ""
     if remove:
         if not _marked(text):
             return "not registered"
@@ -431,7 +440,7 @@ def _mcp_token() -> str:
     if not tok.strip():
         try:
             f = Path(__file__).resolve().parent.parent / "data" / "local_token.txt"
-            tok = f.read_text(encoding="utf-8")
+            tok = _read_cfg(f)   # utf-8-sig: BOM тут пережил бы split() (\ufeff — не whitespace)
         except OSError:
             return ""
     return "".join(tok.split())
@@ -566,97 +575,100 @@ def _apply_dsh(spec: dict, remove: bool, dry: bool) -> str:
     token_ok = bool(token) and bool(_TOKEN_RE.fullmatch(token))   # F1: чужой алфавит не пишем
     results = []
     for prof in profiles:
-        p = Path(prof)
-        text = p.read_text(encoding="utf-8") if p.exists() else ""
-        lines = text.splitlines(keepends=True)
-        active = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
-        if remove:
-            # удаляем ТОЛЬКО наши ряды (hooks и mcp) — row-level, чтобы чужие
-            # ряды в общем insert-блоке не пострадали; маркеры — только в
-            # некомментарных строках и точными значениями (F2)
-            spans = _dsh_row_spans(lines)
-            drop = []
-            for s, e, _ind in spans:
-                if _is_our_hooks_row(lines[s:e]) or _is_our_mcp_row(lines[s:e]):
-                    drop.append((s, e))
-            drop = _innermost(drop)
-            if not drop:
-                results.append(f"{p}: not registered")
-                continue
-            if not dry:
-                _atomic_write(p, "".join(_dsh_drop_spans(lines, drop)))
-                # пост-проверка (F2): наши маркеры ушли, структура жива — иначе откат
-                check = p.read_text(encoding="utf-8")
-                check_lines = check.splitlines(keepends=True)
-                gone = not _is_our_hooks_row(check_lines) and not _dsh_mcp_rows(check_lines)
-                if not gone or not _dsh_top_level_ok(check):
-                    _restore_text(p, text)
-                    results.append(f"{p}: ERROR post-check failed — reverted")
-                    continue
-            results.append(f"{p}: removed")
-            continue
-        status = []
-        add_blocks = []
-        # --- hooks ---
-        if _is_our_hooks_row(lines):
-            status.append("hooks already registered")
-        else:
-            add_blocks.append(_DSH_BLOCK.format(
-                config_path=_yaml_str(str(hooks_json).replace("\\", "/")),
-                project_dir=_yaml_str(str(_home("~")).replace("\\", "/"))))
-            status.append("hooks registered")
-        # --- MCP-ряд: absent → вставка; битый (голый - id:) → переписать ---
-        mcp_rows = _dsh_mcp_rows(lines)
-        broken = [(s, e) for s, e, mounted in mcp_rows if not mounted]
-        dropped = False
-        if any(mounted for _s, _e, mounted in mcp_rows):
-            status.append("mcp already registered")
-        elif not token:
-            status.append("mcp skipped (no token — data/local_token.txt)")
-        elif not token_ok:
-            status.append("mcp skipped (bad token charset)")
-        else:
-            if broken:
-                lines = _dsh_drop_spans(lines, _innermost(broken))
-                dropped = True
-                status.append("mcp repaired (was bare '- id:', DSH skips those)")
-            else:
-                status.append("mcp registered")
-            add_blocks.append(_DSH_MCP_BLOCK.format(
-                url=_yaml_str("http://localhost:8787/mcp"),
-                auth=_yaml_str("Bearer " + token)))
-        if not add_blocks and not dropped:
-            results.append(f"{p}: " + ", ".join(status))
-            continue
-        if not _dsh_top_level_ok(text):
-            results.append(f"{p}: skip (top level is not a list — left untouched)")
-            continue
-        if not dry:
-            new_text = "".join(lines).rstrip("\n") + "\n" + "".join(add_blocks)
-            _atomic_write(p, new_text)
-            # пост-проверка: наши блоки на месте, структура верхнего уровня жива,
-            # отремонтированных рядов в битой форме не осталось; иначе — откат
-            # к содержимому ДО нашей записи (M3)
-            check = p.read_text(encoding="utf-8")
-            want = (["hooks-maxgraph"] if any("hooks registered" in s for s in status) else []) \
-                + (["mcp-maxgraph"] if any(s.startswith("mcp registered")
-                                           or s.startswith("mcp repaired") for s in status) else [])
-            rows_after = _dsh_mcp_rows(check.splitlines(keepends=True))
-            # still_broken судим только когда ремонт реально делался (при
-            # skipped-broken битый ряд остаётся нетронутым — это не провал)
-            attempted_repair = bool(broken) and any(s.startswith("mcp repaired") for s in status)
-            still_broken = attempted_repair and any(not m for _s, _e, m in rows_after)
-            if any(w not in check for w in want) or not _dsh_top_level_ok(check) or still_broken:
-                _restore_text(p, text)
-                results.append(f"{p}: ERROR post-check failed — reverted")
-                continue
-            if os.name != "nt" and "Bearer" in new_text:
-                try:
-                    os.chmod(_real(p), 0o600)   # F3: файл с токеном — только owner
-                except OSError:
-                    pass
-        results.append(f"{p}: " + ", ".join(status))
+        try:
+            results.append(_dsh_apply_profile(Path(prof), spec, remove, dry,
+                                              token, token_ok, hooks_json))
+        except Exception as ex:
+            # один битый/недекодируемый профиль (напр. UTF-16 от WinPS 5.1) не
+            # должен ронять остальные (R2-Low)
+            results.append(f"{prof}: ERROR {ex}")
     return "; ".join(results)
+
+
+def _dsh_apply_profile(p: Path, spec: dict, remove: bool, dry: bool,
+                       token: str, token_ok: bool, hooks_json: Path) -> str:
+    text = _read_cfg(p) if p.exists() else ""
+    lines = text.splitlines(keepends=True)
+    if remove:
+        # удаляем ТОЛЬКО наши ряды (hooks и mcp) — row-level, чтобы чужие
+        # ряды в общем insert-блоке не пострадали; маркеры — только в
+        # некомментарных строках и точными значениями (F2)
+        spans = _dsh_row_spans(lines)
+        drop = []
+        for s, e, _ind in spans:
+            if _is_our_hooks_row(lines[s:e]) or _is_our_mcp_row(lines[s:e]):
+                drop.append((s, e))
+        drop = _innermost(drop)
+        if not drop:
+            return f"{p}: not registered"
+        if not dry:
+            _atomic_write(p, "".join(_dsh_drop_spans(lines, drop)))
+            # пост-проверка (F2): наши маркеры ушли, структура жива — иначе откат
+            check = _read_cfg(p)
+            check_lines = check.splitlines(keepends=True)
+            gone = not _is_our_hooks_row(check_lines) and not _dsh_mcp_rows(check_lines)
+            if not gone or not _dsh_top_level_ok(check):
+                _restore_text(p, text)
+                return f"{p}: ERROR post-check failed — reverted"
+        return f"{p}: removed"
+    status = []
+    add_blocks = []
+    # --- hooks ---
+    if _is_our_hooks_row(lines):
+        status.append("hooks already registered")
+    else:
+        add_blocks.append(_DSH_BLOCK.format(
+            config_path=_yaml_str(str(hooks_json).replace("\\", "/")),
+            project_dir=_yaml_str(str(_home("~")).replace("\\", "/"))))
+        status.append("hooks registered")
+    # --- MCP-ряд: absent → вставка; битый (голый - id:) → переписать ---
+    mcp_rows = _dsh_mcp_rows(lines)
+    broken = [(s, e) for s, e, mounted in mcp_rows if not mounted]
+    dropped = False
+    if any(mounted for _s, _e, mounted in mcp_rows):
+        status.append("mcp already registered")
+    elif not token:
+        status.append("mcp skipped (no token — data/local_token.txt)")
+    elif not token_ok:
+        status.append("mcp skipped (bad token charset)")
+    else:
+        if broken:
+            lines = _dsh_drop_spans(lines, _innermost(broken))
+            dropped = True
+            status.append("mcp repaired (was bare '- id:', DSH skips those)")
+        else:
+            status.append("mcp registered")
+        add_blocks.append(_DSH_MCP_BLOCK.format(
+            url=_yaml_str("http://localhost:8787/mcp"),
+            auth=_yaml_str("Bearer " + token)))
+    if not add_blocks and not dropped:
+        return f"{p}: " + ", ".join(status)
+    if not _dsh_top_level_ok(text):
+        return f"{p}: skip (top level is not a list — left untouched)"
+    if not dry:
+        new_text = "".join(lines).rstrip("\n") + "\n" + "".join(add_blocks)
+        _atomic_write(p, new_text)
+        # пост-проверка: наши блоки на месте, структура верхнего уровня жива,
+        # отремонтированных рядов в битой форме не осталось; иначе — откат
+        # к содержимому ДО нашей записи (M3)
+        check = _read_cfg(p)
+        want = (["hooks-maxgraph"] if any("hooks registered" in s for s in status) else []) \
+            + (["mcp-maxgraph"] if any(s.startswith("mcp registered")
+                                       or s.startswith("mcp repaired") for s in status) else [])
+        rows_after = _dsh_mcp_rows(check.splitlines(keepends=True))
+        # still_broken судим только когда ремонт реально делался (при
+        # skipped-broken битый ряд остаётся нетронутым — это не провал)
+        attempted_repair = bool(broken) and any(s.startswith("mcp repaired") for s in status)
+        still_broken = attempted_repair and any(not m for _s, _e, m in rows_after)
+        if any(w not in check for w in want) or not _dsh_top_level_ok(check) or still_broken:
+            _restore_text(p, text)
+            return f"{p}: ERROR post-check failed — reverted"
+        if os.name != "nt" and "Bearer" in new_text:
+            try:
+                os.chmod(_real(p), 0o600)   # F3: файл с токеном — только owner
+            except OSError:
+                pass
+    return f"{p}: " + ", ".join(status)
 
 
 def _detected(spec: dict) -> bool:
