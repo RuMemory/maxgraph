@@ -7722,7 +7722,10 @@ def main():
     log.info("maxgraph %s listening on %s:%s (store: %s, store_mode=%s, trust_proxy=%s, readonly=%s)",
              VERSION, HOST, PORT, MEMORY_FILE, STORE_MODE, TRUST_PROXY, READONLY)
     import uvicorn
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info", proxy_headers=True)
+    # frozen windowed exe: sys.stdout=None — дефолтный log_config uvicorn падает;
+    # логирование уже идёт в data/maxgraph.log (ротация)
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info", proxy_headers=True,
+                **({"log_config": None} if _FROZEN else {}))
 
 
 if __name__ == "__main__":

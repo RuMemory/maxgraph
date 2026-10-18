@@ -396,10 +396,15 @@ def apply_update(new_exe_path) -> bool:
     try:
         exe = str(Path(sys.executable).resolve())
         new = str(new_exe_path)
-        argv = [exe, _UPDATE_FLAG, new, str(os.getpid())]
+        # helper = НОВЫЙ exe (проверенный!): во-первых, свежий код helper'а; во-вторых,
+        # критично — onefile читает lazy-модули из СВОЕГО exe-файла, а текущий exe
+        # будет подменён на лету (2026-10-18: helper из старого exe падал zlib.error
+        # после подмены — его файл стал другим).
+        argv = [new, _UPDATE_FLAG, new, str(os.getpid())]
         sha, sig = new + ".sha256", new + ".sig"
         if os.path.exists(sha) and os.path.exists(sig):
             argv += [sha, sig]
+        argv.append(exe)  # цель подмены — явно (helper запущен из нового exe!)
         _spawn_detached(argv)
         log.info("selfupdate: helper запущен (%s → %s)", new_exe_path, exe)
         return True
@@ -513,6 +518,9 @@ def apply_update_main(argv) -> int:
         log.error("selfupdate: helper: нужны <new_exe> <parent_pid> <sha256_file> <sig_file>")
         return 2
     new_arg, pid_arg, sha_arg, sig_arg = argv[0], argv[1], argv[2], argv[3]
+    # цель подмены: с v1.0.5 — явный argv[4] (helper запущен из НОВОГО exe,
+    # sys.executable ≠ цель); старый формат — цель = свой exe
+    target_exe = argv[4] if len(argv) > 4 else None
     # (а) pid обязан быть положительным числом — никакой «подмены сразу»
     try:
         parent_pid = int(pid_arg)
@@ -529,7 +537,7 @@ def apply_update_main(argv) -> int:
     except (ValueError, OSError) as e:
         log.error("selfupdate: helper: %s вне DATA_DIR/updates — отказ (%r)", new_arg, e)
         return 2
-    exe = Path(sys.executable).resolve()
+    exe = Path(target_exe).resolve() if target_exe else Path(sys.executable).resolve()
     # prev — механизм отката (MINOR-6: НЕ удалять; живёт до следующего
     # успешного обновления, затирается при нём).
     prev = exe.with_name(exe.stem + ".prev" + exe.suffix)
