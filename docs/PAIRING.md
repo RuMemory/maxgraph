@@ -276,7 +276,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -HostfpOnly; d
 В начале сессии вызови read_graph. Сохранять факты СРАЗУ через
 add_observations; новые темы — create_entities (name = kebab-case id,
 title = человеческое имя); зависимости — create_relations в активном залоге.
-Полный протокол: https://github.com/RuMemory/maxgraph/blob/master/docs/PROTOCOL.md
+Полный протокол: https://raw.githubusercontent.com/RuMemory/maxgraph/master/docs/PROTOCOL.md
 ```
 
 Начни разговор — и смотри, как на графе вспыхивают первые звёзды.
