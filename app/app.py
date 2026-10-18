@@ -527,6 +527,7 @@ def _filter_graph(ents: dict, rels: list, slug: str, all_projects: bool):
 # старым slug и видны в all_projects-кросс-поиске (туда алиас не применяется).
 
 _REPO_TAG_RE = re.compile(r"^repo-[a-z0-9-]+-[0-9a-f]{12}$")
+_ALIASES_CAP = 10_000  # потолок реестра алиасов (v0.50.4); сверх — только перезапись
 _aliases_cache = None  # None = ещё не читали с диска; dict — актуальный снимок
 
 
@@ -542,10 +543,12 @@ def _aliases_load() -> dict:
             raw = json.loads(PROJECT_ALIASES_FILE.read_text(encoding="utf-8"))
             for k, v in (raw.get("aliases") or {}).items():
                 # файл — граница доверия (ручная правка): оба конца — валидные
-                # slug'и, иначе запись игнорируем (как _shard_of_entity)
+                # slug'и и не reserved-слова, иначе запись игнорируем
+                # (как _shard_of_entity)
                 if (isinstance(k, str) and isinstance(v, str)
                         and len(k) <= 64 and len(v) <= 64
-                        and _PROJECT_RE.fullmatch(k) and _PROJECT_RE.fullmatch(v)):
+                        and _PROJECT_RE.fullmatch(k) and _PROJECT_RE.fullmatch(v)
+                        and k not in _RESERVED_SLUGS and v not in _RESERVED_SLUGS):
                     data[k] = v
     except Exception as ex:  # журнал алиасов не должен ронять память
         log.warning("project-aliases: сбой чтения: %s", ex)
@@ -3358,8 +3361,20 @@ async def api_ingest(request: Request):
             ents, _rels = _load()
             aliases = dict(_aliases_load())
             for legacy, canon_tag in sorted(legacy_hints.items()):
-                if legacy in aliases:
+                cur = aliases.get(legacy)
+                if cur == canon_tag:
                     continue  # идемпотентно: алиас уже есть → no-op
+                if cur:
+                    # anti-squat (v0.50.4): алиас перезаписываем, только пока
+                    # его canon-проект ПУСТ — скваттер удерживает лишь пустой
+                    # тег; настоящая миграция перехватывает алиас первым же
+                    # пингом, а наполненный данными canon неизменен.
+                    if any((e.get("project") or "") == cur for e in ents.values()):
+                        continue
+                    log.warning("project-aliases: перезапись %s: %s → %s (пустой canon)",
+                                legacy, cur, canon_tag)
+                elif len(aliases) >= _ALIASES_CAP:
+                    continue  # потолок реестра: дальше — только перезапись
                 # security v0.50.0 M2: легитимный legacy — имя репо, НЕ repo-тег
                 # (иначе алиас-цепочки repo→repo и перехват чужого тег-проекта).
                 if _REPO_TAG_RE.match(legacy):
@@ -3377,7 +3392,7 @@ async def api_ingest(request: Request):
                 aliases_created[legacy] = canon_tag
             if aliases_created:
                 _aliases_save(aliases)
-                log.info("project-aliases: созданы %s", aliases_created)
+                log.info("project-aliases: созданы/перезаписаны %s", aliases_created)
     # лёгкая обработка: дайджест в пульс
     for ev in fresh:
         _event(f"hook_{ev['hook']}", detail=_hook_digest(ev["hook"], ev["data"]),
