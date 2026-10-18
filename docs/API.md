@@ -11,6 +11,7 @@ Base URL: `http://<host>:8787`. Всё, кроме `/healthz`, требует `A
 | `add_observations` | `observations: [{entityName, contents[]}]` | Добавить факты (дедупликация) |
 | `delete_entities` | `entityNames: []` | Удалить сущности и их связи |
 | `delete_observations` | `deletions: [{entityName, observations[]}]` | Удалить конкретные факты |
+| `delete_observations_by_id` | `items: [{entity, ids[]}]` | v0.50.0: удалить факты по id (id — из `search_nodes`/`open_nodes` с `with_ids=true`) |
 | `delete_relations` | `relations: [{from, to, relationType}]` | Удалить связи |
 | `read_graph` | — | Весь граф |
 | `search_nodes` | `query`, `limit?` (default 20) | Ранжированный поиск (Ф6): score/snippet/highlights; пустой query — все сущности |
@@ -25,6 +26,10 @@ Base URL: `http://<host>:8787`. Всё, кроме `/healthz`, требует `A
 **session_start (Ф2)**: возвращает `{"context_block", "meta"}`. `context_block` — готовый к вставке в промпт текст с секциями по приоритету: `# Проект: <slug>` (title + до 5 ключевых фактов) → `## Решения владельца` (entityType `decision`, recency-first, дословно, ≤50 строк) → `## Открытые баги` (entityType `bug` без закрывающего статуса, ≤30 строк) → `## Открытые задачи` (entityType `task`, status≠`done`, ≤10 строк: title + первый факт; В2.1) → `## Прошлые сессии` (entityType `session`, ≤10: имя + первые 2 факта) → `## Недавние события` (≤15 событий пульса проекта). Бюджет жёсткий: `len(context_block) ≤ budget_chars` всегда; усечение построчное, снизу вверх (порядок жертвования: events → sessions → tasks → bugs → decisions), с маркером «… (ещё N, усечено бюджетом)». `meta`: `{project, budget_chars, used_chars, sections: {project|decisions|bugs|tasks|sessions|events: {items, total}}, truncated}`; `items < total` без `truncated=true` — сработал кэп секции, не бюджет. Пустой проект → блок-подсказка «начни с create_entities»; без `project` — ошибка (весь граф не читается). Чтение: пульс не пишется. В2.3: внутри секций решений/багов/задач порядок — актуальность (свежесть × ACT-R множитель частоты обращений, ≤+25%; `ACTR_MAX_BOOST=0` — чистая свежесть, как раньше), а сущности, попавшие в блок, учитываются как обращения.
 
 **Проекты (Ф1)**: все инструменты принимают `project` (kebab-slug, регистр приводится к нижнему; в `session_start` он обязателен, в остальных — опционален). `read_graph`/`search_nodes`/`list_timeline` — ещё и `all_projects: bool` (явный кросс-поиск по всем проектам). Без `project` — плоский граф, поведение как до Ф1.
+
+**Repo-теги и алиасы (v0.50.0)**: при наличии git remote хук использует стабильный тег `repo-<имя>-<хэш>` — одинаковый на любой машине и в любом агенте, память проекта общая. Старые slug связываются алиасом автоматически: чтение и запись по старому имени прозрачно идут в новый проект (`meta.aliased_to` в ответах `session_start`/`read_graph` показывает канон), данные физически не переносятся.
+
+**`with_ids` (v0.50.0)**: `search_nodes`/`open_nodes` с `with_ids=true` отдают наблюдения как `{"id", "text"}` — id нужен для точечного `delete_observations_by_id`. Без флага — старый формат строк.
 
 **Поиск (Ф6)**: непустой `query` — ранжированный FTS-lite (BM25-подобный скоринг по полям `name ×3 / title ×2 / tags ×1.5 / observations ×1` + фразовый бонус + recency ≤10%, стабильная сортировка score desc → updatedAt desc → name). У сущностей ответа + `score` (>0), `snippet` (лучший фрагмент observation, ≤160 символов), `highlights` — позиции совпадений `[[start, end], …]` внутри snippet (без HTML, безопасно для esc()). `limit` — топ-N (default 20). Фильтры `type=` (после нормализации, Ф3) и `project`/`all_projects` (Ф1) комбинируются — применяются к корпусу до скоринга. Пустой `query` — старое поведение: все сущности с фильтрами, без `score`/`snippet`/`highlights`. Запрос без извлекаемых терминов (пунктуация, CJK) — фоллбек на подстрочный поиск, тоже без FTS-полей.
 
@@ -53,6 +58,7 @@ Base URL: `http://<host>:8787`. Всё, кроме `/healthz`, требует `A
 | `POST /api/relations` | `{"relations":[...]}` |
 | `POST /api/delete/entities` | `{"entityNames":[...]}` |
 | `POST /api/delete/observations` | `{"deletions":[...]}` |
+| `POST /api/delete/observations-by-id` | v0.50.0: `{"items":[{"entity","ids":[...]}],"project"?}` — точечное удаление фактов по id (id — из выдачи с `with_ids=true`) |
 | `POST /api/delete/relations` | `{"relations":[...]}` |
 | `POST /api/ingest` | Приёмник захват-хуков (Ф5): `{"events":[{"hook","project"?,"ts","data"}]}` — до 100 событий, тело ≤1MB; идемпотентно по content-hash (повтор → `{"dedup":n}`); `SessionEnd` → сессия дня на проект, `data.open_tasks` (список строк, В2.1) → открытые task-сущности; 400 невалидный батч, 401 без токена, 402 trial expired, 403 READONLY, 413 тело >1MB, 429 rate-limit 60/мин с IP (`Retry-After: 60`, Ф8). Клиент: `hooks/maxgraph_hook.py` (hooks/README.md) |
 
@@ -61,6 +67,7 @@ Base URL: `http://<host>:8787`. Всё, кроме `/healthz`, требует `A
 ## Файлы данных (volume `/data`)
 
 - `memory.json` — состояние графа (NDJSON); у сущности опциональное поле `project` (kebab-slug)
+- `project-aliases.json` — (v0.50.0) алиасы проектов `{"aliases": {"<старый slug>": "<repo-тег>"}}`; чтение/запись по старому slug прозрачно идут в канон
 - `events.jsonl` — журнал событий; у события опциональное поле `project`
 - `embeddings.json` — (опционально, В2.2) вектора сущностей `{"_model": отпечаток модели, name: {"v": [...], "u": updatedAt}}`; пишется фоновым пополнителем при заданных `EMBED_URL`+`EMBED_KEY`
 - `embed.state.json` — (опционально, В2.2) дневной счётчик токенов эмбеддингов

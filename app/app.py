@@ -152,6 +152,7 @@ DATA_DIR = Path(os.environ.get("MEMORY_DIR", "/data"))
 MEMORY_FILE = DATA_DIR / "memory.json"
 PROJECTS_DIR = DATA_DIR / "projects"  # v0.34.0: шарды графа по проектам (суд 20261013-000330)
 EVENTS_FILE = DATA_DIR / "events.jsonl"
+PROJECT_ALIASES_FILE = DATA_DIR / "project-aliases.json"  # --- v0.50.0: алиасы legacy-slug → repo-тег ---
 INSTALLS_FILE = DATA_DIR / "installs.json"  # --- v0.14: install-ping учёт ---
 LEARN_EVENTS_FILE = DATA_DIR / "learn_events.jsonl"  # --- W2 v0.26.0: learn-events ---
 RANK_CONFIG_FILE = DATA_DIR / "rank_config.json"  # --- W3 v0.27.0: last-good словарь синонимов ---
@@ -518,6 +519,66 @@ def _filter_graph(ents: dict, rels: list, slug: str, all_projects: bool):
     return es, [r for r in rels if r["from"] in names and r["to"] in names]
 
 
+# --- v0.50.0: алиасы проектов (legacy slug → repo-<name>-<sha12>) -------------
+# Клиент-хук вычисляет проект как repo-тег (канон) и шлёт старый slug в
+# legacy_project; сервер заводит алиас (api_ingest) и дальше ПРОЗРАЧНО
+# резолвит legacy → канон во всех точках доступа к данным проекта (op_*,
+# api_ingest). Данные физически НЕ переносятся: legacy-сущности остаются под
+# старым slug и видны в all_projects-кросс-поиске (туда алиас не применяется).
+
+_REPO_TAG_RE = re.compile(r"^repo-[a-z0-9-]+-[0-9a-f]{12}$")
+_aliases_cache = None  # None = ещё не читали с диска; dict — актуальный снимок
+
+
+def _aliases_load() -> dict:
+    """Алиасы {legacy_slug: canon_slug}, лениво с кэшем. Битый/отсутствующий
+    файл → {} (fail-open: память читается и без алиасов)."""
+    global _aliases_cache
+    if _aliases_cache is not None:
+        return _aliases_cache
+    data = {}
+    try:
+        if PROJECT_ALIASES_FILE.exists():
+            raw = json.loads(PROJECT_ALIASES_FILE.read_text(encoding="utf-8"))
+            for k, v in (raw.get("aliases") or {}).items():
+                # файл — граница доверия (ручная правка): оба конца — валидные
+                # slug'и, иначе запись игнорируем (как _shard_of_entity)
+                if (isinstance(k, str) and isinstance(v, str)
+                        and len(k) <= 64 and len(v) <= 64
+                        and _PROJECT_RE.fullmatch(k) and _PROJECT_RE.fullmatch(v)):
+                    data[k] = v
+    except Exception as ex:  # журнал алиасов не должен ронять память
+        log.warning("project-aliases: сбой чтения: %s", ex)
+    _aliases_cache = data
+    return _aliases_cache
+
+
+def _aliases_save(aliases: dict):
+    """Атомарная запись (tmp+replace, как _ingest_hashes_save): crash mid-write
+    не ротует алиасы. Сбой — только warning: хуже потерять алиас, чем приём."""
+    global _aliases_cache
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = PROJECT_ALIASES_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"aliases": aliases}, ensure_ascii=False,
+                                  sort_keys=True), encoding="utf-8")
+        tmp.replace(PROJECT_ALIASES_FILE)
+        try:
+            os.chmod(PROJECT_ALIASES_FILE, 0o600)  # L2: как spool (v0.47.0)
+        except OSError:
+            pass
+        _aliases_cache = dict(aliases)
+    except Exception as ex:
+        log.warning("project-aliases: сбой записи: %s", ex)
+
+
+def _resolve_project(slug: str) -> str:
+    """legacy-slug → канонический slug по алиасу; без алиаса — как есть.
+    Применять ДО доступа к данным проекта (чтение и запись); НЕ применять к
+    all_projects-кросс-поиску (там оба slug видны осознанно)."""
+    return _aliases_load().get(slug, slug) if slug else slug
+
+
 # ------------------------------------------------------------- taxonomy -----
 
 # Ф3 (MEMORY-SYSTEM-v2): канонические типы сущностей. Свободные типы НЕ ломаются:
@@ -619,12 +680,25 @@ def _mark_observation(obs: str, today: str) -> str:
     return obs if _is_invalidated(obs) else f"[~{today}] {obs}"
 
 
+# --- v0.50.0: forget по id ---------------------------------------------------
+# Стабильный id наблюдения — sha256 текста КАК ХРАНИТСЯ (с [~дата]-маркером,
+# если он есть) — вычисляемый, НЕ хранимый: старые записи работают сразу, а
+# «что видишь в выдаче with_ids, то и удаляешь» (delete_observations_by_id).
+
+def _obs_id(text) -> str:
+    return hashlib.sha256(str(text).encode("utf-8")).hexdigest()[:12]
+
+
+def _obs_with_ids(obs_list) -> list:
+    """Наблюдения как объекты {id, text} — формат выдачи with_ids=True."""
+    return [{"id": _obs_id(o), "text": o} for o in obs_list]
+
+
 
 def _create_entities_graph(ents, rels, items, project: str = "", source: str = ""):
     """Ядро op_create_entities на УЖЕ загруженном графе (без _load/_save и без
     захвата _lock) — для батчей, где caller держит лок и граф на весь запрос
-    (api_ingest SessionEnd, Ф8 LOW: раньше батч из N проектов делал N×_load +
-    N×_save). → (out, changed); запись — обязанность caller'а, один _save в конце.
+    (api_ingest SessionEnd: один батч — один _load и один _save). → (out, changed); запись — обязанность caller'а, один _save в конце.
 
     Вся семантика (merge/adopted/project-автосоздание/part-of/статусы багов/
     события пульса) — здесь, единый источник истины; op_create_entities — тонкая
@@ -773,6 +847,7 @@ def op_create_entities(items, project: str = "", source: str = ""):
     переданного — default "open"; status для прочих типов и невалидное значение —
     игнор с warnings[] в ответе.
     """
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
     with _lock:
         ents, rels = _load()
         out, changed = _create_entities_graph(ents, rels, items, project, source)
@@ -974,6 +1049,7 @@ def op_update_entity(item, project: str = "", source: str = ""):
     и при невалидном значении — игнор с warnings[] в ответе. Смена типа на тип
     без статуса снимает status, на bug/task — ставит default "open" (явный status
     в том же вызове важнее); статус, валидный для нового типа, сохраняется."""
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
     with _lock:
         ents, rels = _load()
         name = item.get("name", "")
@@ -1047,6 +1123,7 @@ def op_update_entity(item, project: str = "", source: str = ""):
 
 
 def op_create_relations(items, project: str = ""):
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
     with _lock:
         ents, rels = _load()
         existing = {(r["from"], r["to"], r["relationType"]) for r in rels}
@@ -1079,6 +1156,7 @@ def op_add_observations(items, project: str = ""):
     удаление — delete_observations всегда, И3). Совпадение — точное по сырой
     строке; уже помеченная — идемпотентный пропуск; ненайденные — в
     supersedesNotFound ответа (молча не теряем)."""
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
     today = now_iso()[:10]
     with _lock:
         ents, rels = _load()
@@ -1165,6 +1243,7 @@ def op_add_observations(items, project: str = ""):
 def op_delete_entities(names, project: str = ""):
     """project (Ф1): удаляются только сущности этого проекта — чужие с тем же
     именем не трогаем (изоляция деструктивных операций)."""
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
     with _lock:
         ents, rels = _load()
         deleted = [n for n in names
@@ -1181,6 +1260,7 @@ def op_delete_entities(names, project: str = ""):
 
 def op_delete_observations(items, project: str = ""):
     """project (Ф1): затрагиваются только сущности этого проекта."""
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
     with _lock:
         ents, rels = _load()
         removed = 0
@@ -1200,9 +1280,56 @@ def op_delete_observations(items, project: str = ""):
         return out
 
 
+def op_delete_observations_by_id(items, project: str = ""):
+    """Точечный forget по id наблюдения (v0.50.0): items — [{entity, ids}].
+    id = _obs_id текста КАК ХРАНИТСЯ (см. with_ids у search_nodes/open_nodes).
+    Сущность обязана существовать и быть видимой в проекте — иначе errors[]
+    (как op_add_observations); ненайденные ids — в notFound записи результата
+    (молча не теряем). Пульс — как у op_delete_observations: без события."""
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    with _lock:
+        ents, rels = _load()
+        results, errors = [], []
+        removed = 0
+        for item in items:
+            if not isinstance(item, dict):
+                errors.append("item must be an object {entity, ids}")
+                continue
+            name = str(item.get("entity") or "").strip()
+            ids = [str(i or "").strip() for i in (item.get("ids") or [])]
+            ids = [i for i in dict.fromkeys(ids) if i]
+            if not name:
+                errors.append("item.entity is required")
+                continue
+            if name not in ents or (project and not _in_project(ents[name], project)):
+                suffix = f" in project '{project}'" if project else ""
+                errors.append(f"Entity '{name}' not found{suffix}")
+                continue
+            obs_list = ents[name]["observations"]
+            have = {_obs_id(o) for o in obs_list}
+            deleted = [i for i in ids if i in have]
+            not_found = [i for i in ids if i not in have]
+            if deleted:
+                drop = set(deleted)
+                ents[name]["observations"] = [o for o in obs_list
+                                              if _obs_id(o) not in drop]
+                ents[name]["updatedAt"] = now_iso()
+                removed += len(obs_list) - len(ents[name]["observations"])
+            results.append({"entity": name, "deleted": deleted,
+                            "notFound": not_found})
+        if results:
+            _save(ents, rels)
+        out = {"removed": removed, "results": results}
+        if errors:
+            out["errors"] = errors
+        _reprime_tick(project, out)
+        return out
+
+
 def op_delete_relations(items, project: str = ""):
     """project (Ф1): удаляются только связи, чьи ОБА конца видимы в проекте —
     кросс-проектные связи из контекста проекта не трогаем."""
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
     with _lock:
         ents, rels = _load()
         drop = {(r["from"], r["to"], r["relationType"]) for r in items}
@@ -1220,10 +1347,14 @@ def op_delete_relations(items, project: str = ""):
 
 
 def op_read_graph(project: str = "", all_projects: bool = False):
+    canon = _resolve_project(project)  # v0.50.0: legacy slug → канон
     with _lock:
         ents, rels = _load()
-    es, rs = _filter_graph(ents, rels, project, all_projects)
-    return {"entities": es, "relations": rs}
+    es, rs = _filter_graph(ents, rels, canon, all_projects)
+    out = {"entities": es, "relations": rs}
+    if canon != project and project and not all_projects:
+        out["meta"] = {"aliased_to": canon}  # v0.50.0: чтение по legacy-slug
+    return out
 
 
 def _hybrid_search(query_str: str):
@@ -1251,7 +1382,7 @@ def _hybrid_search(query_str: str):
 
 
 def op_search(query, project: str = "", all_projects: bool = False, type_filter: str = "",
-              limit: int = searchrank.DEFAULT_LIMIT):
+              limit: int = searchrank.DEFAULT_LIMIT, with_ids: bool = False):
     """Поиск. Непустой query (Ф6) — ранжированный FTS-lite (searchrank): BM25-подобный
     скор по полям name×3/title×2/tags×1.5/observations×1 + фразовый бонус + recency ≤10%,
     топ-limit (default 20); у сущностей ответа + score, snippet, highlights (позиции
@@ -1277,8 +1408,13 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
 
     Сущности ответа несут канонический type; bug — ещё и status (явный, а для legacy
     без поля — выведенный эвристикой _bug_is_open); task (В2.1) — status
-    (явный open/done, битое/отсутствующее хранимое значение → "open")."""
+    (явный open/done, битое/отсутствующее хранимое значение → "open").
+
+    with_ids (v0.50.0): observations сущностей ответа — объекты {id, text}
+    (id = _obs_id, для delete_observations_by_id); default False — старый
+    формат (список строк), обратная совместимость."""
     tf = _canonical_type(type_filter) if str(type_filter or "").strip() else ""
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
     with _lock:
         ents, rels = _load()
     corpus = list(ents.values())
@@ -1346,6 +1482,8 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
             text, highlights = searchrank.snippet(e, qts)
             v["snippet"] = text
             v["highlights"] = highlights
+        if with_ids:  # v0.50.0: {id, text} вместо строк (id от текста как хранится)
+            v["observations"] = _obs_with_ids(v.get("observations", []))
         out_entities.append(v)
     if query_str.strip():
         # В2.3: «осмысленное» чтение — top-20 выдачи (ranked и CJK-фоллбек).
@@ -1363,7 +1501,10 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
     return {"entities": out_entities, "relations": mrels}
 
 
-def op_open(names, project: str = ""):
+def op_open(names, project: str = "", with_ids: bool = False):
+    """with_ids (v0.50.0): observations — объекты {id, text} (id = _obs_id,
+    для delete_observations_by_id); default False — старый формат строк."""
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
     want = set(names)
     with _lock:
         ents, rels = _load()
@@ -1373,16 +1514,20 @@ def op_open(names, project: str = ""):
         frels = [r for r in rels if r["from"] in want and r["to"] in want]
         _touch([e["name"] for e in found])  # В2.3: явное открытие = обращение
         learn.record_open([e["name"] for e in found])  # W2: связка со свежим поиском
-        return {"entities": found, "relations": frels}
-    found = [e for n, e in ents.items() if n in want and _in_project(e, project)]
-    found_names = {e["name"] for e in found}
-    frels = [r for r in rels if r["from"] in found_names and r["to"] in found_names]
-    _touch([e["name"] for e in found])  # В2.3: только реально найденные имена
-    learn.record_open([e["name"] for e in found])  # W2: связка со свежим поиском
+    else:
+        found = [e for n, e in ents.items() if n in want and _in_project(e, project)]
+        found_names = {e["name"] for e in found}
+        frels = [r for r in rels if r["from"] in found_names and r["to"] in found_names]
+        _touch([e["name"] for e in found])  # В2.3: только реально найденные имена
+        learn.record_open([e["name"] for e in found])  # W2: связка со свежим поиском
+    if with_ids:  # копии — хранимый граф не трогаем
+        found = [dict(e, observations=_obs_with_ids(e.get("observations", [])))
+                 for e in found]
     return {"entities": found, "relations": frels}
 
 
 def op_timeline(limit=100, project: str = "", all_projects: bool = False):
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
     with _lock:
         if not EVENTS_FILE.exists():
             return {"events": []}
@@ -1472,6 +1617,7 @@ def op_task_add(title, note: str = "", project: str = "", source: str = "",
     своего проекта в том же вызове (контекст задачи не теряется); неизвестные/
     чужие — в links_skipped (молча не теряем).
     → {"created": entity, "linked": [...], "links_skipped": [...]} | {"error": …}."""
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
     title = re.sub(r"\s+", " ", str(title or "")).strip()[:_TASK_TITLE_MAX]
     if not title:
         return {"error": "task_add: пустой title"}
@@ -1524,6 +1670,7 @@ def op_task_done(name: str, project: str = "", source: str = "") -> dict:
     В3.4 (Т5): при закрытии — связь «discussed» от session-сущности сегодняшнего
     дня к задаче, если сессия дня существует (stub SessionEnd-хука тоже считается;
     новую сессию НЕ создаём — И1, авто-записей нет). Ответ: + linked_to_session."""
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
     with _lock:
         ents, rels = _load()
         e = ents.get(name)
@@ -1563,6 +1710,7 @@ def op_task_list(project: str = "") -> dict:
     Ч2-контракт: task_list — «полная правда», как
     read_graph/open_nodes: инвалидированные наблюдения видны с маркером
     [~дата] (фильтруют только session_start и search)."""
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
     with _lock:
         ents, _rels = _load()
     tasks = sorted((e for e in ents.values()
@@ -1682,6 +1830,7 @@ def op_session_close(summary: str = "", done=(), links=(), project: str = "",
     (механически, по пишущим событиям). Повторный вызов за день — домердж.
     → {"session", "merged", "linked", "links_skipped", "open_tasks_hint",
        "already_closed"} | {"error": …} (пустые summary+done)."""
+    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
     summary = re.sub(r"\s+", " ", str(summary or "")).strip()
     obs = []
     if summary:
@@ -1961,7 +2110,13 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
     (после бюджетной обрезки), учитываются как обращения (_touch). Сессии —
     чистая хронология (свежесть сессии важна сама по себе), секция событий —
     журнал, не чтение фактов сущности: ни буста, ни учёта.
+
+    v0.50.0: legacy-slug резолвится в канон по алиасу (данные канона), в meta
+    добавляется "aliased_to": "<canon>".
     """
+    canon = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    aliased_to = canon if canon != project else ""
+    project = canon
     try:
         budget = max(0, int(budget_chars))
     except (TypeError, ValueError):
@@ -2149,6 +2304,8 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
         sec_meta[key]["items"] = n
     meta = {"project": project, "budget_chars": budget, "used_chars": len(text),
             "sections": sec_meta, "truncated": truncated}
+    if aliased_to:  # v0.50.0: запросили по legacy-slug — отдали данные канона
+        meta["aliased_to"] = aliased_to
     log.info("session_start: project=%s budget=%d used=%d truncated=%s",
              project, budget, len(text), truncated)
     return {"context_block": text, "meta": meta}
@@ -2182,6 +2339,12 @@ class ObservationsIn(BaseModel):
 class DeletionIn(BaseModel):
     entityName: str
     observations: list[str] = Field(default_factory=list)
+
+
+class ObsIdDeletionIn(BaseModel):
+    """v0.50.0: forget по id — {entity, ids} (id = _obs_id из выдачи with_ids)."""
+    entity: str
+    ids: list[str] = Field(default_factory=list)
 
 
 # ------------------------------------------------------------- licensing ---
@@ -2352,6 +2515,21 @@ def delete_observations(deletions: list[DeletionIn], project: str = "") -> dict:
 
 
 @mcp.tool()
+def delete_observations_by_id(items: list[ObsIdDeletionIn], project: str = "") -> dict:
+    """Точечный forget по id наблюдения (v0.50.0). items: [{entity, ids}] — id бери из выдачи search_nodes/open_nodes с with_ids=true (id стабилен: sha256 текста как хранится, включая [~дата]-маркер). Ответ: results[] с deleted/notFound по каждой сущности; отсутствующая сущность — errors[]. project: kebab-slug — затрагиваются только сущности этого проекта"""
+    ro = _readonly_guard()
+    if ro:
+        return ro
+    blocked = _write_block()
+    if blocked:
+        return blocked
+    slug, err = _check_project(project)
+    if err:
+        return {"error": err}
+    return op_delete_observations_by_id([i.model_dump() for i in items], slug)
+
+
+@mcp.tool()
 def delete_relations(relations: list[RelationIn], project: str = "") -> dict:
     """Delete multiple relations from the knowledge graph. project: kebab-slug — удаляются только связи с обоими концами в этом проекте"""
     ro = _readonly_guard()
@@ -2377,21 +2555,21 @@ def read_graph(project: str = "", all_projects: bool = False) -> dict:
 
 @mcp.tool()
 def search_nodes(query: str, project: str = "", all_projects: bool = False, type: str = "",
-                 limit: int = 20) -> dict:
-    """Search for nodes by query. Используй вместо read_graph, когда нужна одна тема, и ПЕРЕД create_entities — чтобы не создать дубликат. project: kebab-slug — искать только в этом проекте; all_projects=true — явный кросс-поиск. type: фильтр по типу после нормализации (канонические: project/session/bug/decision/request/event/task; «bugfix»/«баг» → bug; свободный тип — точное совпадение). Непустой query — ранжированный FTS-lite (Ф6): сортировка по релевантности, limit — топ-N (default 20), у сущностей ответа + score, snippet, highlights (позиции совпадений в snippet, без HTML); часто и недавно читаемые сущности дополнительно всплывают (ACT-R, В2.3). Пустой query — все сущности с фильтрами, как раньше. Ответ включает канонический type, а для bug/task — status (open/fixed и open/done)."""
+                 limit: int = 20, with_ids: bool = False) -> dict:
+    """Search for nodes by query. Используй вместо read_graph, когда нужна одна тема, и ПЕРЕД create_entities — чтобы не создать дубликат. project: kebab-slug — искать только в этом проекте; all_projects=true — явный кросс-поиск. type: фильтр по типу после нормализации (канонические: project/session/bug/decision/request/event/task; «bugfix»/«баг» → bug; свободный тип — точное совпадение). Непустой query — ранжированный FTS-lite (Ф6): сортировка по релевантности, limit — топ-N (default 20), у сущностей ответа + score, snippet, highlights (позиции совпадений в snippet, без HTML); часто и недавно читаемые сущности дополнительно всплывают (ACT-R, В2.3). Пустой query — все сущности с фильтрами, как раньше. Ответ включает канонический type, а для bug/task — status (open/fixed и open/done). with_ids=true (v0.50.0): observations — объекты {id, text} для delete_observations_by_id; default false — старый формат строк."""
     slug, err = _check_project(project)
     if err:
         return {"error": err}
-    return op_search(query, slug, all_projects, type, limit)
+    return op_search(query, slug, all_projects, type, limit, with_ids=with_ids)
 
 
 @mcp.tool()
-def open_nodes(names: list[str], project: str = "") -> dict:
-    """Open specific nodes in the knowledge graph by their names. project: kebab-slug — видимы только сущности этого проекта"""
+def open_nodes(names: list[str], project: str = "", with_ids: bool = False) -> dict:
+    """Open specific nodes in the knowledge graph by their names. project: kebab-slug — видимы только сущности этого проекта. with_ids=true (v0.50.0): observations — объекты {id, text} для delete_observations_by_id; default false — старый формат строк"""
     slug, err = _check_project(project)
     if err:
         return {"error": err}
-    return op_open(names, slug)
+    return op_open(names, slug, with_ids=with_ids)
 
 
 @mcp.tool()
@@ -2498,8 +2676,8 @@ _DASH_DATA = DATA_DIR / "dashboard.html"  # hot-override без пересбор
 _PAGES = {"dashboard.html": _DASH_DATA, "landing.html": DATA_DIR / "landing.html",
           "billing.html": DATA_DIR / "billing.html",
           "privacy.html": DATA_DIR / "privacy.html", "offer.html": DATA_DIR / "offer.html"}
-# admin.html нет в _PAGES с v0.41.0: страница версионируется в репо (была
-# hot-override-only, master/прод разошлись). DATA_DIR/admin.html на сервере
+# admin.html нет в _PAGES с v0.41.0: страница версионируется в репо.
+# DATA_DIR/admin.html на сервере
 # НЕ должен шэдоуить репозиторную — иначе деплой отдаёт старый JS под новый API.
 
 
@@ -2556,6 +2734,7 @@ async def api_export(request: Request):
     slug, err = _query_project(request)
     if err:
         return JSONResponse({"error": err}, status_code=400)
+    slug = _resolve_project(slug)  # v0.50.0: legacy slug → канон
     with _lock:
         ents, rels = _load()  # объединение шардов (v0.34.0: файл на диске уже не полная картина)
         events_raw = EVENTS_FILE.read_text(encoding="utf-8") if EVENTS_FILE.exists() else ""
@@ -2658,8 +2837,8 @@ async def api_recall(request: Request):
     факт ≤300 chars; инвалидированные [~дата] и пустые исключены); суммарно
     ≤1500 chars фактов — дальше хвост списка обрезается.
 
-    Чтение: без _readonly_guard/_write_block. Rate-limit 120/мин с IP
-    (Ф8-конвенция), тело ≤64KB → 413, невалидный JSON → 400."""
+    Чтение: без _readonly_guard/_write_block. Rate-limit 120/мин с IP,
+    тело ≤64KB → 413, невалидный JSON → 400."""
     ip = _client_ip(request)
     if _rate_limited(ip, "recall", RECALL_RATE_LIMIT, 60):
         return JSONResponse({"error": "too_many_requests"}, status_code=429,
@@ -2695,6 +2874,7 @@ async def api_recall(request: Request):
 
 def _recall(query: str, slug: str) -> dict:
     """Ядро /api/recall (синхронное; вызывается из хендлера через to_thread)."""
+    slug = _resolve_project(slug)  # v0.50.0: legacy slug → канон
     res = op_search(query, slug, limit=10)
     qts = set(searchrank.tokenize(query))  # стемы запроса (lowercase)
     facts, total = [], 0
@@ -2966,6 +3146,35 @@ async def api_del_observations(request: Request):
     return JSONResponse(op_delete_observations(body.get("deletions", []), slug))
 
 
+@mcp.custom_route("/api/delete/observations-by-id", methods=["POST"])
+async def api_del_observations_by_id(request: Request):
+    """v0.50.0: forget по id — {"items": [{"entity", "ids": [...]}], "project"?}.
+    Те же гварды, что у /api/delete/observations (Bearer — middleware,
+    readonly → 403, write_block → 402)."""
+    ro = _readonly_guard()
+    if ro:
+        return JSONResponse(ro, status_code=403)
+    blocked = _write_block()
+    if blocked:
+        return JSONResponse(blocked, status_code=402)
+    body_raw, rerr = await _read_capped(request, 262144)  # L1: кап 256KB, как у соседей
+    if rerr is not None:
+        return JSONResponse({"error": "payload too large (≤256KB)"}, status_code=413)
+    try:
+        body = json.loads(body_raw)
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    slug, err = _body_project(body)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    items = body.get("items", [])
+    if not isinstance(items, list) or len(items) > 100:
+        return JSONResponse({"error": "items must be an array (≤100)"}, status_code=400)
+    if any(not isinstance(i, dict) or len(i.get("ids") or []) > 1000 for i in items):
+        return JSONResponse({"error": "each item: object with ids (≤1000)"}, status_code=400)
+    return JSONResponse(op_delete_observations_by_id(items, slug))
+
+
 @mcp.custom_route("/api/delete/relations", methods=["POST"])
 async def api_del_relations(request: Request):
     ro = _readonly_guard()
@@ -2990,7 +3199,7 @@ async def api_del_relations(request: Request):
 HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd")
 INGEST_MAX_EVENTS = 100       # батч до 100 событий
 INGEST_MAX_BODY = 1_000_000   # лимит тела 1MB
-INGEST_RATE_LIMIT = 60        # запросов/мин с IP (Ф8 LOW: раньше endpoint был без per-IP лимита)
+INGEST_RATE_LIMIT = 60        # запросов/мин с IP
 INGEST_HASHES_FILE = DATA_DIR / "ingest-hashes.json"
 INGEST_HASHES_KEEP = 1000     # ротация: храним последние 1000 content-hash
 
@@ -3054,10 +3263,9 @@ async def api_ingest(request: Request):
     Тело: {"events": [{"hook","project","ts","data"}, …]} — до 100 событий, ≤1MB.
     SessionEnd: data.open_tasks (В2.1, список строк) → открытые task-сущности
     проекта (дедуп по title среди открытых). SessionEnd-сессия + open_tasks всего
-    батча пишутся ОДНИМ _load/_save (Ф8).
-    Ф8 (LOW): per-IP rate-limit 60/мин (общий in-memory лимитер, TRUST_PROXY-aware
-    через _client_ip) — за Bearer клиент с утёкшим/шумным токеном мог флудить
-    запись (пульс + файлы). 429 + Retry-After."""
+    батча пишутся ОДНИМ _load/_save.
+    Per-IP rate-limit (общий in-memory лимитер, TRUST_PROXY-aware
+    через _client_ip): 429 + Retry-After."""
     ip = _client_ip(request)
     if _rate_limited(ip, "ingest", INGEST_RATE_LIMIT, 60):
         return JSONResponse({"error": "too_many_requests"}, status_code=429,
@@ -3099,13 +3307,24 @@ async def api_ingest(request: Request):
         slug, err = _check_project(ev.get("project"))
         if err:
             return JSONResponse({"error": err}, status_code=400)
+        slug = _resolve_project(slug)  # v0.50.0: события legacy-slug → в канон
         ts = ev.get("ts", "")
         if not isinstance(ts, str):
             return JSONResponse({"error": "event.ts must be a string"}, status_code=400)
         data = ev.get("data", {})
         if not isinstance(data, dict):
             return JSONResponse({"error": "event.data must be an object"}, status_code=400)
-        norm.append({"hook": hook, "project": slug, "ts": ts, "data": data})
+        # v0.50.0: опциональный legacy_project (старый slug из каскада хука) —
+        # кандидат на алиас; невалидный/совпадающий — молча игнорируем (не
+        # роняем батч из-за вспомогательного поля).
+        legacy = ""
+        lp = ev.get("legacy_project")
+        if lp is not None:
+            lslug, lerr = _check_project(lp)
+            if not lerr and lslug and lslug != slug:
+                legacy = lslug
+        norm.append({"hook": hook, "project": slug, "ts": ts, "data": data,
+                     "legacy_project": legacy})
     # идемпотентность: content-hash против последних 1000 + внутри батча
     with _lock:
         hashes = _ingest_hashes_load()
@@ -3122,16 +3341,53 @@ async def api_ingest(request: Request):
             fresh.append(ev)
         if fresh:
             _ingest_hashes_save(hashes)
+    # v0.50.0: алиас legacy-slug → repo-тег (прозрачная миграция проекта).
+    # Условия: project — repo-тег (^repo-…-[0-9a-f]{12}$), legacy_project передан
+    # и валиден, legacy-проект существует с данными (есть сущности), repo-тег-
+    # проекта ещё нет, алиаса ещё нет (идемпотентно). Создаём ДО сущностей
+    # батча: SessionEnd-stub получил бы project=repo-тег и сломал бы условие
+    # «repo-тег-проекта ещё нет». Под _lock, гонок нет.
+    legacy_hints = {}
+    for ev in norm:
+        lp = ev.get("legacy_project") or ""
+        if lp and _REPO_TAG_RE.match(ev["project"]):
+            legacy_hints.setdefault(lp, ev["project"])
+    aliases_created = {}
+    if legacy_hints:
+        with _lock:
+            ents, _rels = _load()
+            aliases = dict(_aliases_load())
+            for legacy, canon_tag in sorted(legacy_hints.items()):
+                if legacy in aliases:
+                    continue  # идемпотентно: алиас уже есть → no-op
+                # security v0.50.0 M2: легитимный legacy — имя репо, НЕ repo-тег
+                # (иначе алиас-цепочки repo→repo и перехват чужого тег-проекта).
+                if _REPO_TAG_RE.match(legacy):
+                    continue
+                # и привязка canon↔legacy: в легитимном потоке canon =
+                # repo-<name>-<hash>, legacy = то же name — префикс гарантирован;
+                # сфабрикованный canon (repo-x-<любые hex>) не пройдёт.
+                if not canon_tag.startswith(f"repo-{legacy}-"):
+                    continue
+                if any((e.get("project") or "") == canon_tag for e in ents.values()):
+                    continue  # repo-тег-проект уже жив — не перетягиваем
+                if not any((e.get("project") or "") == legacy for e in ents.values()):
+                    continue  # legacy-проекта с данными нет — нечего алиасить
+                aliases[legacy] = canon_tag
+                aliases_created[legacy] = canon_tag
+            if aliases_created:
+                _aliases_save(aliases)
+                log.info("project-aliases: созданы %s", aliases_created)
     # лёгкая обработка: дайджест в пульс
     for ev in fresh:
         _event(f"hook_{ev['hook']}", detail=_hook_digest(ev["hook"], ev["data"]),
                project=ev["project"], source="hook")
     # SessionEnd → сессия дня (одна на проект, «если такой сессии сегодня нет»).
-    # Ф8 (LOW): полный slug в имени — 4-буквенный префикс коллидировал
+    # Полный slug в имени — короткий префикс коллидировал
     # («alpha»/«alps» → «alph»; сессии разных проектов сливались в одно имя).
-    # Ф8 (LOW): ОДИН _load() на весь батч — check-then-create всех SessionEnd-
-    # проектов на одном загруженном графе, ОДИН _save в конце (было N×_load +
-    # N×_save на N проектов; семантика merge/project-автосоздание/part-of
+    # ОДИН _load() на весь батч — check-then-create всех SessionEnd-
+    # проектов на одном загруженном графе, ОДИН _save в конце
+    # (семантика merge/project-автосоздание/part-of
     # та же — через ядро _create_entities_graph).
     ended = sorted({ev["project"] for ev in fresh if ev["hook"] == "SessionEnd"})
     # Проект появляется в дашборде сразу, с ПЕРВЫМ событием — не ждём первой
@@ -3193,7 +3449,10 @@ async def api_ingest(request: Request):
                         changed = changed or ch
             if changed:
                 _save(ents, rels)
-    return JSONResponse({"ok": True, "accepted": len(fresh), "dedup": dedup})
+    out = {"ok": True, "accepted": len(fresh), "dedup": dedup}
+    if aliases_created:  # v0.50.0: какие алиасы legacy→canon заведены этим батчем
+        out["aliases"] = aliases_created
+    return JSONResponse(out)
 
 
 # ------------------------------------------------------------------ store ----
@@ -3310,7 +3569,7 @@ _FP_RE = re.compile(r"^[0-9a-f]{64}$")
 # v0.39.0: способ установки в install-ping; неизвестное значение не храним
 _INSTALL_FLAVORS = frozenset({"docker", "docker-desktop", "rancher", "python"})
 _INSTALLS_CAP = 10000   # потолок installs-дикта; вытеснение самых старых по last_seen
-_TRIALS_CAP = 100_000   # потолок fp-реестра; переполнение → ответ без trial-блока (не 5xx)
+_TRIALS_CAP = 100_000   # потолок fp-реестра; переполнение → пинг обслуживается, новый якорь не создаётся (не 5xx)
 _FP_KINDS = frozenset({"composite", "legacy", "container"})
 
 
@@ -3409,8 +3668,7 @@ def _save_installs(data: dict):
 
 
 _ghost_gc_day = ""  # UTC-дата последнего ghost-GC (раз в сутки, на install-ping)
-_GHOST_TTL_SEC = 90 * 86400  # ghost-якорь живёт 90д (атака «копия data/ → сутки →
-                             # вернул» не сбрасывает триал), потом стирается
+_GHOST_TTL_SEC = 90 * 86400  # tombstone-якорь живёт 90д после дрейфа fp, потом стирается
 _VOLATILE_TTL_SEC = 7 * 86400  # volatile-якорь (установка без привязки к железу)
                                # без пингов стирается через 7д; машиной не считается
 
@@ -3419,8 +3677,8 @@ def _gc_ghost_fps(data: dict, now: float) -> tuple:
     """Ghost-tombstone (v0.41.1): trials-fp, чьи ВСЕ install_id уже ушли на другой
     fp (installs[iid].fp != fp) — доказуемый дрейф контейнерного fingerprint эпохи
     до HOST_FP: контейнер пересоздавался (автообновление) → fp новый, старый мёртв.
-    НЕ удаляем мгновенно (security M-1): помечаем ghost+ghost_since — якорь триала
-    переживает атаку копией data/; стираем после _GHOST_TTL_SEC тишины.
+    НЕ удаляем мгновенно: помечаем ghost+ghost_since и стираем после
+    _GHOST_TTL_SEC тишины.
     Настоящий «поставил и забыл» (fp == текущему fp его install_id) и недоказуемые
     (install вытеснен капом) не трогаем. Вернувшийся fp воскресает в хендлере.
     Volatile-якоря (fp_kind=container) в ghost не играют: TTL 7д без пингов.
@@ -3463,8 +3721,8 @@ def _gc_ghost_fps(data: dict, now: float) -> tuple:
 
 def _rebind_ghost_licenses(ghosts) -> int:
     """Привязки ключей к ghost-fp переносит на живой fp той же машины — иначе
-    tombstone сиротил бы лицензию (1 ключ = 1 машина: слот мёртвого ghost держал
-    бы machine_limit). Однозначность: перепривязываем только ghost с ровно одним
+    tombstone сиротил бы лицензию. Однозначность: перепривязываем только ghost
+    с ровно одним
     живым fp. Зовётся ПОСЛЕ снятия _installs_lock (без вложенности локов;
     _machines_lock берётся тут). Fail-safe: любая битость → пропуск, ping не ломается.
     Возвращает число перепривязанных fp."""
@@ -4237,10 +4495,7 @@ async def api_telemetry_install(request: Request):
     """Анонимный install-ping self-hosted копий (v0.14; v0.41.0 — всегда ON,
     оптаута TELEMETRY=0 больше нет).
     install_id + версия + install_flavor (v0.39.0) + опциональный fp (sha256-хеш
-    машины, v0.16.3) — ни email, ни контента памяти. IP не логируется, но с
-    v0.41.1 участвует в анти-фарм капе новых якорей (≤3 fp/сутки/IP; счётчик
-    anchor_ip в installs.json живёт до конца UTC-дня, в events попадает только
-    при срабатывании капа).
+    машины, v0.16.3) — ни email, ни контента памяти. IP не логируется.
     По fp ведём реестр начала триалов (trials в installs.json) и отвечаем якорем
     started_at: снос data/ у клиента
     триал не сбрасывает. Защита от случайного сброса, не от целенаправленного
@@ -4299,15 +4554,13 @@ async def api_telemetry_install(request: Request):
             trials = data.setdefault("trials", {})
             t = trials.get(eff)
             if t is not None and t.get("ghost"):
-                # fp вернулся (копия data/ вернулась на исходный хост) — воскрес,
-                # якорь не тронут: tombstone и убил атаку «копия → сутки → возврат»
+                # fp вернулся — воскрес, якорь не тронут
                 t.pop("ghost", None)
                 t.pop("ghost_since", None)
             if t is None:
-                # анти-фарм: ≤3 новых якоря ИЛИ scoring-усыновлений с IP в сутки
-                # (код открыт, fp подделываем; сверх капа пинг ок — якорь ни
-                # создаётся, ни переезжает до завтра). Преемственность установки
-                # (тот же install_id принёс новый fp) кап не ест — штатная миграция.
+                # дневной лимит новых якорей с IP; сверх лимита пинг ок — якорь ни
+                # создаётся, ни переезжает до завтра. Преемственность установки
+                # (тот же install_id принёс новый fp) лимит не ест — штатная миграция.
                 anchor_ip = data.setdefault("anchor_ip", {})
                 akey = f"{ip}|{today}"
                 budget_ok = _safe_int(anchor_ip.get(akey)) < 3 and len(trials) < _TRIALS_CAP
@@ -4376,7 +4629,7 @@ async def api_telemetry_install(request: Request):
     return JSONResponse(out, headers=_NOCACHE)
 
 
-# --- W2 v0.26.0: learn-events (SPEC-learn-events.md, issue #21) ---
+# --- W2 v0.26.0: learn-events ---
 _learn_lock = threading.Lock()
 _learn_prune_day = ""        # UTC-дата последнего retention-прогона
 _LEARN_RETENTION_SEC = 90 * 86400
@@ -5895,9 +6148,7 @@ async def api_relay_config(request: Request):
         # v0.28.0: триальный грант {install_id, fp} — «семантика не выключается,
         # даже в триале» (директива владельца). Принимаем install_id, привязанный
         # к fp с ЖИВЫМ серверным якорем триала (install-ping, v0.16.3); грант
-        # умирает вместе с триалом. NB: fp self-minted через install-ping —
-        # смягчение фарма = per-IP rate-limit этого эндпоинта и install-ping
-        # (10/час) + дневная квота на каждый trial-lk.
+        # умирает вместе с триалом.
         iid = str(payload.get("install_id") or "")
         fp = str(payload.get("fp") or "")
         host_fp, _components, _kind = _parse_hostfp_body(payload if isinstance(payload, dict) else {})
@@ -5925,8 +6176,8 @@ async def api_relay_config(request: Request):
             _event("relay_config_rejected", "", "trial grant")
             return JSONResponse({"ok": False, "error": "invalid key"}, status_code=403,
                                 headers=_NOCACHE)
-        # v0.40.0: кап — на НОВУЮ пару (install_id, fp) в сутки с IP (анти-фарм новых
-        # личностей); повторный pull с той же пары (рестарт, watchdog) — бесплатно:
+        # v0.40.0: кап — на НОВУЮ пару (install_id, fp) в сутки с IP;
+        # повторный pull с той же пары (рестарт, watchdog) — бесплатно:
         # покупатель с рестартами в день установки больше не гаснет молча.
         if not pair_known:
             if _rate_limited(ip, "relaytrial", 2, 86400):
@@ -6081,8 +6332,7 @@ def _admin_401():
     return JSONResponse({"error": "unauthorized"}, status_code=401, headers=_NOCACHE)
 
 
-# login-лимит считает ТОЛЬКО неудачи: иначе владелец с нескольких вкладок
-# сам себя локает, а атакующий перманентно блокирует вход. Успех — бакет чистится.
+# login-лимит считает ТОЛЬКО неудачи: успешный вход чистит бакет.
 def _rate_peek(ip: str, bucket: str, maxn: int, window: int) -> bool:
     now = time.time()
     hits = [t for t in _rate_buckets.get(f"{bucket}:{ip}", []) if now - t < window]

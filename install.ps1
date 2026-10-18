@@ -356,7 +356,7 @@ function Write-HostfpJson {  # композитный отпечаток хос�
     try { return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text)))).Replace('-','').ToLower() }
     finally { $sha.Dispose() }
   }
-  # user-mode сбор, без admin: MachineGuid, SMBIOS UUID, серийники платы/диска, MAC
+  # user-mode сбор отпечатка хоста, без admin-прав; с машины уходят только хеши
   $mguid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -ErrorAction SilentlyContinue).MachineGuid
   $uuid = (Get-CimInstance Win32_ComputerSystemProduct -ErrorAction SilentlyContinue).UUID
   $board = (Get-CimInstance Win32_BaseBoard -ErrorAction SilentlyContinue).SerialNumber

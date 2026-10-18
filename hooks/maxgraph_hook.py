@@ -32,8 +32,15 @@ Env:
                имена принимаются как есть (формат Claude Code).
 
 Ротация spool: при превышении 10MB остаётся хвост ~5MB (целые строки).
-Проект — каскад Ф1: git remote → git root → имя cwd (kebab-slug), сервер
-принимает готовый slug.
+
+Проект (v0.50.0, фаза 2 — стабильный repo-тег): при наличии git remote origin
+URL нормализуется (без схемы/user@/trailing .git, lowercase, слэши схлопнуты)
+→ канон "repo-<slug>-<sha256(normalized)[:12]>", одинаковый на всех машинах и
+клиентах; прежнее имя (slug имени репо) едет в необязательном поле
+legacy_project (только когда непусто и ≠ project) — сервер резолвит алиасы.
+legacy_project в content-hash НЕ входит (формула _ingest_hash хэширует только
+{hook,project,ts,data}) — дедуп spool/сервера не ломается. Без remote — прежний
+каскад Ф1: git root → имя cwd (kebab-slug), legacy_project не добавляется.
 
 Обратное направление (v0.49.0, фаза 1): память приходит в контекст агента.
 Всё fail-open и независимо от захвата (spool/flush работают как раньше):
@@ -167,6 +174,57 @@ def detect_project(cwd: str = "", runner=None) -> str:
     return slugify(Path(cwd).name)
 
 
+_REMOTE_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
+
+
+def _normalize_remote_url(url: str) -> str:
+    """git remote URL → каноничный "host/path" для стабильного хэша repo-тега:
+    снять схему (https?/ssh/git/…), user@ (userinfo и scp-стиль git@host:path),
+    trailing .git, lowercase, схлопнуть слэши. Пусто/мусор → ""."""
+    u = str(url or "").strip()
+    if not u:
+        return ""
+    had_scheme = bool(_REMOTE_SCHEME_RE.match(u))
+    u = _REMOTE_SCHEME_RE.sub("", u)
+    if not had_scheme and "@" in u.split(":", 1)[0]:
+        # scp-стиль: git@github.com:org/repo → github.com/org/repo
+        u = u.split("@", 1)[1].replace(":", "/", 1)
+    else:
+        # ssh://git@host/path и т.п. — userinfo перед хостом
+        u = re.sub(r"^[^/@]*@", "", u)
+    u = u.lower().strip("/")
+    u = re.sub(r"/{2,}", "/", u)
+    return re.sub(r"\.git$", "", u)
+
+
+def repo_tag(cwd: str = "", runner=None) -> tuple:
+    """Стабильный repo-тег (v0.50.0, фаза 2) → (project, legacy).
+
+    Есть git remote origin: project = repo-<slug>-<sha256(normalized)[:12]> —
+    один репозиторий даёт один проект на всех машинах/клиентах; legacy = slug
+    имени репо (старое поведение detect_project) для серверных алиасов.
+    Remote нет или сбой → прежний каскад detect_project (git root → имя cwd),
+    legacy "" (тега нет). Пустой cwd → ("", ""). runner инжектится в тестах."""
+    if not cwd:
+        return ("", "")
+    run = runner or _run_git
+    try:
+        norm = _normalize_remote_url(
+            run(["git", "-C", cwd, "remote", "get-url", "origin"]))
+        name = slugify(norm.rsplit("/", 1)[-1]) if norm else ""
+        if name:
+            h = hashlib.sha256(norm.encode("utf-8")).hexdigest()[:12]
+            # серверная валидация slug ≤64: repo- (5) + name + - (1) + hex12 (12)
+            # → имя в теге режем до 46, иначе api_ingest отклонял бы КАЖДЫЙ батч
+            # такого репо (security-ревизия v0.50.0, M1). legacy — ПОЛНОЕ имя
+            # (старое поведение detect_project: по нему сервер найдёт старую
+            # память), режется только часть внутри тега.
+            return (f"repo-{name[:46].rstrip('-')}-{h}", name)
+    except Exception:
+        pass
+    return (detect_project(cwd, runner=runner), "")
+
+
 # ------------------------------------------------------------- normalize -----
 
 def _cut(v, n: int):
@@ -188,8 +246,9 @@ def _canon_event(name: str) -> str:
 
 
 def normalize(payload: dict) -> dict:
-    """Событие хука хоста → {"hook","project","ts","data"}.
-    Неизвестный/битый хук → None (не спулим мусор)."""
+    """Событие хука хоста → {"hook","project","ts","data"} + опционально
+    "legacy_project" (v0.50.0: старый slug репо, когда project — repo-тег;
+    в content-hash не входит). Неизвестный/битый хук → None (не спулим мусор)."""
     if not isinstance(payload, dict):
         return None
     hook = _canon_event(payload.get("hook_event_name") or payload.get("hook") or "")
@@ -212,8 +271,11 @@ def normalize(payload: dict) -> dict:
         if isinstance(ot, list):
             data["open_tasks"] = [_cut(t, 200) for t in ot[:20] if isinstance(t, str)]
     # Stop — без data (stop_hook_active неинформативен для памяти)
-    return {"hook": hook, "project": detect_project(payload.get("cwd") or ""),
-            "ts": _now(), "data": data}
+    project, legacy = repo_tag(payload.get("cwd") or "")
+    ev = {"hook": hook, "project": project, "ts": _now(), "data": data}
+    if legacy and legacy != project:
+        ev["legacy_project"] = legacy
+    return ev
 
 
 def content_hash(event: dict) -> str:
