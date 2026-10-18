@@ -118,6 +118,159 @@ def _win_remove() -> None:
             pass  # уже нет — идемпотентно
 
 
+# ----------------------------------------------------------------- ярлыки (Windows)
+
+_SHORTCUT_DESC = "MaxGraph — память для AI-агентов"
+_SHORTCUT_NAME = f"{APP_NAME}.lnk"
+
+
+def _win_desktop_dir() -> Path:
+    """KnownFolder Desktop из User Shell Folders: надёжнее ~\\Desktop —
+    при OneDrive-редиректе «Рабочий стол» физически живёт не в профиле."""
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                        r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as k:
+        raw, _ = winreg.QueryValueEx(k, "Desktop")
+    return Path(os.path.expandvars(raw))  # значение может быть REG_EXPAND_SZ (%USERPROFILE%)
+
+
+def _win_start_menu_programs() -> Path:
+    return Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+
+
+def _shortcut_paths(desktop_dir=None, start_menu_dir=None) -> tuple[Path, Path]:
+    """Оба места ярлыка; параметры — точка инъекции для тестов/установщика."""
+    desktop_dir = Path(desktop_dir) if desktop_dir else _win_desktop_dir()
+    start_menu_dir = Path(start_menu_dir) if start_menu_dir else _win_start_menu_programs()
+    return desktop_dir / _SHORTCUT_NAME, start_menu_dir / _SHORTCUT_NAME
+
+
+def _ps_quoted(s: str) -> str:
+    """Одинарные кавычки PowerShell: без интерполяции $ и бэктиков, ' дублируется."""
+    return "'" + s.replace("'", "''") + "'"
+
+
+def _win_write_shortcut(link: Path, exe: str) -> None:
+    """Создать/перезаписать .lnk через WScript.Shell COM (CreateShortcut).
+    Вызов — powershell- subprocess: native.py остаётся stdlib-only при импорте
+    (pywin32 в PyInstaller-сборке нет), та же техника, что в install.ps1."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    ps = ("$ws = New-Object -ComObject WScript.Shell; "
+          f"$sc = $ws.CreateShortcut({_ps_quoted(str(link))}); "
+          f"$sc.TargetPath = {_ps_quoted(exe)}; "
+          f"$sc.WorkingDirectory = {_ps_quoted(str(Path(exe).parent))}; "
+          f"$sc.IconLocation = {_ps_quoted(exe)}; "
+          f"$sc.Description = {_ps_quoted(_SHORTCUT_DESC)}; "
+          "$sc.Save()")
+    subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                   capture_output=True, timeout=30, check=True,
+                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+# ----------------------------------------------------------------- ярлыки (Linux/macOS)
+
+def _linux_desktop_path(home: Path) -> Path:
+    """XDG: меню приложений Linux."""
+    return home / ".local" / "share" / "applications" / "maxgraph.desktop"
+
+
+def _linux_desktop_entry(exe: str) -> str:
+    """.desktop для меню приложений (не автозапуск — см. _desktop_entry)."""
+    return f"""[Desktop Entry]
+Type=Application
+Name={APP_NAME}
+Exec={exe}
+Icon={exe}
+Terminal=false
+Categories=Utility
+"""
+
+
+def _linux_ensure_shortcut(home: Path, exe: str) -> None:
+    path = _linux_desktop_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_linux_desktop_entry(exe), encoding="utf-8")  # (пере)записываем всегда
+    log.info("shortcuts: записан %s -> %s", path, exe)
+
+
+def _macos_apps_link(home: Path) -> Path:
+    """«Пуск-аналог» macOS: симлинк в ~/Applications (Launchpad подхватывает его)."""
+    return home / "Applications" / APP_NAME
+
+
+def _macos_ensure_shortcut(home: Path, exe: str) -> None:
+    """~/Applications/MaxGraph → exe (.app-бандл не собираем). Симлинк битый/чужой
+    или на месте обычный файл — пересоздаём."""
+    link = _macos_apps_link(home)
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if link.is_symlink():
+        try:
+            if os.readlink(link) == exe:
+                return  # уже правильный — идемпотентно
+        except OSError:
+            pass
+        link.unlink()
+    elif link.exists():
+        link.unlink()
+    os.symlink(exe, link)
+    log.info("shortcuts: %s -> %s", link, exe)
+
+
+def _remove_shortcut_path(path: Path) -> None:
+    if path.is_symlink() or path.exists():  # is_symlink: ловит и БИТЫЕ ссылки (exists=False)
+        path.unlink()
+        log.info("shortcuts: удалён %s", path)
+
+
+def ensure_shortcuts(platform: str | None = None, desktop_dir=None,
+                     start_menu_dir=None, exe: str | None = None,
+                     home: Path | None = None) -> bool:
+    """Ярлык приложения в «меню» ОС:
+      Windows — MaxGraph.lnk: рабочий стол + меню «Пуск» (WScript.Shell);
+      Linux   — ~/.local/share/applications/maxgraph.desktop (перезаписываем всегда);
+      macOS   — симлинк ~/Applications/MaxGraph → exe;
+      прочие  — no-op True.
+    Идемпотентно. Ошибки — log.warning, сервер не роняем.
+    desktop_dir/start_menu_dir/home/exe — инъекция для тестов/установщика."""
+    platform = sys.platform if platform is None else platform
+    exe = exe or _exe_path()
+    try:
+        if platform.startswith("win"):
+            for link in _shortcut_paths(desktop_dir, start_menu_dir):
+                _win_write_shortcut(link, exe)
+                log.info("shortcuts: записан %s -> %s", link, exe)
+        elif platform == "darwin":
+            _macos_ensure_shortcut(Path.home() if home is None else Path(home), exe)
+        elif platform.startswith("linux"):
+            _linux_ensure_shortcut(Path.home() if home is None else Path(home), exe)
+        else:
+            return True
+        return True
+    except Exception as exc:  # ярлыки не критичны — сервер живёт и без них
+        log.warning("shortcuts: не удалось создать ярлыки: %s", exc)
+        return False
+
+
+def remove_shortcuts(platform: str | None = None, desktop_dir=None,
+                     start_menu_dir=None, home: Path | None = None) -> bool:
+    """Обратная операция (для uninstall): снять ярлык. True = успех/уже не было."""
+    platform = sys.platform if platform is None else platform
+    try:
+        if platform.startswith("win"):
+            for link in _shortcut_paths(desktop_dir, start_menu_dir):
+                _remove_shortcut_path(link)
+        elif platform == "darwin":
+            _remove_shortcut_path(_macos_apps_link(Path.home() if home is None else Path(home)))
+        elif platform.startswith("linux"):
+            _remove_shortcut_path(_linux_desktop_path(Path.home() if home is None else Path(home)))
+        else:
+            return True
+        return True
+    except Exception as exc:
+        log.warning("shortcuts: не удалось удалить ярлыки: %s", exc)
+        return False
+
+
 # ------------------------------------------------------------------ публичное
 
 def ensure_autostart(platform: str | None = None, home: Path | None = None) -> bool:

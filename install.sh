@@ -6,7 +6,9 @@
 #
 # Steps: store manifest -> pick <os>-<arch> -> download the binary + .sha256
 # sidecar + .sig (atomic: .part -> verify -> rename) into the install dir
-# (Linux: ~/.local/share/maxgraph, macOS: ~/Applications/maxgraph) -> verify
+# (Linux: ~/.local/share/maxgraph, macOS: ~/Applications/maxgraph) -> create the
+# app shortcut (Linux: ~/.local/share/applications/maxgraph.desktop; macOS:
+# ~/Applications/MaxGraph symlink) -> verify
 # sha256 from the manifest (sha256sum / shasum -a 256) -> verify the ed25519
 # signature via OpenSSL 3 against the embedded release pubkey -> chmod +x ->
 # stop an old maxgraph process on reinstall -> start via nohup -> wait for
@@ -360,6 +362,32 @@ download_verified() {  # выставляет глобальный BIN (log пи
   BIN="$bin"
 }
 
+# --- app shortcuts (та же логика, что native.ensure_shortcuts; exe повторит её
+# и при старте — но по конвенции install.ps1 ярлык должен появиться сразу) ----
+create_shortcuts() {  # $1 = полный путь к exe; best effort (вызывающий — || true)
+  local exe="$1"
+  if [ "$MG_OS" = "macos" ]; then
+    mkdir -p "$HOME/Applications" || { log "WARN: cannot create ~/Applications"; return 1; }
+    # -sfn: пересоздаёт битый/чужой симлинк; обычный файл на месте — тоже заменяем
+    rm -f "$HOME/Applications/MaxGraph" 2>/dev/null || true
+    ln -s "$exe" "$HOME/Applications/MaxGraph" || { log "WARN: symlink failed"; return 1; }
+    log "shortcut: $HOME/Applications/MaxGraph -> $exe"
+  else
+    local apps="$HOME/.local/share/applications"
+    mkdir -p "$apps" || { log "WARN: cannot create $apps"; return 1; }
+    cat > "$apps/maxgraph.desktop" <<EOF || { log "WARN: cannot write $apps/maxgraph.desktop"; return 1; }
+[Desktop Entry]
+Type=Application
+Name=MaxGraph
+Exec=$exe
+Icon=$exe
+Terminal=false
+Categories=Utility
+EOF
+    log "shortcut: $apps/maxgraph.desktop"
+  fi
+}
+
 wait_healthz() {  # до 30 секунд; строгое «ok» — не подстрока (MINOR-5)
   local i body
   for i in $(seq 1 15); do
@@ -383,6 +411,7 @@ fetch_manifest
 select_artifact "$MANIFEST"
 download_verified
 bin="$BIN"
+create_shortcuts "$bin" || true   # ярлык не критичен; exe при старте повторит ensure_shortcuts
 
 if [ "$NO_START" = 1 ]; then
   log "no-start: skipping the binary launch, healthz wait and token read (test mode)."

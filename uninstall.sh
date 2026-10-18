@@ -6,7 +6,8 @@
 # Removes: docker containers + images (maxgraph, maxgraph-updater), the
 # updater-state volume (only with --wipe-data), the Rancher Desktop defaults
 # profile (only when byte-identical to the one install.sh wrote), ~/.maxgraph
-# (session-hook spool).
+# (session-hook spool), the app shortcut (Linux .desktop / macOS
+# ~/Applications/MaxGraph symlink).
 # NOT removed: Docker/Rancher themselves (shared tools, other apps may use them),
 # the MCP entries in client configs and the AGENTS.md rules block (done by the
 # agent — AGENTS.md, "Удаление"/"Uninstall"), and this install folder itself.
@@ -98,6 +99,14 @@ if [ "$WIPE" = 1 ] && [ -d data ]; then
 fi
 
 # --- leftovers install.sh created ---------------------------------------------
+# ярлык приложения (install.sh create_shortcuts / native.ensure_shortcuts):
+# Linux — XDG .desktop; macOS — симлинк в ~/Applications (rm -f снимает ссылку, не цель)
+if [ "$OS" = "Darwin" ]; then
+  [ -L "$HOME/Applications/MaxGraph" ] && run rm -f "$HOME/Applications/MaxGraph"
+else
+  [ -e "$HOME/.local/share/applications/maxgraph.desktop" ] \
+    && run rm -f "$HOME/.local/share/applications/maxgraph.desktop"
+fi
 if [ "$OS" = "Darwin" ]; then
   p="$HOME/Library/Preferences/io.rancherdesktop.profile.defaults.plist"
   if [ -f "$p" ]; then

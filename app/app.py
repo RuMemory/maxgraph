@@ -4944,8 +4944,18 @@ _SUP_BODY_CAP = 16384                    # text 2000 + update_log_tail 4000 + з
 _SUP_BYTES_CAP = 2 * 1024 * 1024         # stat-клапан до append (конвенция heartbeats)
 
 
-@mcp.custom_route("/api/support/report", methods=["POST"])
+@mcp.custom_route("/api/support/report", methods=["POST", "OPTIONS"])
 async def api_support_report(request: Request):
+    # CORS: дашборд покупателя (localhost) шлёт cross-origin POST на магазин —
+    # без preflight-ответа fetch не доходит (2026-10-19, владелец поймал живьём)
+    if request.method == "OPTIONS":
+        return Response(status_code=204, headers=_CORS)
+    resp = await _support_report_inner(request)
+    resp.headers.update(_CORS)
+    return resp
+
+
+async def _support_report_inner(request: Request):
     """Отчёт о баге из дашборда покупателя: {text (обяз.), version?, os?,
     install_id?, update_log_tail?, server_log_errors?} → append в
     data/support_reports.jsonl с СЕРВЕРНЫМ ts. Публичный (как heartbeat), только
@@ -7846,6 +7856,7 @@ if __name__ == "__main__":
         import native  # stdlib-only при импорте; pystray/PIL — лениво в run_tray
         native.ensure_hostfp()
         native.ensure_autostart()
+        native.ensure_shortcuts()  # Windows: MaxGraph.lnk на рабочий стол + в меню «Пуск»
         import selfupdate  # T4: фоновые обновления по подписанному каналу магазина
         selfupdate.start_update_loop(lambda: VERSION, PUBLIC_BASE_URL, DATA_DIR, PORT)
         if os.environ.get("MG_NO_TRAY") != "1":
