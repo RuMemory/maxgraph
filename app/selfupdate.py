@@ -396,15 +396,17 @@ def apply_update(new_exe_path) -> bool:
     try:
         exe = str(Path(sys.executable).resolve())
         new = str(new_exe_path)
-        # helper = НОВЫЙ exe (проверенный!): во-первых, свежий код helper'а; во-вторых,
-        # критично — onefile читает lazy-модули из СВОЕГО exe-файла, а текущий exe
-        # будет подменён на лету (2026-10-18: helper из старого exe падал zlib.error
-        # после подмены — его файл стал другим).
-        argv = [new, _UPDATE_FLAG, new, str(os.getpid())]
+        # helper = КОПИЯ нового exe (updates/.helper.exe): свежий код helper'а,
+        # и — критично — onefile читает lazy-модули из СВОЕГО exe-файла по пути
+        # запуска; helper НЕ может жить в файле, который сам подменяет
+        # (2026-10-18: self-move нового exe → FileNotFoundError/zlib в helper'е).
+        helper_exe = str(Path(new).with_name(".helper.exe"))
+        shutil.copy2(new, helper_exe)  # перезаписывает копию прошлого обновления
+        argv = [helper_exe, _UPDATE_FLAG, new, str(os.getpid())]
         sha, sig = new + ".sha256", new + ".sig"
         if os.path.exists(sha) and os.path.exists(sig):
             argv += [sha, sig]
-        argv.append(exe)  # цель подмены — явно (helper запущен из нового exe!)
+        argv.append(exe)  # цель подмены — явно (helper запущен не из цели!)
         _spawn_detached(argv)
         log.info("selfupdate: helper запущен (%s → %s)", new_exe_path, exe)
         return True
