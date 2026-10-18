@@ -69,7 +69,7 @@ curl -H "Authorization: Bearer $T" http://<host>:8787/api/export > backup.json
 
 ## ChatGPT / GPTs / OpenAI Actions
 
-Готовая OpenAPI-схема для Actions: [openapi.yaml](openapi.yaml). Пошаговая инструкция: [GPTS.md](GPTS.md).
+Готовая OpenAPI-схема для Actions: [openapi.yaml](openapi.yaml) (нужен публичный HTTPS до инстанса — например, Tailscale Funnel; в схеме замени `servers.url` на свой адрес).
 
 ## Локальные модели (Ollama, LM Studio, llama.cpp)
 

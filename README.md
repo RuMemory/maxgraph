@@ -83,7 +83,7 @@ docker compose logs maxgraph | grep "автогенерация"   # или: cat
   ```
 - **Cline и другие агенты** — дай агенту файл [AGENTS.md](AGENTS.md), он поставит и подключит сам.
 
-Подробности по каждому клиенту: [docs/QUICKSTART.md](docs/QUICKSTART.md).
+Подробности по каждому клиенту: [docs/PAIRING.md](docs/PAIRING.md).
 
 ## Цены
 
@@ -124,7 +124,7 @@ MaxGraph живёт на поддержку пользователей. Если
 
 ## Документы
 
-[QUICKSTART](docs/QUICKSTART.md) · [PROTOCOL](docs/PROTOCOL.md) · [API](docs/API.md) · [GPTs](docs/GPTS.md) · [PROVIDERS](docs/PROVIDERS.md) · [PAIRING](docs/PAIRING.md) · [DEPLOY-LAN](docs/DEPLOY-LAN.md)
+[PROTOCOL](docs/PROTOCOL.md) · [API](docs/API.md) · [PROVIDERS](docs/PROVIDERS.md) · [PAIRING](docs/PAIRING.md) · [DEPLOY-LAN](docs/DEPLOY-LAN.md)
 
 ## Ключевые слова
 

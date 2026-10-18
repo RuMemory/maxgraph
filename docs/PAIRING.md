@@ -218,7 +218,7 @@ curl -H "Authorization: Bearer $T" http://localhost:8787/api/export > backup.jso
 }
 ```
 
-**ChatGPT** — два пути, обоим нужен публичный HTTPS до твоего инстанса (проще всего — Tailscale Funnel): свой GPT с действиями (пошагово — [GPTS.md](GPTS.md)) или chatgpt.com → Plugins → «Add custom MCP server» с тем же HTTPS-URL.
+**ChatGPT** — два пути, обоим нужен публичный HTTPS до твоего инстанса (проще всего — Tailscale Funnel): свой GPT с действиями (схема — [openapi.yaml](openapi.yaml), в ней замени `servers.url` на свой адрес; Authentication: API Key → Bearer → твой токен) или chatgpt.com → Plugins → «Add custom MCP server» с тем же HTTPS-URL.
 
 `<MEMORY_TOKEN>` — токен из шага 2 (лежит и в `data/local_token.txt` после первого запуска). После записи конфига — полностью перезапусти хост (не закрыть окно, а выйти) и начни новую сессию.
 
@@ -317,4 +317,4 @@ title = человеческое имя); зависимости — create_rela
 ---
 
 Готово: ключ активирован, сервер лицензирован, агент пишет в граф.
-Дальше: [QUICKSTART](QUICKSTART.md) · [PROVIDERS](PROVIDERS.md) · [PROTOCOL](PROTOCOL.md)
+Дальше: [PROVIDERS](PROVIDERS.md) · [PROTOCOL](PROTOCOL.md)

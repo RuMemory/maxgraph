@@ -13,4 +13,4 @@ Set up MaxGraph persistent memory for the user. Do it yourself, step by step:
 4. **Hand the token to the user**: ask them to open plugin settings (`/plugin` → maxgraph → configure) and paste it as `api_token`. The default URL `http://localhost:8787/mcp` needs no change.
 5. **Verify memory works**: save a test fact with `create_entities`, read it back with `search_nodes`, then tell the user memory is live.
 
-Docs: https://github.com/RuMemory/maxgraph/blob/master/docs/QUICKSTART.md
+Docs: https://github.com/RuMemory/maxgraph/blob/master/AGENTS.md

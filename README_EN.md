@@ -83,7 +83,7 @@ Server already running? Then it's one command or one link:
   ```
 - **Cline and other agents** — hand the agent [AGENTS.md](AGENTS.md), it will install and connect everything itself.
 
-Details for each client: [docs/QUICKSTART.md](docs/QUICKSTART.md).
+Details for each client: [docs/PAIRING.md](docs/PAIRING.md).
 
 ## Pricing
 
@@ -124,7 +124,7 @@ All records are stored only on your computer and work offline. They are plain te
 
 ## Docs
 
-[QUICKSTART](docs/QUICKSTART.md) · [PROTOCOL](docs/PROTOCOL.md) · [API](docs/API.md) · [GPTs](docs/GPTS.md) · [PROVIDERS](docs/PROVIDERS.md) · [PAIRING](docs/PAIRING.md) · [DEPLOY-LAN](docs/DEPLOY-LAN.md)
+[PROTOCOL](docs/PROTOCOL.md) · [API](docs/API.md) · [PROVIDERS](docs/PROVIDERS.md) · [PAIRING](docs/PAIRING.md) · [DEPLOY-LAN](docs/DEPLOY-LAN.md)
 
 ## Keywords
 
