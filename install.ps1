@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 install-native.ps1 — MaxGraph NATIVE installer for Windows (no Docker).
 The buyer's path: download the portable exe from the store, verify it, run it.
