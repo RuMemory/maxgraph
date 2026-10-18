@@ -64,7 +64,7 @@ Windsurf/Devin — ~/.codeium/windsurf/hooks.json. Точные сниппеты
 Папка установки уже удалена? Тогда: docker rm -f maxgraph maxgraph-updater,
 потом шаги 2–4 вручную.
 
-Полный протокол: https://github.com/RuMemory/maxgraph/blob/master/docs/PROTOCOL.md
+Полный протокол: https://raw.githubusercontent.com/RuMemory/maxgraph/master/docs/PROTOCOL.md
 ```
 
 ## Блок (EN, короткий)
@@ -115,5 +115,5 @@ UNINSTALL on the user's request — full cleanup, no leftovers:
 Install folder already gone? Then: docker rm -f maxgraph maxgraph-updater,
 then steps 2–4 by hand.
 
-Full protocol: https://github.com/RuMemory/maxgraph/blob/master/docs/PROTOCOL.md
+Full protocol: https://raw.githubusercontent.com/RuMemory/maxgraph/master/docs/PROTOCOL.md
 ```
