@@ -477,13 +477,15 @@ def _helper_data_dir() -> Path:
     return Path(sys.executable).resolve().parent / "data"
 
 
-def _setup_helper_log() -> None:
-    """Лог helper'а в DATA_DIR/update.log: stdout detached-процесса нечитаем —
-    инцидент 2026-10-18 диагностировался вслепую. Только в frozen exe."""
+def _setup_helper_log(target_exe=None) -> None:
+    """Лог helper'а в data/update.log ЦЕЛЕВОГО exe: stdout detached-процесса
+    нечитаем — инцидент 2026-10-18 диагностировался вслепую. Только в frozen exe.
+    (helper с v1.0.5 запущен из НОВОГО exe в updates/ — считать data от цели!)"""
     if not getattr(sys, "frozen", False):
         return
     try:
-        fh = logging.FileHandler(_helper_data_dir() / "update.log", encoding="utf-8")
+        base = Path(target_exe).resolve().parent / "data" if target_exe else _helper_data_dir()
+        fh = logging.FileHandler(base / "update.log", encoding="utf-8")
         fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         logging.getLogger().addHandler(fh)
     except OSError:
@@ -513,7 +515,6 @@ def apply_update_main(argv) -> int:
     argv = [<new_exe>, <parent_pid>, <sha256_file>, <sig_file>].
     B-1: fail-closed — мусорный pid, путь вне DATA_DIR/updates, отсутствующие
     sidecar'ы или битая sha256/подпись → отказ (2), ничего не трогаем."""
-    _setup_helper_log()
     if len(argv) < 4:
         log.error("selfupdate: helper: нужны <new_exe> <parent_pid> <sha256_file> <sig_file>")
         return 2
@@ -521,6 +522,7 @@ def apply_update_main(argv) -> int:
     # цель подмены: с v1.0.5 — явный argv[4] (helper запущен из НОВОГО exe,
     # sys.executable ≠ цель); старый формат — цель = свой exe
     target_exe = argv[4] if len(argv) > 4 else None
+    _setup_helper_log(target_exe)
     # (а) pid обязан быть положительным числом — никакой «подмены сразу»
     try:
         parent_pid = int(pid_arg)
@@ -529,9 +531,11 @@ def apply_update_main(argv) -> int:
     if parent_pid <= 0:
         log.error("selfupdate: helper: невалидный parent_pid %r — отказ", pid_arg)
         return 2
-    # (б) new обязан лежать внутри DATA_DIR/updates — чужие пути отклоняем
+    # (б) new обязан лежать внутри updates ЦЕЛЕВОГО exe — чужие пути отклоняем
+    # (helper с v1.0.5 живёт в updates сам — считать data от target, не от себя)
+    target_dir = (Path(target_exe).resolve().parent / "data") if target_exe else _helper_data_dir()
     try:
-        allowed = (_helper_data_dir() / "updates").resolve()
+        allowed = (target_dir / "updates").resolve()
         new_path = Path(new_arg).resolve()
         new_path.relative_to(allowed)  # ValueError → вне updates
     except (ValueError, OSError) as e:
@@ -554,6 +558,7 @@ def apply_update_main(argv) -> int:
     if not _reverify_downloaded(new_path, Path(sha_arg), Path(sig_arg)):
         log.error("selfupdate: helper: sha256/подпись %s не сошлись — отказ, ничего не трогаем",
                   new_path)
+        _spawn_detached([str(exe)])  # родитель уже мёртв — поднимаем целый exe обратно
         return 2
     try:
         # rename бегущего exe на Windows разрешён, но ОС/антивирус может
@@ -568,6 +573,8 @@ def apply_update_main(argv) -> int:
         except OSError as e2:
             log.error("selfupdate: ОТКАТ подмены не удался: %r "
                       "(восстанови %s → %s вручную)", e2, prev, exe)
+        if exe.exists():
+            _spawn_detached([str(exe)])  # родитель мёртв — поднимаем что есть
         return 1
     for p in (sha_arg, sig_arg):       # sidecar'ы отработали — чистим
         try:
