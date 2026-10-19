@@ -94,6 +94,10 @@ try:
 except ImportError:
     webhooks = None
 try:
+    import lava
+except ImportError:
+    lava = None
+try:
     import ghhook
 except ImportError:
     ghhook = None
@@ -191,6 +195,12 @@ PLATEGA_MERCHANT_ID = os.environ.get("PLATEGA_MERCHANT_ID", "")
 PLATEGA_API_KEY = os.environ.get("PLATEGA_API_KEY", "")
 PLATEGA_API = os.environ.get("PLATEGA_API_BASE") or (billing.DEFAULT_API_BASE if billing else "")
 PLATEGA_CURRENCY = os.environ.get("PLATEGA_CURRENCY") or "RUB"
+# --- lava.top (EN-витрина, USD): ключи только на магазине; LAVA_OFFER_ID —
+# id оффера продукта (дефолт в lava.py, проверен GET /api/v2/products 2026-10-19)
+LAVA_API_KEY = os.environ.get("LAVA_API_KEY", "")
+LAVA_WEBHOOK_KEY = os.environ.get("LAVA_WEBHOOK_KEY", "")
+LAVA_OFFER_ID = os.environ.get("LAVA_OFFER_ID") or (lava.DEFAULT_OFFER_ID if lava else "")
+LAVA_API = os.environ.get("LAVA_API_BASE") or (lava.DEFAULT_API_BASE if lava else "")
 PUBLIC_BASE_URL = (os.environ.get("PUBLIC_BASE_URL") or "https://rezon-ai.ru").rstrip("/")
 # Каталог релизных tarball'ов для автообновлений: наполняет деплой-скрипт
 # магазина (git archive тега + sha256). Наружу только чтение текущей VERSION —
@@ -7325,6 +7335,67 @@ async def billing_create(request: Request):
     return JSONResponse({"payment_url": pay["payment_url"]}, headers=_NOCACHE)
 
 
+# --- lava.top: EN-витрина (USD, иностранные карты) ---
+
+_LAVA_PLANS = {"1": "pro1", "3": "pro3", "6": "pro6", "12": "pro12"}
+# сумма USD → план (fallback в вебхуке, когда запись платежа вытеснена тримом 500)
+_LAVA_PLAN_BY_AMOUNT = {float(PLANS[p]["USD"]): p for p in _LAVA_PLANS.values()}
+
+
+@mcp.custom_route("/api/billing/lava/invoice", methods=["POST"])
+async def api_billing_lava_invoice(request: Request):
+    """EN-флоу лендинга: {plan: 1|3|6|12, email} → {paymentUrl} (lava.top, USD).
+
+    Цена всегда серверная (PLANS[plan]["USD"]) — amount от клиента не принимаем.
+    Платёж ждёт вебхук /api/webhooks/lava (матч по lava_id = contractId инвойса).
+    """
+    import asyncio
+    import secrets
+    g = _store_gate()
+    if g:
+        return g
+    ip = _client_ip(request)
+    if _rate_limited(ip, "lava_invoice", 10, 60):
+        return JSONResponse({"error": "too_many_attempts"}, status_code=429)
+    if not (LAVA_API_KEY and LAVA_OFFER_ID and lava):
+        return JSONResponse({"error": "payments not configured"}, status_code=503)
+    raw, err = await _read_capped(request, 16384)
+    if err is not None:
+        return JSONResponse({"error": "bad request"}, status_code=400)
+    try:
+        body = json.loads(raw)
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    if not isinstance(body, dict):  # [1,2] и т.п. не ломают .get
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    plan_id = _LAVA_PLANS.get(str(body.get("plan") or "")[:4])
+    if not plan_id:
+        return JSONResponse({"error": "plan must be 1|3|6|12"}, status_code=400)
+    email = _valid_email(body.get("email"))
+    if not email:
+        return JSONResponse({"error": "valid email required"}, status_code=400)
+    ref = "r-" + secrets.token_hex(8)
+    amount = PLANS[plan_id]["USD"]
+    try:
+        pay = await asyncio.to_thread(
+            lava.create_invoice, LAVA_API_KEY, LAVA_OFFER_ID, amount, email,
+            f"{PUBLIC_BASE_URL}/billing/success?pid={ref}",
+            f"{PUBLIC_BASE_URL}/en/#pricing", LAVA_API)
+    except Exception as e:  # BillingError: детали (сырой ответ lava) в лог, наружу generic
+        log.error("lava invoice failed: %s", e)
+        return JSONResponse({"error": "payment creation failed"}, status_code=502)
+    with _codes_lock:
+        data = _load_codes()
+        data["payments"].append({"id": ref, "ref": ref, "lava_id": pay["payment_id"],
+                                 "plan": plan_id, "tier": "pro", "email": email,
+                                 "status": "created", "at": now_iso(),
+                                 "payUrl": pay["payment_url"],
+                                 "amount": amount, "currency": "USD"})
+        _save_codes(data)
+    _event("payment_created", ref, f"lava · {plan_id} · ${amount} · {email}")
+    return JSONResponse({"ok": True, "paymentUrl": pay["payment_url"]}, headers=_NOCACHE)
+
+
 def _success_page(pid: str) -> str:
     """HTML success-страницы (неоновый стиль лендинга): код + license key или «обрабатывается»."""
     import html as _html
@@ -7619,6 +7690,152 @@ async def billing_webhook_platega(request: Request):
                     await asyncio.to_thread(billing.send_telegram, TG_NOTIFY_CHAT_ID, msg, tg_token)
                 except Exception as e:
                     log.error("ref telegram → %s", e)
+    return JSONResponse(result, headers=_NOCACHE)
+
+
+@mcp.custom_route("/api/webhooks/lava", methods=["POST"])
+async def webhook_lava(request: Request):
+    """lava.top webhook: auth — заголовок X-Api-Key с нашим LAVA_WEBHOOK_KEY
+    (задаётся в кабинете lava при регистрации webhook). payment.success → выдача
+    кода+license key; refund.success → revoke ключа. Незнакомые события → 200 + лог
+    (lava ретраит не-2xx). Дедуп по event_id (payment.* без event_id — synthetic
+    contractId:eventType, см. lava.parse_webhook), реестр — codes.json lava_events.
+    """
+    import hmac as _hmac
+    g = _store_gate()
+    if g:
+        return g
+    ip = _client_ip(request)
+    if not (LAVA_WEBHOOK_KEY and lava):
+        log.error("lava webhook hit, но LAVA_WEBHOOK_KEY не задан — отклонено")
+        return JSONResponse({"error": "webhook not configured"}, status_code=503)
+    if not _hmac.compare_digest(request.headers.get("x-api-key", ""), LAVA_WEBHOOK_KEY):
+        log.warning("lava webhook: неверный X-Api-Key от %s", ip)
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    if _rate_limited(ip, "lava_hook", 30, 60):
+        return JSONResponse({"error": "too_many_requests"}, status_code=429)
+    raw, err = await _read_capped(request, 65536)
+    if err is not None:
+        return JSONResponse({"error": "payload too large"}, status_code=413)
+    try:
+        body = json.loads(raw)
+    except Exception:
+        body = {}
+    ev = lava.parse_webhook(body)
+    etype = ev["event_type"]
+    delivery = None  # (code, lic_key, tier, email, ref) — доставим после снятия лока
+    with _codes_lock:
+        data = _load_codes()
+        seen = data.setdefault("lava_events", [])
+        if ev["event_id"] and ev["event_id"] in seen:
+            return JSONResponse({"ok": True, "dedup": True})
+        result = {"ok": True}
+        if etype == "payment.success":
+            payment = next((p for p in data["payments"]
+                            if p.get("lava_id") == ev["contract_id"]), None)
+            if payment and payment.get("code"):
+                return JSONResponse({"ok": True, "dedup": True})
+            if ev["product_id"] and ev["product_id"] != lava.PRODUCT_ID:
+                log.warning("lava payment.success: чужой продукт %s — пропуск", ev["product_id"])
+                _event("lava_foreign_product", ev["contract_id"], ev["product_id"])
+            else:
+                plan_id = str((payment or {}).get("plan") or "")
+                if plan_id not in PLANS:
+                    # fallback по сумме — только USD (оффер USD-dynamic; иная валюта не мапится)
+                    if ev["currency"] in ("", "USD"):
+                        plan_id = _LAVA_PLAN_BY_AMOUNT.get(round(ev["amount"], 2), "")
+                    _event("plan_guessed_from_amount", ev["contract_id"],
+                           f"{ev['amount']}{ev['currency']} → {plan_id or '?'}")
+                if not plan_id:
+                    log.error("lava payment.success: сумма %s %s не мапится на план — ключ НЕ выдан",
+                              ev["amount"], ev["currency"])
+                    _event("lava_unknown_amount", ev["contract_id"],
+                           f"{ev['amount']}{ev['currency']}")
+                elif payment is not None and payment.get("amount") \
+                        and ev["amount"] and ev["amount"] < float(payment["amount"]) - 0.01:
+                    # недоплата против выставленного инвойса — ключ НЕ выдаём
+                    log.error("lava payment.success: недоплата по %s: оплачено %s, выставлено %s",
+                              ev["contract_id"], ev["amount"], payment["amount"])
+                    _event("payment_amount_mismatch", ev["contract_id"],
+                           f"{plan_id} · оплачено {ev['amount']}{ev['currency']} · выставлено {payment['amount']}")
+                else:
+                    if payment is not None and payment.get("amount") \
+                            and abs(ev["amount"] - float(payment["amount"])) > 0.01:
+                        _event("payment_amount_mismatch", ev["contract_id"],
+                               f"{plan_id} · оплачено {ev['amount']}{ev['currency']} · выставлено {payment['amount']}")
+                    days = PLANS[plan_id]["days"]
+                    code = _new_code()
+                    existing = {c["code"] for c in data["codes"]}
+                    while code in existing:
+                        code = _new_code()
+                    data["codes"].append(_code_rec(code, "pro", "sold", f"lava:{ev['contract_id']}"))
+                    email = (payment or {}).get("email") or _valid_email(ev["email"]) or None
+                    lic_key = licensing.generate_key(LICENSE_SECRET, email or "buyer@unknown", "pro", days)
+                    if payment is None:
+                        # запись вытеснена тримом: ref — НАШ случайный (как у /billing/create),
+                        # contractId (внешний ID lava) — только в lava_id, иначе знание
+                        # contractId открывало бы success-страницу с ключом (MED-1)
+                        import secrets as _secrets
+                        ref = "r-" + _secrets.token_hex(8)
+                        payment = {"id": ref, "ref": ref,
+                                   "lava_id": ev["contract_id"], "at": now_iso()}
+                        data["payments"].append(payment)
+                    payment.update({"status": "success", "code": code, "plan": plan_id,
+                                    "tier": "pro", "licenseKey": lic_key,
+                                    "amount": ev["amount"], "currency": ev["currency"] or "USD"})
+                    if email:
+                        payment["email"] = email
+                    delivery = (code, lic_key, "pro", email, payment.get("ref") or ev["contract_id"])
+                    _event("payment", ev["contract_id"],
+                           f"lava · {plan_id} · {ev['amount']}{ev['currency']} · код {code}")
+        elif etype in ("refund.success", "chargeback.initiated"):
+            # возврат и чарджбэк — одна ветка: продажа refunded, ключ в revoke-реестр.
+            # чужой продукт (тот же аккаунт lava) не трогает наши ключи (MED-2)
+            if ev["product_id"] and ev["product_id"] != lava.PRODUCT_ID:
+                log.warning("lava %s: чужой продукт %s — пропуск", etype, ev["product_id"])
+                _event("lava_foreign_product", ev["event_id"], f"{etype} · {ev['product_id']}")
+            else:
+                hit = None
+                for p in reversed(data["payments"]):
+                    if not p.get("lava_id") or not p.get("licenseKey"):
+                        continue
+                    if p.get("status") == "refunded":
+                        continue
+                    if ev["email"] and p.get("email") and p["email"] != ev["email"]:
+                        continue
+                    if ev["amount"] and p.get("amount") and abs(float(p["amount"]) - ev["amount"]) > 0.01:
+                        continue
+                    hit = p
+                    break
+                if hit:
+                    hit["status"] = "refunded"
+                    hit["refunded_at"] = now_iso()
+                    _add_revoked(data, hit["licenseKey"], f"lava {etype}")
+                    _event("payment_refunded", hit.get("lava_id") or hit.get("id"),
+                           f"{ev['amount']}{ev['currency']} · {hit.get('email', '')} · ключ отозван")
+                    result["refunded"] = True
+                else:
+                    log.warning("lava %s: платёж не найден (email=%s amount=%s %s)",
+                                etype, ev["email"], ev["amount"], ev["currency"])
+                    _event("lava_refund_unmatched", "", f"{etype} · {ev['email']} · {ev['amount']}{ev['currency']}")
+        elif etype:
+            log.info("lava webhook: событие %s (%s) — записано без обработки",
+                     etype, ev["contract_id"] or ev["event_id"])
+            _event("lava_event", ev["contract_id"] or ev["event_id"], etype)
+        if ev["event_id"]:
+            seen.append(ev["event_id"])
+            data["lava_events"] = seen[-500:]  # потолок, как у payments/revoked
+        _save_codes(data)
+    if delivery:  # сеть — строго после _save_codes и вне лока; best-effort по каналам
+        import asyncio
+        code, lic_key, tier, email, success_pid = delivery
+        try:
+            res = await asyncio.to_thread(billing.deliver_code, code=code, license_key=lic_key,
+                                          tier=tier, email=email, lang="en",
+                                          success_url=f"{PUBLIC_BASE_URL}/billing/success?pid={success_pid}")
+            log.info("lava deliver_code %s: %s", code, res)
+        except Exception as e:  # deliver_code сам не бросает; страховка
+            log.error("deliver_code упал целиком (%s): код %s уже в codes.json и на success-странице", e, code)
     return JSONResponse(result, headers=_NOCACHE)
 
 
@@ -7923,6 +8140,7 @@ class TokenAuth:
                     "/api/codes/redeem", "/api/plans",
                     "/api/billing/pay", "/api/billing/status", "/billing/result", "/billing/webhook/platega",
                     "/billing/create", "/billing/success", "/api/license/validate",
+                    "/api/billing/lava/invoice", "/api/webhooks/lava",  # lava.top (EN-витрина, USD)
                     "/api/telemetry/install",  # анонимный install-ping
                     "/api/telemetry/learn",  # анонимные learn-events
                     "/api/telemetry/heartbeat",  # анонимный heartbeat живости (native-client)

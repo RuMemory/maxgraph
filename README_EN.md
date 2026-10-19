@@ -109,10 +109,10 @@ Ready-made setup examples for each client: [docs/PROVIDERS.md](docs/PROVIDERS.md
 
 | Term | Price | Per month |
 |---|---|---|
-| 1 month | $1.99 | $1.99 |
-| 3 months | $4.99 | ≈ $1.66 |
-| 6 months | $9.99 | ≈ $1.67 |
-| 12 months | $14.99 | ≈ $1.25 |
+| 1 month | $5 | $5 |
+| 3 months | $13 | ≈ $4.33 |
+| 6 months | $24 | ≈ $4.00 |
+| 12 months | $40 | ≈ $3.33 |
 
 When the trial ends, only writing new facts stops working. The dashboard, search and export stay, and your accumulated memory goes nowhere.
 

@@ -440,6 +440,40 @@ def _start_detached(exe: Path):
     return _spawn_detached([str(exe)])
 
 
+def _refresh_icon_cache() -> None:
+    """Сброс кэша иконок Windows после подмены exe на ТОМ ЖЕ пути.
+
+    Windows кэширует иконки по пути файла (iconcache): ярлыки на рабочем
+    столе/в меню Пуск после самообновления показывают СТАРУЮ иконку, пока
+    кэш не перечитают. ie4uinit.exe -show делает это без перезагрузки.
+    Вызывается helper'ом один раз после успешной подмены (новый exe уже
+    поднялся, healthz зелёный) — поэтому маркер/условие не нужны, при
+    обычных стартах не дёргается. Fire-and-forget: ie4uinit может
+    отсутствовать/упасть — любые ошибки глушим warning'ом, обновление
+    из-за иконки неудачным не считается. Не-Windows — no-op.
+    """
+    if sys.platform != "win32":
+        return
+    # Абсолютный путь через SystemRoot: голое "ie4uinit.exe" CreateProcess ищет
+    # СНАЧАЛА в каталоге процесса (helper живёт в user-writable DATA_DIR/updates)
+    # и CWD — подброшенный туда неподписанный ie4uinit.exe исполнился бы в обход
+    # ed25519-гейта обновления. System32 — системный каталог, не user-writable.
+    ie4uinit = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows",
+                            "System32", "ie4uinit.exe")
+    try:
+        if not os.path.isfile(ie4uinit):
+            log.warning("selfupdate: %s не найден — иконки обновятся сами позже", ie4uinit)
+            return
+        subprocess.Popen([ie4uinit, "-show"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL,
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        log.info("selfupdate: ie4uinit -show запущен — кэш иконок обновится")
+    except Exception as e:
+        log.warning("selfupdate: ie4uinit -show не запустился (иконки обновятся "
+                    "сами позже): %r", e)
+
+
 def _retry_fileop(fn, attempts: int = 30, delay: float = 1.0):
     """Файловая операция с ретраями на OSError: на Windows ОС/антивирус держит
     свежий exe несколько секунд после смерти процесса (PermissionError 13 на
@@ -614,6 +648,7 @@ def apply_update_main(argv) -> int:
         time.sleep(1)
     if ok:
         log.info("selfupdate: обновление применено, healthz зелёный")
+        _refresh_icon_cache()  # Windows: exe подменён на том же пути — сбросить iconcache
         return 0
 
     log.warning("selfupdate: новая версия не поднялась — откат на prev")

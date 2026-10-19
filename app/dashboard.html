@@ -909,7 +909,7 @@ $('#licExport').addEventListener('click',e=>{e.preventDefault();doExport();});
 /* ═══ Покупка Pro из дашборда (v0.18.0): магазин → Platega → автоактивация ═══ */
 let licInfo=null,plansCache=null,buySel='pro1',buyRef=null,buyPayUrl=null,buyTimer=null,buyGiveup=0,buyOpener=null;
 const STORE=(window.__MG_STORE__&&window.__MG_STORE__.storeUrl)||'https://rezon-ai.ru';
-const PLANS_FALLBACK=[{id:'pro1',rub:149,usd:1.99,days:31},{id:'pro3',rub:399,usd:4.99,days:93},{id:'pro6',rub:749,usd:9.99,days:186},{id:'pro12',rub:1299,usd:14.99,days:372}];
+const PLANS_FALLBACK=[{id:'pro1',rub:149,usd:5,days:31},{id:'pro3',rub:399,usd:13,days:93},{id:'pro6',rub:749,usd:24,days:186},{id:'pro12',rub:1299,usd:40,days:372}];
 async function loadPlans(){if(plansCache)return plansCache;try{const r=await fetch(STORE+'/api/plans');const j=await r.json();plansCache=(j.plans&&j.plans.length)?j.plans:PLANS_FALLBACK;}catch(e){plansCache=PLANS_FALLBACK;}return plansCache;}
 function fmtPlanPrice(p,price){return (LANG==='en'&&p.usd)?('$'+Number(price).toFixed(2)):((Number(price)|0)+' ₽');}
 function renderPlans(){const en=LANG==='en';const b0=(plansCache&&plansCache[0])||PLANS_FALLBACK[0];const base=en?(b0.usd||b0.rub):b0.rub;
