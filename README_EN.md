@@ -1,52 +1,62 @@
-![MaxGraph](docs/assets/banner.svg)
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="MaxGraph" width="440" />
+</p>
 
-# MaxGraph
+<p align="center">
+  <strong>Built-in memory remembers you. MaxGraph remembers all your projects.</strong>
+</p>
 
-🇷🇺 [Русская версия](README.md) · English
+<p align="center">
+  <a href="https://rezon-ai.ru">Website</a> ·
+  <a href="https://rezon-ai.ru/en/blog/">Blog</a> ·
+  <a href="https://t.me/maxgraph_mcp">Telegram</a> ·
+  <a href="#one-step-connection">Integrations</a>
+</p>
 
-![license](https://img.shields.io/badge/license-BSL--1.1-orange) ![native](https://img.shields.io/badge/windows%20%C2%B7%20macos%20%C2%B7%20linux-native-38d39f) ![MCP](https://img.shields.io/badge/MCP-streamable--http-ff5bd8) [![MaxGraph on AI Agents Listing](https://aiagentslisting.com/maxgraph/badge.svg?claim=0128507fb17c64bdcb4cc6873e9c029f)](https://aiagentslisting.com/mcp/maxgraph)
+<p align="center">
+  <img src="https://img.shields.io/badge/license-BSL--1.1-orange" alt="license" />
+  <img src="https://img.shields.io/badge/windows%20%C2%B7%20macos%20%C2%B7%20linux-native-38d39f" alt="native" />
+  <img src="https://img.shields.io/badge/MCP-streamable--http-ff5bd8" alt="MCP" />
+  <a href="https://aiagentslisting.com/mcp/maxgraph"><img src="https://aiagentslisting.com/maxgraph/badge.svg?claim=0128507fb17c64bdcb4cc6873e9c029f" alt="MaxGraph on AI Agents Listing" height="20" /></a>
+</p>
 
-## Stop explaining everything to your AI from scratch
+<p align="center">
+  <a href="README.md">Русский</a> · <strong>English</strong>
+</p>
 
-Every new session starts with an empty chat: the agent remembers neither the project, nor the decisions, nor yesterday's agreements. MaxGraph fixes that. It remembers your project between sessions, and the agent picks up where you left off.
+---
 
-For developers: an MCP server with a knowledge graph and semantic search. It installs with a single command in two minutes and connects to any agent that can use external tools.
+The memory built into ChatGPT and Claude remembers you: your name, tastes, habits. MaxGraph remembers your **work** — decisions, bugs, open tasks, session outcomes. Install once, and every agent you use gets the project context: Claude, Cursor, DeepSeek, and any other with MCP or REST support.
 
-🌐 [rezon-ai.ru](https://rezon-ai.ru) · 7-day trial, no card · Working with MaxGraph saves about 43 % of tokens
+| Feature | What you get |
+|---|---|
+| 🧠 **Project memory** | Decisions, bugs and open tasks — dated, stored apart from the chat. Close the conversation, the records stay. |
+| 🚀 **No warm-up start** | Every session opens with a short project brief: the agent is up to speed and never does the same work twice. |
+| 🔍 **Semantic search** | Finds what matters by meaning, not by exact words. |
+| 👀 **See everything** | Dashboard with a memory map, search and feed: check, edit or delete any record. |
+| 🪶 **Token savings** | No re-reading the whole history — about −43 % tokens when working with MaxGraph. |
+
+![MaxGraph dashboard: project memory map, recent records and event feed](docs/assets/demo-dashboard.png)
 
 ## How it works
 
-Nothing new to learn. You work with your agent as usual, memory appears on its own, in the background.
+Nothing new to learn: you work with your agent as usual, memory appears on its own.
 
-1. Work as usual. The agent remembers the important parts of your work on its own: decisions, bugs, agreements.
-2. Memory stays on your machine. Open the dashboard and check any fact with your own eyes.
-3. Start a new session. The agent already remembers the project and never does the same work twice.
+1. **Work as usual.** The agent records the important parts of your work on its own: decisions, bugs, outcomes.
+2. **Everything stays local.** Plain text files on your computer, no internet needed. The dashboard shows every record.
+3. **New session — the agent is already up to speed.** It gets the project brief and picks up where you left off.
 
-## What you get
-
-- The agent remembers the project between sessions: decisions, bugs, tasks and agreements, with dates.
-- Records live separately from the chat. You can close or delete the conversation, the records are untouched.
-- Every session starts with a short project summary. No re-reading the whole history, which is where the token savings come from.
-- Unfinished work surfaces on its own, no reminders needed.
-- Everything recorded is visible in the dashboard: memory map, search, event feed.
-
-![MaxGraph dashboard: project memory map, recent memories and memory feed](docs/assets/demo-dashboard.png)
-
-## Works with
-
-| Client | How to connect |
-|---|---|
-| Claude Desktop / Claude Code | Plugin from our marketplace, one command |
-| Cursor / VS Code | One-click link, below |
-| Cline / Continue | MCP streamable-http + Bearer |
-| ChatGPT / OpenAI-compatible | REST API or agent adapter |
-| Kimi, GLM, Qwen, Hermes, DeepSeek | REST API, any HTTP client |
-
-Ready-made setup examples for each client: [docs/PROVIDERS.md](docs/PROVIDERS.md). Using a different agent? If it can connect external tools, MaxGraph will connect to it.
+Memory is split into **projects**: work code, personal notes and freelance never mix.
 
 ## Installation
 
-Nothing to install upfront (no Docker needed). One command — the installer downloads the program from the official store, verifies its checksum, installs it into your user folder and launches it:
+The easiest way — ask your AI agent. Paste this into its chat:
+
+> Install MaxGraph: https://github.com/RuMemory/maxgraph — do everything yourself following AGENTS.md. Tell me when memory works.
+
+The agent clones the repo, runs the installer, connects memory and verifies it is writing.
+
+By hand — one command (no Docker needed):
 
 ```bash
 git clone https://github.com/RuMemory/maxgraph && cd maxgraph
@@ -58,11 +68,7 @@ bash install.sh --yes       # Linux / macOS
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes
 ```
 
-From there the program runs itself: a tray icon, autostart with the system, automatic updates. An AI agent doing the install reads [AGENTS.md](AGENTS.md).
-
-The access token is generated on first launch — the installer prints it in the next-steps package (it also lives in `data/local_token.txt` inside the install folder).
-
-Open the dashboard at `http://localhost:8787/app` and enter the token. Updates install themselves. Don't want them — disable with `MG_NO_UPDATE=1`.
+From there the program runs itself: a tray icon, autostart with the system, automatic updates.
 
 ## One-step connection
 
@@ -85,6 +91,18 @@ Server already running? Then it's one command or one link:
 
 Details for each client: [docs/PAIRING.md](docs/PAIRING.md).
 
+## Works with
+
+| Client | How to connect |
+|---|---|
+| Claude Desktop / Claude Code | Plugin from our marketplace, one command |
+| Cursor / VS Code | One-click link, above |
+| Cline / Continue | MCP streamable-http + Bearer |
+| ChatGPT / OpenAI-compatible | REST API or agent adapter |
+| Kimi, GLM, Qwen, Hermes, DeepSeek | REST API, any HTTP client |
+
+Ready-made setup examples for each client: [docs/PROVIDERS.md](docs/PROVIDERS.md). Using a different agent? If it can connect external tools, MaxGraph will connect to it.
+
 ## Pricing
 
 7 days free, no card. The trial starts on first launch, nothing to enable. After that, one plan with everything included, a one-time payment with no auto-renewal:
@@ -104,28 +122,32 @@ Buy and activate: [rezon-ai.ru](https://rezon-ai.ru)
 
 MaxGraph has a referral program. Your friend gets −20 % off the first purchase, and you get +10 % off your renewal for each buyer, up to −50 %. Your link and click stats are in the dashboard, under "System".
 
+## Privacy
+
+All records are stored only on your computer and work offline. They are plain text files in the `data/` folder: you can open, read and copy them at any time. The dashboard exports everything as a single file (NDJSON export).
+
 ## Links
 
 - Site and purchase: [rezon-ai.ru](https://rezon-ai.ru)
 - Blog: [rezon-ai.ru/en/blog](https://rezon-ai.ru/en/blog/) — articles on agent memory, MCP and token savings
 - Telegram: [t.me/maxgraph_mcp](https://t.me/maxgraph_mcp) — news and releases (Russian)
 
-## 💛 Support
+Docs: [PROTOCOL](docs/PROTOCOL.md) · [API](docs/API.md) · [PROVIDERS](docs/PROVIDERS.md) · [PAIRING](docs/PAIRING.md) · [DEPLOY-LAN](docs/DEPLOY-LAN.md)
+
+## Support
 
 MaxGraph lives on user support. If the project was useful, you can simply say thanks: [rezon-ai.ru#donate](https://rezon-ai.ru/#donate). A one-time transfer, no subscription, no auto-charges.
-
-## Privacy
-
-All records are stored only on your computer and work offline. They are plain text files in the `data/` folder: you can open, read and copy them at any time. The dashboard exports everything as a single file (NDJSON export).
 
 ## License
 
 [BSL-1.1](LICENSE): the source code is open. Personal and internal use is free. Selling MaxGraph as a service requires a commercial license. Every version becomes MIT four years after publication.
 
-## Docs
-
-[PROTOCOL](docs/PROTOCOL.md) · [API](docs/API.md) · [PROVIDERS](docs/PROVIDERS.md) · [PAIRING](docs/PAIRING.md) · [DEPLOY-LAN](docs/DEPLOY-LAN.md)
-
 ## Keywords
 
 `mcp server` `ai memory` `llm context` `knowledge graph` `persistent memory for ai agents` `model context protocol` `memory for claude code` `claude code plugin` `cursor memory` `vscode mcp` `chatgpt memory` `agent memory` `context engineering` `semantic search` `long-term memory for llm` `self-hosted ai` `память для нейросети` `память для ИИ-агентов` `MCP сервер памяти` `граф знаний` `долговременная память ИИ` `экономия токенов` `память для Claude` `память для ChatGPT` `память для Cursor` `локальная память для ИИ`
+
+---
+
+<p align="center">
+  <strong>Install once — and every agent you use remembers the project.</strong>
+</p>
