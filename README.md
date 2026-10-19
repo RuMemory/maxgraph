@@ -1,4 +1,4 @@
-![MaxGraph — Твой ИИ забывает. MaxGraph помнит.](docs/assets/banner.jpg)
+![MaxGraph](docs/assets/banner.svg)
 
 # MaxGraph
 
