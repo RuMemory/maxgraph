@@ -220,7 +220,8 @@ def read_hostfp_file(path) -> dict | None:
 
 def candidate_paths(env=None) -> list:
     """Где искать hostfp.json: $HOSTFP_PATH → монтирование compose → cwd (python-
-    режим из корня репо) → $MEMORY_DIR → data рядом с exe (native). Первый валидный побеждает."""
+    режим из корня репо) → $MEMORY_DIR → data рядом с exe (native) → /data
+    (дефолт DATA_DIR python-запуска без MEMORY_DIR). Первый валидный побеждает."""
     env = os.environ if env is None else env
     out = []
     p = (env.get("HOSTFP_PATH") or "").strip()
@@ -233,6 +234,10 @@ def candidate_paths(env=None) -> list:
         out.append(str(Path(md) / "hostfp.json"))
     if getattr(sys, "frozen", False):  # native exe: данные рядом с бинарником (как app._default_data_dir)
         out.append(str(Path(sys.executable).resolve().parent / "data" / "hostfp.json"))
+    else:
+        # python-фолбэк без MEMORY_DIR: ensure_hostfp пишет в DATA_DIR=/data
+        # (дефолт app._default_data_dir) — без этого кандидата установка оставалась unanchored
+        out.append("/data/hostfp.json")
     seen, uniq = set(), []
     for p in out:
         if p not in seen:

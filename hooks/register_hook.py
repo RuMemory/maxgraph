@@ -15,6 +15,11 @@ MCP-ряд (dsh-mcp-client, streamable-http) — только в форме `- i
 mcp-maxgraph/mcp-remotemem от старой доки переписывается в правильную форму.
 Токен — из data/local_token.txt рядом с репо (или env MEMORY_TOKEN).
 
+DSH, пакет плагина-моста: @deepseek-ai/dsh-hooks-claude-code НЕ входит в
+дистрибутив DSH — ряд на неустановленный пакет молча мёртв (warn-and-continue),
+поэтому пакет доустанавливается в профиль pnpm'ом из рантайма DSH с пином к
+desktopVersion (см. комментарий у _DSH_HOOKS_PKG и docs/HOOKS.md).
+
 Свойства: идемпотентно (команда с maxgraph_hook.py уже в конфиге → пропуск),
 перед первой записью конфига — бэкап <файл>.bak-maxgraph (один раз, не затираем),
 запись атомарная (tmp + os.replace) с сохранением прав; конфиг-симлинк пишется
@@ -29,6 +34,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -431,6 +437,114 @@ def _is_our_hooks_row(lines: list) -> bool:
     return bool(_HOOKS_ID_RE.search(_no_comments("\n".join(_strip_block_scalars(lines)))))
 
 
+# --- DSH: пакет плагина-моста --------------------------------------------------
+# Пакет НЕ входит в дистрибутив DSH (в манифесте приложения он devDependency,
+# файлов пакета в app.asar нет — проверено на 0.2.1-rc.2). Ряд `- insert:` на
+# неустановленный пакет молча умирает: необязательный entry с failed import —
+# «warn and continue» (dsh-app-boot), в GUI (Plugins) такой ряд не показывается.
+# Поэтому одной записи в cordis.patch.yml мало: пакет надо поставить в профиль
+# (резолвер подхватывает <профиль>/node_modules — installedProfilePackageNames /
+# routeScoped в dsh-app-boot). Версия пинится точно к версии рантайма:
+# peerDependencies пакета — ровно @deepseek-ai/dsh-* той же сборки.
+_DSH_HOOKS_PKG = "@deepseek-ai/dsh-hooks-claude-code"
+
+
+# допустимый алфавит версии из runtime.json (граница доверия: файл пользователя
+# попадает в команду pnpm — только semver-символы, никаких пробелов и '-flag')
+# security-ревизия 2026-10-19 (L2): строго semver-ядро [+пререлиз] — npm
+# dist-tags (latest/beta) не пропускаем, unpinned install запрещён.
+_DSH_VER_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
+
+# security-ревизия 2026-10-19 (M1): рантайм берём ТОЛЬКО из каталога
+# dsh-primary-runtime — это каталог, из которого DSH физически исполняется:
+# доверять ему не добавляет новой поверхности (кто может его подменить, тот
+# уже исполняет код от имени пользователя). Сканировать соседние каталоги и
+# выбирать max-версию НЕЛЬЗЯ: фейковый рантайм с версией "9999.0.0" выигрывал
+# бы отбор и давал code-exec при benign-запуске установщика.
+_DSH_PRIMARY_RUNTIME = "~/.dsh/dsh-runtimes/dsh-primary-runtime"
+
+
+def _dsh_runtime() -> tuple:
+    """(desktopVersion, node, pnpm.cjs) первичного рантайма DSH с бинарями.
+    Версия и pnpm — из ОДНОГО рантайма: пин совпадает с фактическим движком
+    (security-ревизия I3). ("", "", "") — рантайм не найден/битый."""
+    rt = _home(_DSH_PRIMARY_RUNTIME) / "runtime.json"
+    try:
+        ver = json.loads(_read_cfg(rt)).get("desktopVersion") or ""
+    except Exception:
+        return ("", "", "")
+    if not (isinstance(ver, str) and _DSH_VER_RE.fullmatch(ver)):
+        return ("", "", "")
+    base = rt.parent / "dependencies"
+    node = base / "node" / "bin" / ("node.exe" if os.name == "nt" else "node")
+    pnpm = base / "pnpm" / "bin" / "pnpm.cjs"
+    if not (node.exists() and pnpm.exists()):
+        return ("", "", "")
+    return (ver, str(node), str(pnpm))
+
+
+def _dsh_plugin_version(profile_dir: Path) -> str:
+    """Версия установленного плагина-моста; "" — не установлен/битый.
+    security-ревизия 2026-10-19 (M2): одного существования package.json мало —
+    после обновления DSH пин обязан ПЕРЕустановиться на новую desktopVersion."""
+    pkg = (profile_dir / "node_modules" / "@deepseek-ai"
+           / "dsh-hooks-claude-code" / "package.json")
+    try:
+        v = json.loads(_read_cfg(pkg)).get("version")
+        return v if isinstance(v, str) else ""
+    except Exception:
+        return ""
+
+
+def _sanitize_err(line: str) -> str:
+    """security-ревизия 2026-10-19 (L1): хвост stderr pnpm может содержать
+    registry URL с basic-auth кредами из .npmrc — режем userinfo, строку
+    ограничиваем; в статус/транскрипт уходит только безопасный хвост."""
+    return re.sub(r"://[^@/\s]+@", "://", line)[:200]
+
+
+def _dsh_ensure_hook_plugin(profile_dir: Path, dry: bool) -> str:
+    """Доустановка плагина-моста в профиль. --config.auto-install-peers=false
+    обязателен: локальные копии @deepseek-ai/dsh-* пиров зашадоуили бы пакеты
+    дистрибутива (routeScoped: кандидат из профиля выигрывает у entries).
+    Без известной версии рантайма НЕ ставим unpinned latest (security-ревизия
+    I2: peer-mismatch всё равно отключит ряд + supply-chain окно) — только
+    ручная команда. Ошибка установки не роняет регистрацию.
+    security-ревизия 2026-10-19: M2 — сверка версии установленного пакета с
+    desktopVersion (переустановка при mismatch); M3 — registry принудительно
+    официальный (против перенаправления через .npmrc/npm_config_registry),
+    после установки сверяем version из package.json с запрошенной (имя пакета
+    пинится самим путём в node_modules, отдельная проверка name не нужна)."""
+    ver, node, pnpm = _dsh_runtime()
+    installed = _dsh_plugin_version(profile_dir)
+    if installed and installed == ver:
+        return "hooks plugin present"
+    spec = f"{_DSH_HOOKS_PKG}@{ver}" if ver else f"{_DSH_HOOKS_PKG}@<версия DSH>"
+    manual = (f'cd "{profile_dir}" && pnpm add --save-exact '
+              f"--config.auto-install-peers=false --ignore-scripts "
+              f"--registry=https://registry.npmjs.org {spec}")
+    if dry:
+        return f"would install {spec} into {profile_dir}"
+    if not node or not ver:
+        return f"hooks plugin NOT installed (DSH не вызовет хук) — установите: {manual}"
+    try:
+        r = subprocess.run([node, pnpm, "add", "--save-exact",
+                            "--config.auto-install-peers=false",
+                            "--ignore-scripts",
+                            "--registry=https://registry.npmjs.org", spec],
+                           cwd=str(profile_dir), capture_output=True, timeout=300)
+    except Exception:
+        return f"hooks plugin install failed — установите вручную: {manual}"
+    got = _dsh_plugin_version(profile_dir)
+    if r.returncode == 0 and got == ver:
+        return "hooks plugin installed" if not installed else "hooks plugin re-pinned"
+    err = r.stderr.decode("utf-8", "replace").strip().splitlines()
+    err = (" " + _sanitize_err(err[-1])) if err else ""   # I4+L1: хвост stderr
+    why = "" if r.returncode else f" (установлен {got or 'неизвестно'} ≠ {ver})"
+    return (f"hooks plugin install failed (pnpm exit {r.returncode}){why}{err} — "
+            f"установите вручную: {manual}")
+
+
 def _mcp_token() -> str:
     """Токен для MCP-ряда DSH: env MEMORY_TOKEN, иначе data/local_token.txt
     рядом с корнем репо (установщик зовёт скрипт из корня клона, после подъёма
@@ -641,6 +755,8 @@ def _dsh_apply_profile(p: Path, spec: dict, remove: bool, dry: bool,
         add_blocks.append(_DSH_MCP_BLOCK.format(
             url=_yaml_str("http://localhost:8787/mcp"),
             auth=_yaml_str("Bearer " + token)))
+    # пакет плагина-моста: без него ряд hooks-maxgraph в конфиге мёртв (см. выше)
+    status.append(_dsh_ensure_hook_plugin(p.parent, dry))
     if not add_blocks and not dropped:
         return f"{p}: " + ", ".join(status)
     if not _dsh_top_level_ok(text):

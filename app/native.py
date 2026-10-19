@@ -408,6 +408,10 @@ def ensure_hostfp(data_dir=None, platform: str | None = None) -> bool:
         tmp = f.with_name(f.name + ".tmp")
         tmp.write_text(json.dumps(doc, indent=1), encoding="utf-8")
         os.replace(tmp, f)
+        try:
+            os.chmod(f, 0o600)
+        except OSError:
+            pass  # Windows: chmod частичен — не критично
         log.info("hostfp: отпечаток хоста записан (%s)", f)
         return True
     except Exception as exc:  # привязка не критична — сервер живёт и без неё

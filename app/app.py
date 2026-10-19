@@ -2850,7 +2850,8 @@ RECALL_MAX_BODY = 65536          # лимит тела POST /api/recall (64KB, �
 RECALL_MAX_QUERY = 500           # query режем до 500 символов
 RECALL_MAX_FACT = 300            # один факт ≤300 символов
 RECALL_MAX_FACTS_CHARS = 1500    # суммарный потолок фактов в ответе
-RECALL_TOP_ENTITIES = 5          # сущностей в ответе (из top-10 op_search)
+RECALL_TOP_ENTITIES = 3          # сущностей в ответе (из top-10 op_search; решение владельца 2026-10-19: топ-3)
+RECALL_MIN_SCORE = float(os.environ.get("MG_RECALL_MIN_SCORE", "0.85"))  # высокий порог релевантности (решение владельца 2026-10-19; эмпирика: шум по ACT-R-популярности до ~0.75, сильные совпадения ≥0.9)
 RECALL_RATE_LIMIT = 120          # запросов/мин с IP (общий in-memory лимитер)
 SESSION_CONTEXT_DEFAULT_BUDGET = 4000   # budget_chars /api/session-context по умолчанию
 
@@ -2939,7 +2940,7 @@ def _recall(query: str, slug: str) -> dict:
         if len(facts) >= RECALL_TOP_ENTITIES:
             break
         score = float(e.get("score") or 0)
-        if score <= 0:
+        if score < RECALL_MIN_SCORE:
             continue
         obs = [str(o).strip() for o in e.get("observations", [])
                if str(o).strip() and not _is_invalidated(o)]
@@ -8327,4 +8328,6 @@ if __name__ == "__main__":
                 log.info("single-instance: экземпляр уже запущен (data=%s) — выход", DATA_DIR)
                 sys.exit(0)
             TOKEN = _resolve_token()  # перечитать под локом (гонка первого старта, см. выше)
+            import native  # stdlib-only при импорте; pystray/PIL — лениво в run_tray
+            native.ensure_hostfp()  # привязка к железу, как у exe (анти-фарм: иначе unanchored)
         main()

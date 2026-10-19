@@ -47,7 +47,32 @@
 
 ## DeepSeek Harness (DSH) — `cordis.patch.yml` профиля
 
-Через плагин `@deepseek-ai/dsh-hooks-claude-code` и файл `~/.maxgraph/hooks.json`:
+⚠️ **Плагин `@deepseek-ai/dsh-hooks-claude-code` НЕ входит в дистрибутив DSH**
+(в манифесте приложения он devDependency; проверено на 0.2.1-rc.2: файлов пакета
+в app.asar нет). Ряд в `cordis.patch.yml`, ссылающийся на неустановленный пакет,
+DSH молча пропускает (failed import необязательного ряда — «warn and continue»),
+плагин не появляется в GUI (Plugins) и хук никогда не вызывается. Поэтому
+регистрация в DSH = **два шага**: (1) установить пакет в профиль, (2) вписать ряд.
+Установщик (register_hook.py) делает оба сам pnpm'ом из рантайма DSH:
+
+```bash
+# что делает установщик (вручную — то же самое, для каждого профиля):
+cd ~/.dsh/profiles/<профиль>
+pnpm add --save-exact --config.auto-install-peers=false --ignore-scripts \
+  @deepseek-ai/dsh-hooks-claude-code@<версия DSH>
+```
+
+- Версия пакета = версия рантайма DSH (`~/.dsh/dsh-runtimes/*/runtime.json` →
+  `desktopVersion`): peerDependencies пакета пинят `@deepseek-ai/dsh-*` ровно этой
+  сборки, иначе compat-проверка DSH откажет и ряд станет `disabled`.
+  **После обновления DSH перезапусти установку хуков** — пин устареет.
+- `--config.auto-install-peers=false` обязателен: локальные копии пиров
+  `@deepseek-ai/dsh-*` в профиле зашадоуят пакеты дистрибутива.
+- Свой pnpm не нужен: установщик берёт node+pnpm из `~/.dsh/dsh-runtimes/*`.
+  Если установка не удалась (offline и т.п.), вывод регистрации содержит готовую
+  ручную команду — захват без пакета работать не будет.
+
+Файл `~/.maxgraph/hooks.json` (Claude-формат событий, команда с `--host dsh`):
 
 ```json
 {
@@ -71,6 +96,11 @@
         configPath: <абсолютный путь к ~/.maxgraph/hooks.json>
         projectDir: <рабочая папка>
 ```
+
+Проверка, что DSH видит плагин: после полного перезапуска отправь любой промпт —
+событие появится в дашборде (Хроника → пульс). Пусто — смотри статус
+`hooks plugin …` в выводе register_hook.py: «NOT installed / install failed»
+значит пакет не доехал, выполни ручную команду из статуса.
 
 На Windows команда — через pythonw с полным путём (см. шапку). Покрытие: все 5.
 
@@ -207,7 +237,10 @@ Cline (только TypeScript-плагины, не конфиг), Continue.dev,
 Агент удаляет из конфига СВОЕГО хоста записи, чьи команды содержат
 `maxgraph_hook.py` (в Claude/Gemini — элементы внутри `"hooks"`; в Cursor/Windsurf/
 Antigravity/Codex — из hooks.json; в Kimi — блоки `[[hooks]]` с этой командой; в
-DSH — запись `hooks-maxgraph` из cordis.patch.yml и файл `~/.maxgraph/hooks.json`).
+DSH — запись `hooks-maxgraph` из cordis.patch.yml и файл `~/.maxgraph/hooks.json`;
+пакет `@deepseek-ai/dsh-hooks-claude-code` из профиля DSH (`pnpm remove` в папке
+профиля) удаляй только если его не используют другие ряды hooks-моста — например,
+чужой `hooks-ecc` на том же пакете).
 Папку `~/.maxgraph` удаляет uninstall-скрипт.
 
 ## Детали транспорта (справочно)
