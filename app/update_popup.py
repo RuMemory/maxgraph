@@ -27,6 +27,8 @@ handler deleted by the wrong thread» в tcl86t.dll (WER: APPCRASH maxgraph.exe,
 40×40, Escape закрывает окно, Enter — кнопка. «Проверяю…» без ответа
 CHECK_TIMEOUT_MS → «Нет связи с сервером». Провал установки — отдельное
 состояние FAILED («Не удалось установить обновление»), не «офлайн».
+Гонка релиза (версия объявлена, но файл ещё не выложен на сервере) —
+PENDING («Обновление ещё готовится»), не FAILED.
 
 Stdlib-only при импорте (tkinter — лениво в потоке окна): модуль входит в
 Docker-образ вместе с app/, импорт не должен требовать GUI.
@@ -37,6 +39,8 @@ import logging
 import queue
 import sys
 import threading
+
+import selfupdate as _su  # sentinel UPDATE_PENDING — единый источник значения (stdlib-only)
 
 log = logging.getLogger("maxgraph.update_popup")
 
@@ -49,6 +53,8 @@ LATEST = "latest"        # «У вас последняя версия»
 OFFLINE = "offline"      # «Нет связи с сервером»
 FAILED = "failed"        # «Не удалось установить обновление» (провал apply)
 DISABLED = "disabled"    # «Обновления отключены» (MG_NO_UPDATE=1)
+PENDING = _su.UPDATE_PENDING  # «Обновление ещё готовится» — версия объявлена,
+                              # но файл на сервере ещё не выложен (гонка релиза)
 
 AUTOHIDE_MS = 5000        # авто-исчезновение инфо-состояний; у UPDATE — нет
 CHECK_TIMEOUT_MS = 10000  # «Проверяю…» без ответа → «Нет связи с сервером»
@@ -76,11 +82,17 @@ def popup_supported(platform: str | None = None) -> bool:
 
 
 def state_from_check(info: dict) -> tuple[str, str]:
-    """Результат selfupdate.check() → (состояние, версия). {} (сбой сети) → offline."""
+    """Результат selfupdate.check() → (состояние, версия). {} (сбой сети) → offline.
+    native_pending (версия объявлена, файл ещё не выложен) → PENDING, не LATEST —
+    «последняя версия» в окно гонки релиза была бы ложным утверждением."""
     latest = str((info or {}).get("version") or "").strip()
     if not latest:
         return OFFLINE, ""
-    return (UPDATE, latest) if info.get("newer") else (LATEST, latest)
+    if info.get("newer"):
+        return UPDATE, latest
+    if info.get("native_pending"):
+        return PENDING, latest
+    return LATEST, latest
 
 
 def view_for(state: str, version: str = "") -> dict:
@@ -103,6 +115,10 @@ def view_for(state: str, version: str = "") -> dict:
     if state == FAILED:
         return {"title": "Не удалось установить обновление",
                 "subtitle": "Попробуйте позже",
+                "button": None, "autohide_ms": AUTOHIDE_MS}
+    if state == PENDING:
+        return {"title": "Обновление ещё готовится",
+                "subtitle": "Файл появится на сервере в ближайшее время",
                 "button": None, "autohide_ms": AUTOHIDE_MS}
     if state == DISABLED:
         return {"title": "Обновления отключены",
@@ -277,7 +293,9 @@ def _run_window(q, ready, ok, state, version, on_update) -> None:
                 except Exception as exc:
                     log.warning("update-popup: apply: %r", exc)
                     done = False
-                if not done:
+                if done == PENDING:   # версия объявлена, файла ещё нет — не провал
+                    q.put((PENDING, "", None))
+                elif not done:
                     q.put((FAILED, "", None))  # провал установки ≠ нет сети
 
             threading.Thread(target=_do, daemon=True, name="update-apply").start()

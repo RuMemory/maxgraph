@@ -31,6 +31,16 @@ MG_NO_UPDATE=1 — update-цикл не стартует. MG_UPDATE_INTERVAL_SEC
 зовёт on_update (балун + пункт трея «Обновить до …» в native.py); скачивание —
 по клику (apply_pending_update) или автоматически через FALLBACK_AFTER_SEC (7д)
 от ПЕРВОГО обнаружения версии.
+
+Гейт манифеста (гонка релиза 2026-10-19): /api/version поднимается деплоем
+РАНЬШЕ, чем CI собирает и подписывает native-бинарники. Без гейта клиент
+предлагал «Обновить до vX.Y.Z», клик падал 404 и показывал ложное «Не удалось
+установить обновление». Поэтому check() отвечает newer=True, только когда
+манифест native-раздачи УЖЕ содержит артефакт этой версии (native_ready), а
+apply_pending_update() при нераздающемся артефакте возвращает UPDATE_PENDING
+(карточка «Обновление ещё готовится», не «Не удалось»). Недоступный/битый
+манифест — fail-open (старое поведение): это инфраструктурный сбой, а не
+гонка релиза, и 7-дневный автофолбэк не должен отключаться молча.
 """
 
 from __future__ import annotations
@@ -60,6 +70,10 @@ _CHUNK = 1 << 16
 _UPDATE_FLAG = "--mg-apply-update"
 FALLBACK_AFTER_SEC = 7 * 24 * 3600  # автофолбэк: 7 дней без подтверждения пользователя
 UPDATE_STATE_NAME = "update-state.json"
+# apply_pending_update: версия объявлена, но native-артефакт ещё не раздаётся
+# (гонка релиза) — это НЕ провал установки; UI показывает «Обновление ещё
+# готовится» (update_popup.PENDING), а не «Не удалось установить обновление».
+UPDATE_PENDING = "pending"
 
 # ---------------------------------------------------------------------------
 # Ed25519 verify (RFC 8032), компактная чистая реализация на stdlib.
@@ -213,8 +227,56 @@ def artifact_name(version, platform=None, arch=None):
 # Сеть: check + download_and_verify
 # ---------------------------------------------------------------------------
 
+def fetch_native_manifest(store_url) -> dict:
+    """GET {store}/api/releases/native/manifest → dict; сбой/мусор → {} (fail-open)."""
+    try:
+        req = urllib.request.Request(store_url.rstrip("/") + "/api/releases/native/manifest",
+                                     headers={"User-Agent": "maxgraph-selfupdate"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read(65536).decode("utf-8", "replace"))
+    except Exception as e:
+        log.warning("selfupdate: манифест native-раздачи не получен: %r", e)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _manifest_has_artifact(manifest: dict, version, platform=None, arch=None) -> bool:
+    """True, если УЖЕ ПОЛУЧЕННЫЙ манифест содержит артефакт версии для платформы."""
+    name = artifact_name(version, platform, arch)
+    if not name:
+        return False
+    arts = manifest.get("artifacts") if isinstance(manifest, dict) else None
+    if not isinstance(arts, list):
+        return False
+    return any(isinstance(a, dict) and a.get("name") == name for a in arts)
+
+
+def native_ready(store_url, version, platform=None, arch=None) -> bool:
+    """True, если магазин РЕАЛЬНО раздаёт native-артефакт этой версии для этой
+    платформы. Гейт против гонки релиза: /api/version поднимается деплоем
+    раньше, чем CI собирает и подписывает бинарники, — без гейта клиент
+    предлагал обновление, клик падал 404 и показывал ложное «Не удалось
+    установить обновление» (2026-10-19, v1.2.2).
+    Различаем (security-ревизия v1.2.3, MAJOR — манифест не должен быть единой
+    точкой отказа канала обновлений): ПОЛУЧЕННЫЙ манифест без артефакта → False
+    (гонка релиза — ждём); манифест недоступен/мусор (инфраструктурный сбой) →
+    True (fail-open, старое поведение: предлагаем; реальный 404 при скачивании
+    честно покажет состояние, а 7-дневный автофолбэк не отключается молча)."""
+    name = artifact_name(version, platform, arch)
+    if not name:
+        return False  # неизвестная платформа — раздавать нечего, сеть не дёргаем
+    m = fetch_native_manifest(store_url)
+    if not m:
+        return True  # fail-open: сломанный эндпоинт ≠ «обновления нет»
+    return _manifest_has_artifact(m, version, platform, arch)
+
+
 def check(store_url, current) -> dict:
-    """GET {store}/api/version → {"version": ..., "newer": bool}; сбой → {} (fail-open)."""
+    """GET {store}/api/version → {"version": ..., "newer": bool}; сбой → {} (fail-open).
+    newer=True — только когда магазин уже РАЗДАЁТ native-артефакт этой версии
+    (гейт native_ready); версия объявлена, но ещё не раздаётся →
+    {"newer": False, "native_pending": True} — обновление не предлагаем.
+    Недоступный манифест — fail-open (см. native_ready)."""
     try:
         req = urllib.request.Request(store_url.rstrip("/") + "/api/version",
                                      headers={"User-Agent": "maxgraph-selfupdate"})
@@ -226,7 +288,13 @@ def check(store_url, current) -> dict:
     latest = str(data.get("version") or "").strip() if isinstance(data, dict) else ""
     if not latest:
         return {}
-    return {"version": latest, "newer": semver_newer(latest, current)}
+    if not semver_newer(latest, current):
+        return {"version": latest, "newer": False}
+    if native_ready(store_url, latest):
+        return {"version": latest, "newer": True}
+    log.info("selfupdate: магазин объявляет %s, но native-артефакт ещё не "
+             "раздаётся — ждём следующего цикла", latest)
+    return {"version": latest, "newer": False, "native_pending": True}
 
 
 class _NotFound(Exception):
@@ -757,9 +825,11 @@ def _download_apply_exit(store_url, version, data_dir) -> bool:
     return True     # unreachable без подмены os._exit (тесты)
 
 
-def apply_pending_update(store_url, data_dir) -> bool:
+def apply_pending_update(store_url, data_dir):
     """Клик по пункту трея «Обновить до …»: поставить версию из update-state.json.
-    True — helper запущен и процесс умирает; False — нечего ставить / сбой."""
+    True — helper запущен и процесс умирает; UPDATE_PENDING — версия объявлена,
+    но native-артефакт ещё не раздаётся (гонка релиза, не провал); False —
+    нечего ставить / сбой."""
     if not _store_url_allowed(store_url):  # тот же гард, что у start_update_loop:
         log.warning("selfupdate: store_url не https и не loopback — обновление отклонено")
         return False                       # ручной путь (apply_update_from_ui) не обходит его
@@ -770,6 +840,10 @@ def apply_pending_update(store_url, data_dir) -> bool:
         log.warning("selfupdate: в update-state мусорная версия %r — отказ", version)
         return False
     log.info("selfupdate: пользователь подтвердил обновление до %s", version)
+    if not native_ready(store_url, version):  # объявлена ≠ раздаётся: 404 ≠ провал
+        log.info("selfupdate: %s объявлена, но native-артефакт ещё не раздаётся — "
+                 "откладываю (гейт манифеста)", version)
+        return UPDATE_PENDING
     return _download_apply_exit(store_url, version, data_dir)
 
 

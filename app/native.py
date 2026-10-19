@@ -601,16 +601,18 @@ def _refresh_menu() -> None:
         pass
 
 
-def apply_update_from_ui() -> bool:
+def apply_update_from_ui():
     """Клик «Обновить» (карточка или пункт «Обновить до …»): скачать/проверить/
-    применить версию из update-state.json. True — helper запущен, процесс умрёт сам."""
+    применить версию из update-state.json. True — helper запущен, процесс умрёт
+    сам; selfupdate.UPDATE_PENDING — версия объявлена, но файл ещё не выложен
+    (карточка покажет «Обновление ещё готовится», не «Не удалось»)."""
     try:
         import selfupdate
         import app as _app
-        if not selfupdate.apply_pending_update(_app.PUBLIC_BASE_URL, _app.DATA_DIR):
+        res = selfupdate.apply_pending_update(_app.PUBLIC_BASE_URL, _app.DATA_DIR)
+        if not res:
             log.warning("tray: обновление не запустилось (нет стейта или сбой скачивания)")
-            return False
-        return True
+        return res
     except Exception as exc:
         log.warning("tray: apply обновления: %r", exc)
         return False
