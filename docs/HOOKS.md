@@ -59,18 +59,27 @@ DSH молча пропускает (failed import необязательног�
 # что делает установщик (вручную — то же самое, для каждого профиля):
 cd ~/.dsh/profiles/<профиль>
 pnpm add --save-exact --config.auto-install-peers=false --ignore-scripts \
-  @deepseek-ai/dsh-hooks-claude-code@<версия DSH>
+  @deepseek-ai/dsh-hooks-claude-code@<версия DSH> \
+  @deepseek-ai/dsh-hook-protocol@<версия DSH> \
+  @deepseek-ai/dsh-llm@<версия DSH>
 ```
 
-- Версия пакета = версия рантайма DSH (`~/.dsh/dsh-runtimes/*/runtime.json` →
-  `desktopVersion`): peerDependencies пакета пинят `@deepseek-ai/dsh-*` ровно этой
+Самого моста мало (боевой кейс 2026-10-19): он статически импортирует
+`dsh-hook-protocol` и `dsh-llm` — без них ряд молча мёртв даже при
+установленном мосте. Поэтому после установки установщик прогоняет
+`import()` моста бандлёным node DSH и доустанавливает всё, что не
+резолвится (например, транзитивный `@deepseek-ai/cordis` — версия берётся
+из package.json импортёра, у cordis своя линия 4.x, отличная от версии DSH).
+
+- Версия пакетов = версия рантайма DSH (`~/.dsh/dsh-runtimes/*/runtime.json` →
+  `desktopVersion`): peerDependencies пакетов пинят `@deepseek-ai/dsh-*` ровно этой
   сборки, иначе compat-проверка DSH откажет и ряд станет `disabled`.
   **После обновления DSH перезапусти установку хуков** — пин устареет.
-- `--config.auto-install-peers=false` обязателен: локальные копии пиров
-  `@deepseek-ai/dsh-*` в профиле зашадоуят пакеты дистрибутива.
+- `--config.auto-install-peers=false` обязателен: лавина ВСЕХ пиров в профиле
+  зашадоуит пакеты дистрибутива; ставим точечно только недостающее.
 - Свой pnpm не нужен: установщик берёт node+pnpm из `~/.dsh/dsh-runtimes/*`.
   Если установка не удалась (offline и т.п.), вывод регистрации содержит готовую
-  ручную команду — захват без пакета работать не будет.
+  ручную команду — захват без пакетов работать не будет.
 
 Файл `~/.maxgraph/hooks.json` (Claude-формат событий, команда с `--host dsh`):
 
@@ -238,8 +247,9 @@ Cline (только TypeScript-плагины, не конфиг), Continue.dev,
 `maxgraph_hook.py` (в Claude/Gemini — элементы внутри `"hooks"`; в Cursor/Windsurf/
 Antigravity/Codex — из hooks.json; в Kimi — блоки `[[hooks]]` с этой командой; в
 DSH — запись `hooks-maxgraph` из cordis.patch.yml и файл `~/.maxgraph/hooks.json`;
-пакет `@deepseek-ai/dsh-hooks-claude-code` из профиля DSH (`pnpm remove` в папке
-профиля) удаляй только если его не используют другие ряды hooks-моста — например,
+пакеты `@deepseek-ai/dsh-hooks-claude-code`, `@deepseek-ai/dsh-hook-protocol`,
+`@deepseek-ai/dsh-llm`, `@deepseek-ai/cordis` из профиля DSH (`pnpm remove` в папке
+профиля) удаляй только если их не используют другие ряды hooks-моста — например,
 чужой `hooks-ecc` на том же пакете).
 Папку `~/.maxgraph` удаляет uninstall-скрипт.
 

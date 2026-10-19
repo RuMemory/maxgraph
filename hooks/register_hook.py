@@ -18,7 +18,12 @@ mcp-maxgraph/mcp-remotemem от старой доки переписываетс
 DSH, пакет плагина-моста: @deepseek-ai/dsh-hooks-claude-code НЕ входит в
 дистрибутив DSH — ряд на неустановленный пакет молча мёртв (warn-and-continue),
 поэтому пакет доустанавливается в профиль pnpm'ом из рантайма DSH с пином к
-desktopVersion (см. комментарий у _DSH_HOOKS_PKG и docs/HOOKS.md).
+desktopVersion. Мало поставить сам мост (слои 2-3 бага 2026-10-19): он
+статически импортирует @deepseek-ai/dsh-hook-protocol и @deepseek-ai/dsh-llm
+(та же сборка — пин к desktopVersion), а те транзитивно тянут
+@deepseek-ai/cordis (своя линия версий 4.x — spec выводится из package.json
+импортёра). Финальный арбитр полноты — import()-прогон моста бандлёным node:
+что не резолвится, доустанавливается циклом (см. _dsh_ensure_hook_plugin).
 
 Свойства: идемпотентно (команда с maxgraph_hook.py уже в конфиге → пропуск),
 перед первой записью конфига — бэкап <файл>.bak-maxgraph (один раз, не затираем),
@@ -448,6 +453,24 @@ def _is_our_hooks_row(lines: list) -> bool:
 # peerDependencies пакета — ровно @deepseek-ai/dsh-* той же сборки.
 _DSH_HOOKS_PKG = "@deepseek-ai/dsh-hooks-claude-code"
 
+# Пиры моста из той же сборки DSH, которые он импортирует статически: без них
+# ряд hooks-maxgraph молча мёртв даже при установленном мосте (боевой кейс
+# 2026-10-19). Пин — к desktopVersion, как у моста. cordis сюда НЕ входит: у
+# него своя линия версий (4.x при desktopVersion 0.2.x), spec выводится из
+# package.json импортёра в _dsh_peer_spec.
+_DSH_HOOKS_PEERS = ("@deepseek-ai/dsh-hook-protocol", "@deepseek-ai/dsh-llm")
+
+# Имя пакета из вывода node (граница доверия: строка попадает в argv pnpm) —
+# только легальный npm-name; флагоподобные строки ('--config=…') отбрасываются.
+_DSH_PKG_NAME_RE = re.compile(r"^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
+# range из package.json импортёра: точная версия или ~/^-диапазон, без пробелов
+# (workspace:*, >=, 'x || y' не принимаем — такой пакет ставится руками).
+_DSH_RANGE_RE = re.compile(r"^[~^]?[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
+
+# Сколько недостающих пакетов добиваем циклом «import → поставить» за прогон
+# (потолок против бесконечного цикла при систематически падающем import).
+_DSH_REPAIR_LIMIT = 8
+
 
 # допустимый алфавит версии из runtime.json (граница доверия: файл пользователя
 # попадает в команду pnpm — только semver-символы, никаких пробелов и '-flag')
@@ -483,14 +506,13 @@ def _dsh_runtime() -> tuple:
     return (ver, str(node), str(pnpm))
 
 
-def _dsh_plugin_version(profile_dir: Path) -> str:
-    """Версия установленного плагина-моста; "" — не установлен/битый.
+def _dsh_pkg_version(profile_dir: Path, pkg: str) -> str:
+    """Версия установленного пакета профиля; "" — не установлен/битый.
     security-ревизия 2026-10-19 (M2): одного существования package.json мало —
     после обновления DSH пин обязан ПЕРЕустановиться на новую desktopVersion."""
-    pkg = (profile_dir / "node_modules" / "@deepseek-ai"
-           / "dsh-hooks-claude-code" / "package.json")
+    pj = profile_dir / "node_modules" / pkg / "package.json"
     try:
-        v = json.loads(_read_cfg(pkg)).get("version")
+        v = json.loads(_read_cfg(pj)).get("version")
         return v if isinstance(v, str) else ""
     except Exception:
         return ""
@@ -503,46 +525,163 @@ def _sanitize_err(line: str) -> str:
     return re.sub(r"://[^@/\s]+@", "://", line)[:200]
 
 
-def _dsh_ensure_hook_plugin(profile_dir: Path, dry: bool) -> str:
-    """Доустановка плагина-моста в профиль. --config.auto-install-peers=false
-    обязателен: локальные копии @deepseek-ai/dsh-* пиров зашадоуили бы пакеты
-    дистрибутива (routeScoped: кандидат из профиля выигрывает у entries).
-    Без известной версии рантайма НЕ ставим unpinned latest (security-ревизия
-    I2: peer-mismatch всё равно отключит ряд + supply-chain окно) — только
-    ручная команда. Ошибка установки не роняет регистрацию.
-    security-ревизия 2026-10-19: M2 — сверка версии установленного пакета с
-    desktopVersion (переустановка при mismatch); M3 — registry принудительно
-    официальный (против перенаправления через .npmrc/npm_config_registry),
-    после установки сверяем version из package.json с запрошенной (имя пакета
-    пинится самим путём в node_modules, отдельная проверка name не нужна)."""
-    ver, node, pnpm = _dsh_runtime()
-    installed = _dsh_plugin_version(profile_dir)
-    if installed and installed == ver:
-        return "hooks plugin present"
-    spec = f"{_DSH_HOOKS_PKG}@{ver}" if ver else f"{_DSH_HOOKS_PKG}@<версия DSH>"
-    manual = (f'cd "{profile_dir}" && pnpm add --save-exact '
-              f"--config.auto-install-peers=false --ignore-scripts "
-              f"--registry=https://registry.npmjs.org {spec}")
-    if dry:
-        return f"would install {spec} into {profile_dir}"
-    if not node or not ver:
-        return f"hooks plugin NOT installed (DSH не вызовет хук) — установите: {manual}"
+def _dsh_bridge_entry(profile_dir: Path) -> Path:
+    """Точка входа моста для import-проверки."""
+    return profile_dir / "node_modules" / _DSH_HOOKS_PKG / "lib" / "index.js"
+
+
+def _dsh_pnpm_add(node: str, pnpm: str, profile_dir: Path, specs: list) -> tuple:
+    """Один вызов pnpm add для списка спек. (ok, хвост ошибки — уже
+    санитизированный, для статуса). returncode не доверяем: вызыватель сверяет
+    фактические версии/импорт после установки (security-ревизия M3)."""
     try:
         r = subprocess.run([node, pnpm, "add", "--save-exact",
                             "--config.auto-install-peers=false",
                             "--ignore-scripts",
-                            "--registry=https://registry.npmjs.org", spec],
+                            "--registry=https://registry.npmjs.org", *specs],
                            cwd=str(profile_dir), capture_output=True, timeout=300)
-    except Exception:
-        return f"hooks plugin install failed — установите вручную: {manual}"
-    got = _dsh_plugin_version(profile_dir)
-    if r.returncode == 0 and got == ver:
-        return "hooks plugin installed" if not installed else "hooks plugin re-pinned"
+    except Exception as ex:
+        return (False, f" {type(ex).__name__}")
+    if r.returncode == 0:
+        return (True, "")
     err = r.stderr.decode("utf-8", "replace").strip().splitlines()
-    err = (" " + _sanitize_err(err[-1])) if err else ""   # I4+L1: хвост stderr
-    why = "" if r.returncode else f" (установлен {got or 'неизвестно'} ≠ {ver})"
-    return (f"hooks plugin install failed (pnpm exit {r.returncode}){why}{err} — "
-            f"установите вручную: {manual}")
+    return (False, f" exit {r.returncode}"
+                   + (": " + _sanitize_err(err[-1]) if err else ""))
+
+
+def _dsh_import_check(node: str, entry: Path) -> tuple:
+    """(ok, missing_pkg, detail). Реальный import() моста бандлёным node — та же
+    резолюция, что у загрузчика DSH: ловит недостающие пиры, которых проверка
+    версий не видит (2026-10-19: мост и hook-protocol стояли, dsh-llm/cordis —
+    нет, хуки молчали). missing_pkg — имя из 'Cannot find package', detail —
+    путь импортёра (для вывода range) либо санитизированный хвост ошибки.
+    INFO-1 (security-ревизия): import() исполняет top-level код пакета — это
+    приемлемо: пакет ставится из официального registry с --ignore-scripts и
+    пином к desktopVersion, а тот же top-level код DSH исполнил бы при загрузке
+    плагина (проверка не добавляет поверхности, а лишь отвечает раньше)."""
+    if not entry.exists():
+        return (False, "", "нет " + str(entry))
+    script = ("import(" + json.dumps(entry.resolve().as_uri()) + ")"
+              ".then(()=>console.log('IMPORT OK'))"
+              ".catch(e=>{console.error('IMPORT FAIL: '+e.message);process.exit(3)})")
+    try:
+        r = subprocess.run([node, "--input-type=module", "-e", script],
+                           capture_output=True, timeout=60)
+        out = (r.stdout + r.stderr).decode("utf-8", "replace")
+    except Exception as ex:
+        return (False, "", type(ex).__name__)
+    if "IMPORT OK" in out:
+        return (True, "", "")
+    m = re.search(r"Cannot find package '([^']+)' imported from (.+)", out)
+    if m:
+        # путь импортёра — до конца строки (LOW-1: Windows-пути с пробелами
+        # 'C:\Users\John Doe\…' — \S+ обрезал их, легитимный кейс уходил в ручной)
+        return (False, m.group(1), m.group(2).rstrip("\r").strip())
+    tail = out.strip().splitlines()
+    return (False, "", _sanitize_err(tail[-1]) if tail else f"exit {r.returncode}")
+
+
+def _dsh_peer_spec(profile_dir: Path, name: str, importer: str, ver: str) -> str:
+    """spec '<pkg>@<версия>' для недостающего пакета из import-проверки.
+    @deepseek-ai/dsh-* — пин к desktopVersion (lockstep-сборка); прочие
+    (cordis и т.п.) — range из package.json импортёра (peerDependencies →
+    dependencies → devDependencies). "" — spec построить нельзя (нелегальное
+    имя, импортёр вне node_modules профиля, нет пригодного range): ставится
+    руками, автоматике такое не доверяем."""
+    if not _DSH_PKG_NAME_RE.fullmatch(name):
+        return ""
+    if name.startswith("@deepseek-ai/dsh-"):
+        return f"{name}@{ver}"
+    try:
+        root = (profile_dir / "node_modules").resolve()
+        d = Path(importer).resolve().parent
+        d.relative_to(root)   # импортёр обязан жить в node_modules профиля
+    except (ValueError, OSError):
+        return ""
+    while True:
+        pj = d / "package.json"
+        if pj.exists():
+            try:
+                meta = json.loads(_read_cfg(pj))
+            except Exception:
+                return ""
+            for key in ("peerDependencies", "dependencies", "devDependencies"):
+                rng = (meta.get(key) or {}).get(name)
+                if isinstance(rng, str) and _DSH_RANGE_RE.fullmatch(rng):
+                    return f"{name}@{rng}"
+            return ""
+        if d == root:
+            return ""
+        parent = d.parent
+        if parent == d:
+            return ""
+        d = parent
+
+
+def _dsh_ensure_hook_plugin(profile_dir: Path, dry: bool) -> str:
+    """Доустановка моста и его пиров в профиль + import-проверка замыкания.
+    --config.auto-install-peers=false обязателен: лавина ВСЕХ пиров зашадоуила
+    бы пакеты дистрибутива (routeScoped: кандидат из профиля выигрывает у
+    entries) — ставим точечно только то, чего реально не хватает для import.
+    Без известной версии рантайма НЕ ставим unpinned latest (security-ревизия
+    I2: peer-mismatch всё равно отключит ряд + supply-chain окно) — только
+    ручная команда. Ошибка установки не роняет регистрацию.
+    security-ревизия 2026-10-19: M2 — сверка версий с desktopVersion
+    (переустановка при mismatch); M3 — registry принудительно официальный,
+    после установки сверяем version из package.json с запрошенной (имя пакета
+    пинится самим путём в node_modules, отдельная проверка name не нужна).
+    2026-10-19 (слои 2-3): замыкание = мост + _DSH_HOOKS_PEERS; дальше —
+    import-цикл: недостающий пакет из вывода node → spec (dsh-* пином к
+    desktopVersion, прочие range'ом импортёра) → доустановка, максимум
+    _DSH_REPAIR_LIMIT итераций."""
+    ver, node, pnpm = _dsh_runtime()
+    pkgs = (_DSH_HOOKS_PKG, *_DSH_HOOKS_PEERS)
+    specs = [f"{p}@{ver}" if ver else f"{p}@<версия DSH>" for p in pkgs]
+    manual = (f'cd "{profile_dir}" && pnpm add --save-exact '
+              f"--config.auto-install-peers=false --ignore-scripts "
+              f"--registry=https://registry.npmjs.org {' '.join(specs)}")
+    if dry:
+        return f"would install {' '.join(specs)} into {profile_dir}"
+    if not node or not ver:
+        return f"hooks plugin NOT installed (DSH не вызовет хук) — установите: {manual}"
+    stale = [p for p in pkgs if _dsh_pkg_version(profile_dir, p) != ver]
+    was_present = any(_dsh_pkg_version(profile_dir, p) for p in pkgs)
+    if stale:
+        ok, err = _dsh_pnpm_add(node, pnpm, profile_dir, [f"{p}@{ver}" for p in stale])
+        bad = [p for p in stale if _dsh_pkg_version(profile_dir, p) != ver]
+        if not ok or bad:
+            if not ok:
+                why = f" (pnpm{err})"
+            else:
+                got = ", ".join(_dsh_pkg_version(profile_dir, p) or "нет" for p in stale)
+                why = f" (установлено {got} ≠ {ver})"
+            return f"hooks plugin install failed{why} — установите вручную: {manual}"
+    # import-проверка — арбитр полноты замыкания: недостающее добиваем циклом
+    entry = _dsh_bridge_entry(profile_dir)
+    for _ in range(_DSH_REPAIR_LIMIT):
+        ok, missing, detail = _dsh_import_check(node, entry)
+        if ok:
+            if not stale:
+                return "hooks plugin present"
+            return "hooks plugin re-pinned" if was_present else "hooks plugin installed"
+        if not missing:
+            return (f"hooks plugin import check failed ({detail}) — "
+                    f"проверьте вручную: {manual}")
+        spec = _dsh_peer_spec(profile_dir, missing, detail, ver)
+        if not spec:
+            return (f"hooks plugin peer {missing!r} не доустановлен (небезопасное "
+                    f"имя или нет range у импортёра) — установите вручную: {manual}")
+        ok, err = _dsh_pnpm_add(node, pnpm, profile_dir, [spec])
+        if not ok:
+            return (f"hooks plugin peer install failed (pnpm{err}) — "
+                    f"установите вручную: {manual}")
+        if not _dsh_pkg_version(profile_dir, missing):
+            # LOW-2 (security-ревизия): та же пост-сверка, что у основного
+            # замыкания (M3) — returncode pnpm не доказательство установки
+            return (f"hooks plugin peer install failed (установленный {missing} "
+                    f"не читается) — установите вручную: {manual}")
+    return (f"hooks plugin import still failing после {_DSH_REPAIR_LIMIT} "
+            f"попыток — установите вручную: {manual}")
 
 
 def _mcp_token() -> str:
