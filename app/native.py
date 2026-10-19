@@ -30,6 +30,10 @@ APP_NAME = "MaxGraph"
 _MACOS_LABEL = "ru.rezonai.maxgraph"
 _WIN_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
+# Ресурсы exe (PyInstaller --add-data) лежат в распакованном sys._MEIPASS;
+# в исходниках — рядом с native.py (как _RESOURCE_BASE в app.py)
+_RESOURCE_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+
 
 # ----------------------------------------------------------- билдеры (чистые)
 
@@ -457,9 +461,9 @@ def heartbeat_tick(post_json, base_url, data_dir, get_version) -> bool:
 
 def start_heartbeat(post_json, base_url, data_dir, get_version,
                     interval=None, stop=None):
-    """Daemon-поток heartbeat'а (T7, эпик native-client): тик сразу, дальше раз в
-    6ч (MG_HEARTBEAT_SEC для тестов). Телеметрия анонимная и всегда ON
-    (v0.41.0) — выключателя нет. Fail-open: первый сбой — log.warning, повторные
+    """Daemon-поток heartbeat'а: тик сразу, дальше раз в
+    6ч (MG_HEARTBEAT_SEC для тестов). Телеметрия анонимная и всегда ON —
+    выключателя нет. Fail-open: первый сбой — log.warning, повторные
     — log.debug (не спамим раз в 6ч), успех сбрасывает. Магазин (STORE_MODE)
     поток не стартует — гейт в app.main()."""
     if interval is None:
@@ -478,7 +482,7 @@ def start_heartbeat(post_json, base_url, data_dir, get_version,
             except Exception as exc:
                 if warned:
                     log.debug("heartbeat: повторный сбой: %r", exc)
-                else:  # урок W1: тишина ≠ зависание — один warning, не поток
+                else:  # тишина ≠ зависание — один warning, не поток
                     log.warning("heartbeat: сбой отправки (дальше — debug): %r", exc)
                     warned = True
             stop.wait(interval)
@@ -527,11 +531,158 @@ def request_update_now(data_dir=None) -> bool:
         return False
 
 
+# ------------------------------------------------- ожидающее обновление (трей)
+
+_tray_icon = None  # живой pystray.Icon, пока крутится run_tray (иначе None)
+
+
+def _pending_update(data_dir=None) -> str:
+    """Версия из data/update-state.json (пишет selfupdate._update_iteration),
+    если она реально новее запущенной; иначе "" — пункта меню нет."""
+    try:
+        import selfupdate
+        if data_dir is None:
+            import app as _app
+            data_dir = _app.DATA_DIR
+        version = str(selfupdate.read_update_state(data_dir).get("version") or "")
+        if not version:
+            return ""
+        import app as _app
+        # после применения стейт остаётся со СВОЕЙ (теперь текущей) версией — не показываем
+        return version if selfupdate.semver_newer(version, _app.VERSION) else ""
+    except Exception:
+        return ""
+
+
+def _balloon(msg: str) -> None:
+    """Балун трея произвольным текстом — фолбэк там, где карточка недоступна
+    (не Windows / headless). Нет иконки или notify не поддержан — тихо."""
+    icon = _tray_icon
+    if icon is None:
+        return
+    try:
+        icon.notify(msg, APP_NAME)
+    except Exception as exc:  # notify есть не во всех бэкендах/версиях pystray
+        log.warning("tray: балун недоступен: %r", exc)
+
+
+def notify_update_available(version: str) -> None:
+    """Балун трея из потока update_loop (on_update). Трея нет (headless, падение
+    иконки) или notify недоступен — тихо выходим: 7-дневный фолбэк от этого
+    не зависит, он живёт в update_loop."""
+    _balloon(f"Доступно обновление MaxGraph v{version}")
+    icon = _tray_icon
+    if icon is None:
+        return
+    try:
+        icon.update_menu()  # переоценить visible у пункта «Обновить до …»
+    except Exception:
+        pass
+
+
+def _refresh_menu() -> None:
+    """Переоценить visible у пункта «Обновить до …» (стейт мог появиться)."""
+    icon = _tray_icon
+    if icon is None:
+        return
+    try:
+        icon.update_menu()
+    except Exception:
+        pass
+
+
+def apply_update_from_ui() -> bool:
+    """Клик «Обновить» (карточка или пункт «Обновить до …»): скачать/проверить/
+    применить версию из update-state.json. True — helper запущен, процесс умрёт сам."""
+    try:
+        import selfupdate
+        import app as _app
+        if not selfupdate.apply_pending_update(_app.PUBLIC_BASE_URL, _app.DATA_DIR):
+            log.warning("tray: обновление не запустилось (нет стейта или сбой скачивания)")
+            return False
+        return True
+    except Exception as exc:
+        log.warning("tray: apply обновления: %r", exc)
+        return False
+
+
+def _remember_update(version: str) -> None:
+    """update-state.json для кнопки «Обновить» карточки: apply_pending_update
+    читает версию оттуда. Если версия уже отслеживается — не трогаем
+    (не сбрасываем first_seen 7-дневного фолбэка)."""
+    try:
+        import selfupdate
+        import app as _app
+        if selfupdate.read_update_state(_app.DATA_DIR).get("version") != version:
+            selfupdate._write_update_state(_app.DATA_DIR, version, time.time())
+    except Exception as exc:
+        log.warning("tray: не удалось записать update-state: %r", exc)
+
+
+def _check_updates_worker() -> None:
+    """Быстрая проверка магазина по клику (не ждём часового цикла): результат —
+    в ту же карточку (Windows) или балуном (macOS/Linux/headless — фолбэк).
+    Новая версия — ещё и стейт + переоценка меню (пункт «Обновить до …»)."""
+    import update_popup
+    try:
+        import selfupdate
+        import app as _app
+        info = selfupdate.check(_app.PUBLIC_BASE_URL, _app.VERSION)
+        current = _app.VERSION
+    except Exception as exc:
+        log.warning("tray: проверка обновлений: %r", exc)
+        info, current = {}, ""
+    state, version = update_popup.state_from_check(info)
+    on_update = None
+    if state == update_popup.UPDATE:
+        _remember_update(version)
+        _refresh_menu()
+        on_update = apply_update_from_ui
+    elif state == update_popup.LATEST:
+        version = current  # показываем ТЕКУЩУЮ версию («У вас последняя версия»)
+    if not update_popup.update_or_show(state, version=version, on_update=on_update):
+        _balloon(update_popup.view_for(state, version)["title"])
+
+
+def check_updates_now() -> None:
+    """Клик «Проверить обновления»: карточка «Проверяю…» сразу, check() к
+    магазину — в потоке (трей не блокируем), результат — в ту же карточку.
+    MG_NO_UPDATE=1 → карточка «Обновления отключены», проверки нет."""
+    import update_popup
+    if os.environ.get("MG_NO_UPDATE") == "1":
+        if not update_popup.update_or_show(update_popup.DISABLED):
+            _balloon(update_popup.view_for(update_popup.DISABLED)["title"])
+        return
+    request_update_now()  # маркер — update_loop тоже зафиксирует стейт/уведомление
+    update_popup.update_or_show(update_popup.CHECKING)
+    threading.Thread(target=_check_updates_worker, daemon=True, name="update-check").start()
+
+
 def _wait_forever(event_factory=threading.Event) -> None:
     """Держать main-поток живым навсегда (daemon-поток сервера умрёт вместе
     с процессом — поэтому при падении иконки main-поток НЕ должен выйти).
     event_factory — точка подмены для тестов."""
     event_factory().wait()
+
+
+def _tray_icon_image():
+    """Иконка трея: assets/tray-icon.png (бренд «Искра») из ресурс-пути.
+    Файла нет или PNG битый → программный синий круг с «M»: трей не должен
+    падать из-за иконки. PIL лениво — серверный запуск без GUI-библиотек."""
+    from PIL import Image, ImageDraw
+
+    png = _RESOURCE_BASE / "assets" / "tray-icon.png"
+    try:
+        img = Image.open(png)
+        img.load()  # до конца не дочитанный/битый PNG падает здесь, а не в pystray
+        return img
+    except Exception as exc:
+        log.warning("tray icon: не загрузился %s (%r) — программная отрисовка", png, exc)
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.ellipse((4, 4, 60, 60), fill=(88, 101, 242, 255))
+    d.text((22, 16), "M", fill=(255, 255, 255, 255))
+    return img
 
 
 def run_tray(main_callable, port: int | None = None) -> None:
@@ -543,16 +694,8 @@ def run_tray(main_callable, port: int | None = None) -> None:
     detached, иконка в такой сессии может быть недоступна).
     """
     import pystray
-    from PIL import Image, ImageDraw
 
     port = port or _default_port()
-
-    def _icon_image():  # программная иконка, без файлов-ассетов: синий круг + буква M
-        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        d = ImageDraw.Draw(img)
-        d.ellipse((4, 4, 60, 60), fill=(88, 101, 242, 255))
-        d.text((22, 16), "M", fill=(255, 255, 255, 255))
-        return img
 
     def _open_dashboard(icon=None, item=None):
         webbrowser.open(_dashboard_url(port, _read_local_token()))
@@ -572,18 +715,32 @@ def run_tray(main_callable, port: int | None = None) -> None:
         os._exit(0)
 
     def _check_updates(icon=None, item=None):
-        request_update_now()  # маркер DATA_DIR/.update-now — мгновенный триггер update_loop
+        check_updates_now()  # карточка + быстрый check в потоке (см. выше)
+
+    def _apply_update(icon=None, item=None):
+        """Клик по «Обновить до …»: успех — helper подменит exe, процесс умрёт сам."""
+        apply_update_from_ui()
+
+    def _update_visible(item=None) -> bool:
+        # MG_NO_UPDATE=1 выключает всё, включая пункт меню
+        return bool(_pending_update()) and os.environ.get("MG_NO_UPDATE") != "1"
 
     threading.Thread(target=main_callable, daemon=True, name="server").start()
     menu = pystray.Menu(
+        pystray.MenuItem(lambda item: f"Обновить до v{_pending_update() or '?'}",
+                         _apply_update, visible=_update_visible),
         pystray.MenuItem("Открыть дашборд", _open_dashboard, default=True),
         pystray.MenuItem("Проверить обновления", _check_updates),
         pystray.MenuItem("Перезапуск", _restart),
         pystray.MenuItem("Выход", _quit),
     )
+    global _tray_icon
+    icon = pystray.Icon(APP_NAME, _tray_icon_image(), APP_NAME, menu)
+    _tray_icon = icon
     try:
-        pystray.Icon(APP_NAME, _icon_image(), APP_NAME, menu).run()
+        icon.run()
     except Exception as exc:
+        _tray_icon = None
         # сервер важнее иконки: main-поток НЕ выходит (daemon-сервер живёт)
         log.error("трей недоступен — сервер работает headless: %r", exc, exc_info=True)
         _wait_forever()

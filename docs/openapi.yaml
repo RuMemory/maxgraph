@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Maxgraph Memory API
-  version: 0.50.4
+  version: 1.0.10
   description: |
     Персональная память полного сохранения контекста (граф знаний + журнал событий).
     Все эндпоинты, кроме `/healthz` и `/api/version`, требуют заголовок

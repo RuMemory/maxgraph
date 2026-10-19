@@ -1,14 +1,13 @@
-"""learn-events (W2, issue #21): анонимные события «запрос → открытый заголовок».
+"""learn-events: анонимные события «запрос → открытый заголовок».
 
-Клиентская половина трубы обучения (SPEC-learn-events.md): op_search запоминает
+Клиентская половина трубы обучения: op_search запоминает
 выдачу, op_open в окне LEARN_WINDOW_SEC порождает событие (q, title, счётчик),
 daemon флашит буфер пакетом на магазин POST /api/telemetry/learn.
 
-Гарантии (спека §6):
+Гарантии:
 - анонимность: без license key/install_id/fp/IP/project/name — только тексты
   запроса и заголовок (≤LEARN_TEXT_MAX code points);
-- STORE_MODE / пустой base_url → полный no-op (v0.41.0: выключатель TELEMETRY=0
-  удалён решением владельца — телеметрия всегда ON);
+- STORE_MODE / пустой base_url → полный no-op (телеметрия всегда включена, выключателя нет);
 - сеть ТОЛЬКО в daemon-потоке (flush); record_* — память под локом, ноль latency
   в поиске;
 - fail-open: любое исключение внутри гасится, поиск/открытие не могут упасть
@@ -29,7 +28,7 @@ LEARN_FLUSH_SEC = 300     # период daemon-флаша
 _lock = threading.Lock()
 _last_search = None       # (query:str, hits:{name:title}, ts:float) | None
 _buf = {}                 # (q, t) -> c
-_warned = set()           # warn_once-ключи (урок W1: тишина ≠ зависание)
+_warned = set()           # warn_once-ключи (тишина ≠ зависание)
 
 
 def _reset():
@@ -43,7 +42,7 @@ def _reset():
 
 def _gated(env):
     """True = выключено. Гейт: STORE_MODE (магазин сам себе не шлёт).
-    v0.41.0: TELEMETRY=0 удалён — оптаута больше нет."""
+    TELEMETRY=0 не поддерживается — оптаута нет."""
     env = os.environ if env is None else env
     return (env.get("STORE_MODE") or "").strip() == "1"
 
@@ -98,7 +97,7 @@ def record_open(names, env=None, now=None):
                     _buf[key] = min(_buf[key] + 1, 1000)
                 elif len(_buf) < LEARN_BUFFER_CAP:
                     _buf[key] = 1
-                # переполнение: новые пары молча дропаются (спека §4.2)
+                # переполнение: новые пары молча дропаются
     except Exception:
         pass
 
@@ -113,7 +112,7 @@ def flush(post=None, base_url=None, env=None):
     """Отправить буфер пакетом на магазин. True — буфер очищен (или пуст).
 
     Сбой сети/не-ok → буфер СОХРАНЯЕТСЯ до следующего тика, один warning на
-    warn_once-ключ (урок W1: тишина ≠ зависание); успех сбрасывает ключ."""
+    warn_once-ключ (тишина ≠ зависание); успех сбрасывает ключ."""
     global _warned
     try:
         if _gated(env) or not (base_url or "").strip():

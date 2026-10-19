@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Maxgraph embed — опциональный семантический слой поиска (В2.2, WAVE2-PLAN).
+Maxgraph embed — опциональный семантический слой поиска.
 Чистый stdlib (urllib) — модуль тестируется отдельно от
 сервера (инъекция http_post); app.py подключает его к op_search и фоновому
 пополнителю.
@@ -8,7 +8,7 @@ Maxgraph embed — опциональный семантический слой 
 Механика:
   фоновый пополнитель (embed_loop в app.py) → entity_windows: основной текст
   (name+title+3 факта, ≤1000 chars) + до 4 доп. окон фактов ≤800 chars
-  (v0.20.2 — на EMBED_URL уходит ≤4200 симв/сущность) → под-вызовы ≤32 текстов
+  (на EMBED_URL уходит ≤4200 симв/сущность) → под-вызовы ≤32 текстов
   → OpenAI-compatible POST /embeddings → вектора
   нормализуются (|v|=1 → косинус = dot product) → data/embeddings.json
   ({"_model": отпечаток модели, name: {"v": [...], "u": updatedAt}}, атомарная
@@ -19,7 +19,7 @@ Maxgraph embed — опциональный семантический слой 
   см. searchrank.rank), гибрид (1−w)·fts_norm + w·cos_norm — в searchrank.
 
 Офлайн-safe: без EMBED_URL/EMBED_KEY модуль выключен (enabled() → False) —
-поведение byte-identical 0.14.x (чистый FTS). Fail-open: любая ошибка
+поведение не меняется (чистый FTS). Fail-open: любая ошибка
 (сеть, HTTP, битый ответ, битый файл) → None / пустое хранилище, log.warning
 ОДИН раз на сессию по каждому классу сбоев (без спама). События в пульс
 НЕ пишутся (иначе фоновый тик каждые 5 минут засорял бы timeline).
@@ -32,12 +32,12 @@ Env (compose подставляет пустые строки — поэтому
   EMBED_TIMEOUT         — сек на один embeddings-запрос (default 10)
   EMBED_REFRESH_SEC     — период фонового пополнителя (default 300)
   EMBED_REFRESH_TIMEOUT — сек на один вызов пополнителя (default 60; батчи
-                          тяжелее поисковых запросов, v0.25.1)
+                          тяжелее поисковых запросов)
   EMBED_DAILY_CAP       — кап токенов/UTC-день (default 200000; оценка len/4)
   EMBED_QUERY_PREFIX    — префикс поискового запроса (E5: «query: »; default "")
   EMBED_PASSAGE_PREFIX  — префикс текстов сущностей (E5: «passage: »; default "")
   HYBRID_VECTOR_WEIGHT  — вес векторной составляющей w в гибриде
-                          (default 0.6 — по бенчу Q4, клэмпится в [0,1];
+                          (default 0.6, клэмпится в [0,1];
                           0 → чистый FTS)
 
 Префиксы — конвенция векторизуемого текста (E5 обучен на «query: »/«passage: »),
@@ -82,11 +82,11 @@ log = logging.getLogger("maxgraph.embed")
 DEFAULT_MODEL = "text-embedding-v3"
 DEFAULT_TIMEOUT = 10           # сек на один /embeddings вызов (поисковый путь)
 DEFAULT_REFRESH_TIMEOUT = 60   # сек на вызов пополнителя: батч 32 реальных окон
-                               # (~18K симв.) на 2-ядерном CPU ≈ 9с (v0.25.1)
+                               # (~18K симв.) на 2-ядерном CPU ≈ 9с
 DEFAULT_REFRESH_SEC = 300      # период фонового пополнителя
 DEFAULT_DAILY_CAP = 200_000    # токенов/UTC-день (оценка len/4)
-DEFAULT_HYBRID_WEIGHT = 0.6   # w в (1−w)·fts_norm + w·cos_norm; 0.6 — по бенчу
-                              # Q4 (bench/): меньше — парафразы тонут в fts_norm
+DEFAULT_HYBRID_WEIGHT = 0.6   # w в (1−w)·fts_norm + w·cos_norm; 0.6 — подобрано на бенчах:
+                              # меньше — парафразы тонут в fts_norm
 BATCH_SIZE = 32                # потолок текстов в одном /embeddings вызове
 ENTITY_TEXT_MAX = 1000         # потолок символов текста сущности
 ENTITY_OBS_MAX = 3             # сколько первых фактов идёт в текст сущности
@@ -295,8 +295,7 @@ WINDOW_VECS_MAX = 4        # ≤4 доп. вектора на мега-сущн�
 
 
 def entity_windows(entity) -> "list[str]":
-    """[основной текст] + доп. окна фактов, НЕ влезших в основной (v0.20.2,
-    мега-сущности): факты пакуются целиком в окна ≤WINDOW_TEXT_MAX, окон
+    """[основной текст] + доп. окна фактов, НЕ влезших в основной (мега-сущности): факты пакуются целиком в окна ≤WINDOW_TEXT_MAX, окон
     ≤WINDOW_VECS_MAX. Малые сущности → ровно [entity_text] (поведение как
     раньше). Скорер берёт max-косинус по окнам → релевантный факт не тонет
     за пределами первых трёх наблюдений (bench: промахи мега-сущностей)."""
@@ -333,7 +332,7 @@ def estimate_tokens(*texts: str) -> int:
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """30x → HTTPError: urllib иначе тащит Authorization Bearer на redirect-target
-    (утечка relay-токена, SECURITY v0.19.0)."""
+    (утечка relay-токена)."""
 
     def redirect_request(self, *a, **k):
         return None
@@ -454,7 +453,7 @@ def cosine_scorer(store, query_vec):
         if not isinstance(v, list) or len(v) != qlen or not qlen:
             return None
         best = dot(v, q)
-        for w in rec.get("w") or []:  # v0.20.2: доп. окна мега-сущностей — max
+        for w in rec.get("w") or []:  # доп. окна мега-сущностей — max
             if isinstance(w, list) and len(w) == qlen:
                 d = dot(w, q)
                 if d > best:
@@ -523,7 +522,7 @@ def load_store(path, model=None) -> dict:
                     if isinstance(rec, dict) and isinstance(rec.get("v"), list):
                         entry = {"v": [float(x) for x in rec["v"]],
                                  "u": str(rec.get("u") or "")}
-                        w = rec.get("w")  # v0.20.2: доп. окна мега-сущностей
+                        w = rec.get("w")  # доп. окна мега-сущностей
                         if isinstance(w, list):
                             entry["w"] = [[float(x) for x in wv]
                                           for wv in w[:WINDOW_VECS_MAX]
@@ -559,13 +558,13 @@ def save_store(path, store, model=None) -> None:
     out = {"_model": model}
     for name, rec in (store or {}).items():
         if str(name) == "_model":  # зарезервировано под отпечаток: запись перезаписала
-            continue               # бы fingerprint → self-DoS (SECURITY v0.19.0)
+            continue               # бы fingerprint → self-DoS
         v = rec.get("v") if isinstance(rec, dict) else None
         if not isinstance(v, list):
             continue
         out[str(name)] = {"v": [round(float(x), ROUND_DP) for x in v],
                           "u": str(rec.get("u") or "")}
-        w = rec.get("w")  # v0.20.2: доп. окна мега-сущностей
+        w = rec.get("w")  # доп. окна мега-сущностей
         if isinstance(w, list) and w:
             out[str(name)]["w"] = [[round(float(x), ROUND_DP) for x in wv]
                                    for wv in w if isinstance(wv, list)]
@@ -700,7 +699,7 @@ def refresh(entities, store_path, state_path, cfg=None, http_post=None) -> dict:
     cfg = _apply_runtime(config_from_env() if cfg is None else cfg)
     # Поисковый таймаут (10с) тесен для refresh-батчей: 32 реальных окна
     # (~18K симв.) на 2-ядерном CPU ≈ 9с → read timeout, миграция стоит.
-    # У пополнителя свой таймаут; поисковый путь не тронут (v0.25.1).
+    # У пополнителя свой таймаут; поисковый путь не тронут.
     cfg = {**cfg,
            "timeout": cfg.get("refresh_timeout") or DEFAULT_REFRESH_TIMEOUT}
     stats = {"status": "ok", "pending": 0, "embedded": 0, "batches": 0,
@@ -723,7 +722,7 @@ def refresh(entities, store_path, state_path, cfg=None, http_post=None) -> dict:
     changed = bool(orphans)
     for i in range(0, len(stale), BATCH_SIZE):
         batch = stale[i:i + BATCH_SIZE]
-        win_lists = [entity_windows(e) for e in batch]  # v0.20.2: окна мега-сущностей
+        win_lists = [entity_windows(e) for e in batch]  # окна мега-сущностей
         texts = [pp + t for wl in win_lists for t in wl]  # «»+t == t: без веток
         cost = estimate_tokens(*texts)
         if usage_exceeded(state_path, cfg["daily_cap"], add=cost):

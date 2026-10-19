@@ -65,12 +65,20 @@ jobs:
           set -euo pipefail
           ARGS=""
           for f in VERSION app/dashboard.html app/privacy.html app/offer.html \
-                   app/landing.html app/billing.html app/og.png app/release.pub.pem; do
+                   app/landing.html app/billing.html app/og.png app/favicon.ico \
+                   app/release.pub.pem; do
             [ -f "$f" ] && ARGS="$ARGS --add-data $f:."
           done
           [ -d app/static ] && ARGS="$ARGS --add-data app/static:static"
+          # иконка трея (assets/): в exe — _MEIPASS/assets/, как в исходниках
+          [ -f app/assets/tray-icon.png ] && ARGS="$ARGS --add-data app/assets/tray-icon.png:assets"
+          # иконка exe: .lnk-ярлыки (IconLocation=exe) берут её из ресурсов
+          [ -f build/maxgraph.ico ] && ARGS="$ARGS --icon build/maxgraph.ico"
           echo "add-data: $ARGS"
-          pyinstaller -y --onefile --name maxgraph --paths app $ARGS app/app.py
+          # update_popup: импортируется из native.py лениво (внутри функций) —
+          # modulegraph подхватит, но страхуемся явным hidden-import
+          pyinstaller -y --onefile --name maxgraph --paths app \
+            --hidden-import update_popup $ARGS app/app.py
           mv "dist/maxgraph" "dist/$ART"
 
       - name: PyInstaller build (windows)
@@ -79,17 +87,25 @@ jobs:
         run: |
           $pyArgs = @()
           foreach ($f in @('VERSION','app/dashboard.html','app/privacy.html','app/offer.html',
-                           'app/landing.html','app/billing.html','app/og.png','app/release.pub.pem')) {
+                           'app/landing.html','app/billing.html','app/og.png','app/favicon.ico',
+                           'app/release.pub.pem')) {
             if (Test-Path $f) { $pyArgs += @('--add-data', "$f;.") }
           }
           if (Test-Path app/static) { $pyArgs += @('--add-data', 'app/static;static') }
+          # иконка трея (assets/): в exe — _MEIPASS/assets/, как в исходниках
+          if (Test-Path app/assets/tray-icon.png) { $pyArgs += @('--add-data', 'app/assets/tray-icon.png;assets') }
+          # иконка exe: .lnk-ярлыки (IconLocation=exe) берут её из ресурсов
+          if (Test-Path build/maxgraph.ico) { $pyArgs += @('--icon', 'build/maxgraph.ico') }
           Write-Host "add-data: $pyArgs"
           # --windowed: без консольного окна ни при автозапуске, ни при обновлении
           # (кейс покупателя 1.0.1: кнопка обновления открывала консоль helper'а).
           # Логи helper'а идут в data/update.log (FileHandler), stdout не нужен.
           # На unix НЕ добавляем: macOS onefile+windowed собирает .app-бандл и
           # ломает контракт dist/maxgraph (smoke + mv), а окна там и так нет.
-          pyinstaller -y --onefile --windowed --name maxgraph --paths app @pyArgs app/app.py
+          # update_popup: импортируется из native.py лениво (внутри функций) —
+          # modulegraph подхватит, но страхуемся явным hidden-import
+          pyinstaller -y --onefile --windowed --name maxgraph --paths app `
+            --hidden-import update_popup @pyArgs app/app.py
           Move-Item dist/maxgraph.exe "dist/$env:ART"
 
       # Смоук: это сервер, --help нет — проверяем существование и размер >10 МБ.

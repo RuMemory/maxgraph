@@ -61,8 +61,10 @@ Windsurf/Devin — ~/.codeium/windsurf/hooks.json. Точные сниппеты
 4) если данные сохранялись — ПЕРЕНЕСИ ./data из папки установки до её удаления
    (или удали всё, кроме data/): удаление папки не должно унести память.
    Папку удаляй после подтверждения пользователя.
-Папка установки уже удалена? Тогда: docker rm -f maxgraph maxgraph-updater,
-потом шаги 2–4 вручную.
+Папка установки уже удалена? Тогда: сначала закрой приложение (иконка MaxGraph
+в трее → «Выход», либо заверши процесс MaxGraph), потом шаги 2–4 вручную.
+Строка `docker rm -f maxgraph maxgraph-updater` — только для старых установок
+на Docker; у нативной установки контейнеров нет.
 
 Полный протокол: https://raw.githubusercontent.com/RuMemory/maxgraph/master/docs/PROTOCOL.md
 ```
@@ -112,8 +114,10 @@ UNINSTALL on the user's request — full cleanup, no leftovers:
 4) if data was kept — MOVE ./data out of the install folder BEFORE deleting it
    (or delete everything except data/): removing the folder must not take the
    memory with it. Delete the folder after the user's confirmation.
-Install folder already gone? Then: docker rm -f maxgraph maxgraph-updater,
-then steps 2–4 by hand.
+Install folder already gone? Then: quit the app first (MaxGraph tray icon →
+"Exit", or end the MaxGraph process), then steps 2–4 by hand. The
+`docker rm -f maxgraph maxgraph-updater` line applies to old Docker-based
+installs only; a native install has no containers.
 
 Full protocol: https://raw.githubusercontent.com/RuMemory/maxgraph/master/docs/PROTOCOL.md
 ```

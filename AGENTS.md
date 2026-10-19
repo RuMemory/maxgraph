@@ -19,7 +19,7 @@ macOS / Linux: для проверки скачанного файла нуже�
 
 Рассказывай пользователю прогресс по ходу: первое скачивание может занять пару минут на медленном интернете — молчание выглядит как зависание.
 
-Коды выхода: `0` — программа установлена и запущена → шаг 2. `1` — ошибка → читай `install.log`, исправь причину и повтори ту же команду.
+Коды выхода: `0` — программа установлена и запущена → шаг 2. `1` — ошибка → читай `install-native.log`, исправь причину и повтори ту же команду.
 
 ## 2. Подключи MCP к хосту пользователя
 
@@ -82,7 +82,7 @@ macOS / Linux: verifying the downloaded file requires openssl version 3 or newer
 
 Narrate progress to the user: the first download can take a couple of minutes on slow internet — silence looks like a hang.
 
-Exit codes: `0` — the program is installed and running → step 2. `1` — error → read `install.log`, fix the cause and re-run the same command.
+Exit codes: `0` — the program is installed and running → step 2. `1` — error → read `install-native.log`, fix the cause and re-run the same command.
 
 ## 2. Connect MCP to the user's host
 

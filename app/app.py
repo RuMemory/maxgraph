@@ -11,9 +11,9 @@ MCP (streamable-http) + REST API + неоновый веб-дашборд.
   events.jsonl  — журнал событий (timeline/аудит):
     {"ts":...,"action":...,"entity":...,"detail":...,"project":<kebab-slug?>}
 
-Проекты (Ф1, docs/MEMORY-SYSTEM-V2-SPEC.md): необязательный параметр `project`
+Проекты: необязательный параметр `project`
 (kebab-slug) во всех MCP-инструментах и REST memory-операциях. Пустой project =
-плоский граф — поведение до Ф1, default-проект не навязывается. Изоляция чтения:
+плоский граф — поведение как без проектов, default-проект не навязывается. Изоляция чтения:
 project=X видит только X (+ сущность project:<slug>); all_projects=true — явный
 кросс-поиск. Сущность project:<slug> (entityType "project") автосоздаётся при
 первой записи с этим slug; новые сущности связываются с ней «part of».
@@ -21,14 +21,14 @@ project=X видит только X (+ сущность project:<slug>); all_pro
 Env:
   MEMORY_TOKEN  — bearer-токен (Authorization: Bearer, точное совпадение) для всех
                   эндпоинтов вне публичных — полный список в TokenAuth.PUBLIC_PATHS;
-                  аутентификации по query нет (удалена в v0.11).
-                  Не задан → автогенерация mg_local_* в <data>/local_token.txt (v0.14)
-  Телеметрия (всегда ON, v0.41.0: выключатель TELEMETRY=0 удалён решением владельца):
-                  анонимный install-ping (v0.14) — один POST {install_id, version, fp?}
-                  на магазин при старте. fp (v0.16.3) — sha256-хеш machine fingerprint;
+                  аутентификации по query нет (удалена: токен не должен оседать в access-логах).
+                  Не задан → автогенерация mg_local_* в <data>/local_token.txt
+  Телеметрия (всегда включена, выключателя нет):
+                  анонимный install-ping — один POST {install_id, version, fp?}
+                  на магазин при старте. fp — sha256-хеш machine fingerprint;
                   магазин отвечает якорем начала триала → снос data/ не сбрасывает 7 дней.
-                  Сюда же learn-events (v0.26.0): анонимный пакет
-                  «запрос → открытый заголовок» раз в 5 мин (W2)
+                  Сюда же learn-events: анонимный пакет
+                  «запрос → открытый заголовок» раз в 5 мин
   INSTALL_FLAVOR — метка способа установки (docker|docker-desktop|python; rancher =
                   легаси-установки) в install-ping; ставится установщиком
                   (install.sh/install.ps1), пусто → autodetect по /.dockerenv
@@ -38,11 +38,11 @@ Env:
   READONLY      — READONLY=1: зеркало (resync.py перезаписывает memory.json из прода) —
                   мутации памяти отклоняются (HTTP 403 {"error":"readonly_mirror"}),
                   чтение/поиск/экспорт/дашборд/healthz работают; биллинг не затрагивается
-  ACTR_FLUSH_SEC      — В2.3: период flush счётчиков обращений в data/access.json
+  ACTR_FLUSH_SEC      — период flush счётчиков обращений в data/access.json
                         (default 300; + финальный flush на shutdown через atexit)
-  ACTR_MAX_BOOST      — В2.3: потолок ACT-R буста ранга (default 0.25 = +25%;
+  ACTR_MAX_BOOST      — потолок ACT-R буста ранга (default 0.25 = +25%;
                         0 — буст выключен, поведение byte-identical)
-  ACTR_HALF_LIFE_DAYS — В2.3: полураспад recency-фактора в днях (default 14)
+  ACTR_HALF_LIFE_DAYS — полураспад recency-фактора в днях (default 14)
 """
 
 import atexit
@@ -68,16 +68,16 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.responses import FileResponse
-from starlette.responses import Response  # --- digiseller per-order (v0.7) ---
+from starlette.responses import Response  # --- digiseller per-order ---
 
 import licensing   # stdlib-only: триал/лицензии (тестируется отдельно)
 import hostfp      # stdlib-only: композитный host-fingerprint (hostfp.json от установщика)
 import plans       # stdlib-only: тарифы/лейблы планов (общие с магазином)
-import searchrank  # --- Ф6 (MEMORY-SYSTEM-v2) --- stdlib-only: ранжированный FTS-lite поиск
-import embed       # --- В2.2 (волна 2) --- stdlib-only: опциональные эмбеддинги, гибридный поиск
-import actr        # --- В2.3 (волна 2) --- stdlib-only: ACT-R reinforcement (частые факты всплывают)
-import learn       # --- W2 (v0.26.0) --- stdlib-only: анонимные learn-events «запрос → открытый заголовок»
-import rankcfg     # --- W3 (v0.27.0) --- stdlib-only: версионированный словарь синонимов (relay rank)
+import searchrank  # --- stdlib-only: ранжированный FTS-lite поиск
+import embed       # --- (волна 2) --- stdlib-only: опциональные эмбеддинги, гибридный поиск
+import actr        # --- (волна 2) --- stdlib-only: ACT-R reinforcement (частые факты всплывают)
+import learn       # --- stdlib-only: анонимные learn-events «запрос → открытый заголовок»
+import rankcfg     # --- stdlib-only: версионированный словарь синонимов (relay rank)
 
 # Компоненты магазина: в self-hosted сборке их нет; роуты, которые ими пользуются,
 # и так отвечают 404 через _store_gate() (STORE_MODE=0) — импорт терпимый.
@@ -132,7 +132,7 @@ _TOKEN_SOURCE = ""  # env|file|generated|ephemeral — main() логирует �
 
 def _resolve_token(env=None, data_dir=None) -> str:
     """MEMORY_TOKEN: env побеждает; иначе автогенерация mg_local_* с персистом
-    в <data>/local_token.txt (онбординг без шага «придумай токен», v0.14).
+    в <data>/local_token.txt (онбординг без шага «придумай токен»).
     Диск недоступен → эфемерный токен на процесс, без исключений.
     Запись атомарная (tmp+os.replace): crash mid-write не ротует токен."""
     global _TOKEN_SOURCE
@@ -174,16 +174,16 @@ VERSION = _find_version()
 DATA_DIR = Path(_default_data_dir())
 HOST = _bind_host()  # exe → 127.0.0.1; иначе 0.0.0.0 (изоляция = docker-compose мэппинг); MG_HOST перекрывает
 MEMORY_FILE = DATA_DIR / "memory.json"
-PROJECTS_DIR = DATA_DIR / "projects"  # v0.34.0: шарды графа по проектам (суд 20261013-000330)
+PROJECTS_DIR = DATA_DIR / "projects"  # шарды графа по проектам
 EVENTS_FILE = DATA_DIR / "events.jsonl"
-PROJECT_ALIASES_FILE = DATA_DIR / "project-aliases.json"  # --- v0.50.0: алиасы legacy-slug → repo-тег ---
-INSTALLS_FILE = DATA_DIR / "installs.json"  # --- v0.14: install-ping учёт ---
-LEARN_EVENTS_FILE = DATA_DIR / "learn_events.jsonl"  # --- W2 v0.26.0: learn-events ---
-HEARTBEATS_FILE = DATA_DIR / "heartbeats.jsonl"  # --- T7 (native-client): heartbeat живости ---
-SUPPORT_REPORTS_FILE = DATA_DIR / "support_reports.jsonl"  # --- v1.0.8: отчёты о багах из дашборда ---
+PROJECT_ALIASES_FILE = DATA_DIR / "project-aliases.json"  # --- алиасы legacy-slug → repo-тег ---
+INSTALLS_FILE = DATA_DIR / "installs.json"  # --- install-ping учёт ---
+LEARN_EVENTS_FILE = DATA_DIR / "learn_events.jsonl"  # --- learn-events ---
+HEARTBEATS_FILE = DATA_DIR / "heartbeats.jsonl"  # --- (native-client): heartbeat живости ---
+SUPPORT_REPORTS_FILE = DATA_DIR / "support_reports.jsonl"  # --- отчёты о багах из дашборда ---
 UPDATE_LOG_FILE = DATA_DIR / "update.log"    # журнал helper'а автообновлений (selfupdate)
 SERVER_LOG_FILE = DATA_DIR / "maxgraph.log"  # журнал сервера (windowed-exe, ротация 2×1МБ)
-RANK_CONFIG_FILE = DATA_DIR / "rank_config.json"  # --- W3 v0.27.0: last-good словарь синонимов ---
+RANK_CONFIG_FILE = DATA_DIR / "rank_config.json"  # --- last-good словарь синонимов ---
 _ENV_TOKEN = bool((os.environ.get("MEMORY_TOKEN") or "").strip())
 TOKEN = _resolve_token()
 WEBHOOK_SECRET = os.environ.get("PLATEGA_WEBHOOK_SECRET", "")
@@ -192,18 +192,18 @@ PLATEGA_API_KEY = os.environ.get("PLATEGA_API_KEY", "")
 PLATEGA_API = os.environ.get("PLATEGA_API_BASE") or (billing.DEFAULT_API_BASE if billing else "")
 PLATEGA_CURRENCY = os.environ.get("PLATEGA_CURRENCY") or "RUB"
 PUBLIC_BASE_URL = (os.environ.get("PUBLIC_BASE_URL") or "https://rezon-ai.ru").rstrip("/")
-# Каталог релизных tarball'ов для автообновлений (v0.20.0): наполняет деплой-скрипт
+# Каталог релизных tarball'ов для автообновлений: наполняет деплой-скрипт
 # магазина (git archive тега + sha256). Наружу только чтение текущей VERSION —
 # имя файла не приходит из запроса → path traversal невозможен.
 RELEASES_DIR = os.environ.get("RELEASES_DIR") or str(DATA_DIR / "releases")
 # NB: docker-compose подставляет ${VAR:-} → env ПУСТАЯ, а не отсутствует — поэтому `or`, а не get(default)
-# Планы v0.13.0: только Pro, лесенка длительности. tier лицензии всегда "pro" —
+# Планы только Pro, лесенка длительности. tier лицензии всегда "pro" —
 # длительность живёт в days (→ exp ключа). Скидки от базы 149₽/мес:
 # pro3 −11%, pro6 −16%, pro12 −27%. Цены/лейблы — единый источник plans.PRICES/LABELS.
 _PLAN_DAYS = {"pro1": 31, "pro3": 93, "pro6": 186, "pro12": 372}
 PLANS = {pid: {**plans.PRICES[pid], "days": _PLAN_DAYS[pid], "label": plans.LABELS[pid]}
          for pid in _PLAN_DAYS}
-# v0.33.2: донаты — чистая поддержка проекта: days=0, без кода/ключа/лицензии,
+# донаты — чистая поддержка проекта: days=0, без кода/ключа/лицензии,
 # thank-you письмо вместо выдачи. В /api/plans и лицензии не попадают.
 _DONATE = ("donate99", "donate249", "donate499")
 PLANS.update({pid: {**plans.PRICES[pid], "days": 0, "label": plans.LABELS[pid],
@@ -217,12 +217,12 @@ def _plan_key(name: str) -> str:
     if pid in PLAN_ALIASES:
         return PLAN_ALIASES[pid]
     return pid if pid in PLANS else ""
-# --- digiseller per-order (v0.7) --- /billing/digiseller/gen — код по заказу Digiseller
+# --- digiseller per-order --- /billing/digiseller/gen — код по заказу Digiseller
 DIGISELLER_GEN_SECRET = os.environ.get("DIGISELLER_GEN_SECRET", "")
 DIGISELLER_SIGN_SCHEME = os.environ.get("DIGISELLER_SIGN_SCHEME", "url-key")
 DIGISELLER_RESPONSE_FORMAT = os.environ.get("DIGISELLER_RESPONSE_FORMAT", "text")
 DIGISELLER_PRODUCT_ID = os.environ.get("DIGISELLER_PRODUCT_ID", "XXXXXXXX")
-# --- digiseller уведомления (v0.9.1): /webhook/digiseller/{sale,message} → лог + Telegram ---
+# --- digiseller уведомления: /webhook/digiseller/{sale,message} → лог + Telegram ---
 DIGISELLER_HOOK_SECRET = os.environ.get("DIGISELLER_HOOK_SECRET", "")
 TG_NOTIFY_CHAT_ID = os.environ.get("TG_NOTIFY_CHAT_ID", "")
 # STORE_MODE=1 — инстанс магазина (rezon-ai.ru): /api/license/activate убирается из публичных
@@ -231,13 +231,13 @@ STORE_MODE = (os.environ.get("STORE_MODE") or "").strip() == "1"
 # мутации памяти запрещены (иначе записи молча стираются ресинком), чтение работает
 READONLY = (os.environ.get("READONLY") or "").strip() == "1"
 WEBHOOKS_LOG = DATA_DIR / "webhooks.jsonl"
-EMBEDDINGS_FILE = DATA_DIR / "embeddings.json"     # В2.2: {name: {"v": [...], "u": updatedAt}}
-EMBED_STATE_FILE = DATA_DIR / "embed.state.json"   # В2.2: дневной кап токенов (len/4)
-ACCESS_FILE = DATA_DIR / "access.json"  # В2.3: ACT-R счётчики обращений {name: {"n","t"}}
+EMBEDDINGS_FILE = DATA_DIR / "embeddings.json"     # {name: {"v": [...], "u": updatedAt}}
+EMBED_STATE_FILE = DATA_DIR / "embed.state.json"   # дневной кап токенов (len/4)
+ACCESS_FILE = DATA_DIR / "access.json"  # ACT-R счётчики обращений {name: {"n","t"}}
 LICENSE_SECRET = licensing.get_secret(DATA_DIR)  # env LICENSE_HMAC_SECRET или DATA_DIR/.hmac_key
 LICENSE_SUB_DAYS = 31  # легаси-fallback (digiseller без суммы); реальный срок = PLANS[plan]["days"]
 EXTEND_DISCOUNT = 0.9  # продление −10% — применяется серверно в /api/billing/pay
-# --- v0.37.0: реферальная система (SPEC-referral.md) ---
+# --- реферальная система ---
 # Секрет деривации реф-кодов (HMAC от install_id). Прод — строго env; дефолт — только
 # для тестов/dev (compose подставляет пустую строку → `or`, не get(default)).
 REF_HMAC_SECRET = (os.environ.get("REF_HMAC_SECRET") or "").strip() or "dev-only-ref-secret"  # dev-дефолт только для локалки
@@ -249,7 +249,7 @@ EMBED_ON = False
 EVENTS_CAP = 10000  # максимум строк в events.jsonl
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-if _FROZEN:  # windowed-exe (v1.0.3): консоли нет — stderr никто не увидит.
+if _FROZEN:  # windowed-exe: консоли нет — stderr никто не увидит.
     try:     # Дублируем лог в data/maxgraph.log (ротация 2×1МБ), иначе падения слепые.
         from logging.handlers import RotatingFileHandler
         _fh = RotatingFileHandler(DATA_DIR / "maxgraph.log", maxBytes=1_000_000,
@@ -278,9 +278,9 @@ def now_iso() -> str:
 def _load():
     """Load graph from NDJSON -> (entities dict, relations list).
 
-    Шарды (v0.34.0): memory.json (плоское) + projects/<slug>.json — читаются в те же
+    Шарды: memory.json (плоское) + projects/<slug>.json — читаются в те же
     структуры; read-путь дальше не знает про шарды. Связи с отсутствующим концом
-    отбрасываются (суд 20261013-000330, У2: удалённый шард проекта не оставляет
+    отбрасываются (удалённый шард проекта не оставляет
     висячих связей)."""
     entities, relations = {}, []
     files = []
@@ -309,7 +309,7 @@ def _load():
                 }
                 if rec.get("project"):  # ключ только когда задан — legacy-строки не меняются
                     ent["project"] = rec["project"]
-                if rec.get("status"):  # Ф3: явный статус бага; legacy-строки без него не меняются
+                if rec.get("status"):  # явный статус бага; legacy-строки без него не меняются
                     ent["status"] = rec["status"]
                 entities[rec["name"]] = ent
             elif rec.get("type") == "relation":
@@ -335,7 +335,7 @@ def _load():
 _shard_written = {}  # path -> sha256 последнего записанного содержимого
 
 
-# Windows-reserved имена файлов (security-ревью v0.34.0, LOW): slug «con»/«nul»/…
+# Windows-reserved имена файлов slug «con»/«nul»/…
 # проходит regex, но open() на Windows-хосте падает — валим на обеих границах.
 _RESERVED_SLUGS = frozenset({"con", "prn", "aux", "nul"}
                             | {f"com{i}" for i in range(1, 10)}
@@ -365,7 +365,7 @@ def _partition_shards(entities: dict, relations: list) -> dict:
 
 
 def _save(entities, relations):
-    """Шард-запись, двухфазно (суд У1): сначала ВСЕ .tmp, потом ВСЕ replace — окно
+    """Шард-запись, двухфазно: сначала ВСЕ .tmp, потом ВСЕ replace — окно
     рассинхрона = rename-only последовательность. Неизменённый шард не трогаем
     (кэш sha256; валиден, пока файлы пишет только этот процесс — READONLY-зеркало
     не пишет). Файл опустевшего проекта удаляется (иначе _load воскресит удалённое)."""
@@ -410,7 +410,7 @@ def _save(entities, relations):
 
 
 def _migrate_to_shards():
-    """Одноразовая миграция на шарды (v0.34.0): монолитный memory.json →
+    """Одноразовая миграция на шарды: монолитный memory.json →
     projects/<slug>.json по полю project. Триггер: memory.json есть, сентинела
     projects/.sharded нет (сентинел — ПОСЛЕ записи: kill -9 посреди replace-фазы
     не пометит миграцию выполненной). Полный слепок до разрезки —
@@ -425,8 +425,8 @@ def _migrate_to_shards():
         backup.write_bytes(MEMORY_FILE.read_bytes())
     ents, rels = _load()
     _save(ents, rels)
-    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)  # v0.39.1: при плоской памяти _save
-    # не создаёт projects/ — без этого сентинел падал FileNotFoundError (краш-луп 2026-10-15)
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)  # при плоской памяти _save
+    # не создаёт projects/ — без этого сентинел падал FileNotFoundError
     sentinel.write_text("ok\n", encoding="ascii")  # маркер «миграция была»
     log.info("шардинг: memory.json разрезан (%d сущностей, %d связей), слепок → %s",
              len(ents), len(rels), backup.name)
@@ -453,9 +453,9 @@ def _test_purge_graph_files():
 
 def _event(action: str, entity: str = "", detail: str = "", project: str = "",
            source: str = ""):
-    """Append event to the audit log (timeline). project — slug проекта (Ф1), если задан.
+    """Append event to the audit log (timeline). project — slug проекта, если задан.
     source — кто породил событие: "" (default) — пользователь/агент/сервер;
-    "hook" — захват-хук хоста (Ф5)."""
+    "hook" — захват-хук хоста."""
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         ev = {"ts": now_iso(), "action": action, "entity": entity, "detail": detail}
@@ -473,8 +473,8 @@ def _event(action: str, entity: str = "", detail: str = "", project: str = "",
         log.warning("event log failed: %s", ex)
 
 
-# ------------------------------------------------------------ ACT-R (В2.3) ---
-# В2.3 (аналог ACT-R reinforcement у claude-mem): частые и недавние обращения
+# ------------------------------------------------------------ ACT-R ---
+# (аналог ACT-R reinforcement у claude-mem): частые и недавние обращения
 # поднимают сущность в выдаче — память сама учится, что важно. Счётчики
 # in-memory (НЕ в memory.json: каждый search = fsync-шторм, а правка updatedAt
 # сломала бы recency-скоринг и кэш searchrank, чей ключ — (name, updatedAt));
@@ -486,7 +486,7 @@ _actr.load(ACCESS_FILE)  # старт: нет/битый access.json → с ну
 
 
 def _touch(names):
-    """В2.3: учёт «осмысленных» чтений — search (top-20 выдачи), open_nodes,
+    """учёт «осмысленных» чтений — search (top-20 выдачи), open_nodes,
     session_start (сущности, попавшие в context_block). НЕ read_graph/пустой
     query: дамп всего графа — не сигнал интереса к конкретным фактам.
     O(1) на имя, leaf-лок внутри Store (без I/O/сети/чужих локов — порядок
@@ -495,9 +495,9 @@ def _touch(names):
 
 
 def _actr_boost_fn():
-    """В2.3: actr_fn name→множитель ∈ [1, 1+ACTR_MAX_BOOST] для searchrank.rank
+    """actr_fn name→множитель ∈ [1, 1+ACTR_MAX_BOOST] для searchrank.rank
     и сортировок session_start; None, когда буст выключен (ACTR_MAX_BOOST=0) —
-    rank тогда идёт веткой byte-identical 0.14.x/В2.2. Env читается на каждый
+    rank тогда идёт веткой чистого FTS — поведение не меняется. Env читается на каждый
     вызов (как _hybrid_search у embed): конфиг подхватывается без рестарта."""
     cfg = actr.config_from_env()
     if cfg["max_boost"] <= 0.0:
@@ -507,7 +507,7 @@ def _actr_boost_fn():
 
 # ------------------------------------------------------------- projects -----
 
-# Ф1 (MEMORY-SYSTEM-v2): опциональный слой проектов. slug валидируется на границе
+# опциональный слой проектов. slug валидируется на границе
 # (MCP-инструменты/REST-хендлеры), op_* принимают уже нормализованный slug ("" = без проекта).
 _PROJECT_RE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 
@@ -532,7 +532,7 @@ def _truthy(value) -> bool:
 
 
 def _query_project(request) -> tuple[str, str]:
-    """project из query GET: (slug, "") | ("", ошибка). Граница валидации (Ф1)."""
+    """project из query GET: (slug, "") | ("", ошибка). Граница валидации."""
     return _check_project(request.query_params.get("project"))
 
 
@@ -547,7 +547,7 @@ def _in_project(entity: dict, slug: str) -> bool:
 
 
 def _filter_graph(ents: dict, rels: list, slug: str, all_projects: bool):
-    """Изоляция Ф1: project=X → сущности проекта X (+ project:X), связи — оба конца
+    """Изоляция: project=X → сущности проекта X (+ project:X), связи — оба конца
     видимы. Без project или all_projects=true — полный граф (обратная совместимость)."""
     if not slug or all_projects:
         return list(ents.values()), rels
@@ -556,7 +556,7 @@ def _filter_graph(ents: dict, rels: list, slug: str, all_projects: bool):
     return es, [r for r in rels if r["from"] in names and r["to"] in names]
 
 
-# --- v0.50.0: алиасы проектов (legacy slug → repo-<name>-<sha12>) -------------
+# --- алиасы проектов (legacy slug → repo-<name>-<sha12>) -------------
 # Клиент-хук вычисляет проект как repo-тег (канон) и шлёт старый slug в
 # legacy_project; сервер заводит алиас (api_ingest) и дальше ПРОЗРАЧНО
 # резолвит legacy → канон во всех точках доступа к данным проекта (op_*,
@@ -564,7 +564,7 @@ def _filter_graph(ents: dict, rels: list, slug: str, all_projects: bool):
 # старым slug и видны в all_projects-кросс-поиске (туда алиас не применяется).
 
 _REPO_TAG_RE = re.compile(r"^repo-[a-z0-9-]+-[0-9a-f]{12}$")
-_ALIASES_CAP = 10_000  # потолок реестра алиасов (v0.50.4); сверх — только перезапись
+_ALIASES_CAP = 10_000  # потолок реестра алиасов; сверх — только перезапись
 _aliases_cache = None  # None = ещё не читали с диска; dict — актуальный снимок
 
 
@@ -604,7 +604,7 @@ def _aliases_save(aliases: dict):
                                   sort_keys=True), encoding="utf-8")
         tmp.replace(PROJECT_ALIASES_FILE)
         try:
-            os.chmod(PROJECT_ALIASES_FILE, 0o600)  # L2: как spool (v0.47.0)
+            os.chmod(PROJECT_ALIASES_FILE, 0o600)  # как spool
         except OSError:
             pass
         _aliases_cache = dict(aliases)
@@ -621,7 +621,7 @@ def _resolve_project(slug: str) -> str:
 
 # ------------------------------------------------------------- taxonomy -----
 
-# Ф3 (MEMORY-SYSTEM-v2): канонические типы сущностей. Свободные типы НЕ ломаются:
+# канонические типы сущностей. Свободные типы НЕ ломаются:
 # неизвестный тип остаётся как есть — канонизируются только словарные синонимы
 # (RU/EN, регистронезависимо). Подсказки каноники: описания MCP-инструментов,
 # docs/PROTOCOL.md §1.2, чипы-фильтры дашборда.
@@ -637,11 +637,11 @@ _TYPE_SYNONYMS = {
     "request": "request", "feature-request": "request",
     "просьба": "request", "запрос": "request", "хотелка": "request",
     "event": "event", "событие": "event",
-    # В2.1 (work_state): открытые дела проекта
+    # (work_state): открытые дела проекта
     "task": "task", "todo": "task", "задача": "task", "туду": "task", "дело": "task",
 }
 
-# Явный статус (Ф3 — bug, В2.1 — task): только перечисленные значения.
+# Явный статус (bug, task): только перечисленные значения.
 # default при создании — open.
 BUG_STATUSES = ("open", "fixed")
 TASK_STATUSES = ("open", "done")
@@ -650,7 +650,7 @@ _STATUS_BY_TYPE = {"bug": BUG_STATUSES, "task": TASK_STATUSES}
 
 
 def _canonical_type(value) -> str:
-    """Нормализация entityType на границе записи (Ф3): словарный синоним (RU/EN,
+    """Нормализация entityType на границе записи: словарный синоним (RU/EN,
     любой регистр) → канонический тип; свободный неизвестный тип — как есть."""
     t = str(value or "").strip()
     if not t:
@@ -681,14 +681,14 @@ def _norm_obs(s) -> str:
     """Ключ дедупликации фактов (эпик «устойчивость к компактизации», слой 2):
     регистр, повторные пробелы и краевая пунктуация не делают факт новым.
     Хранится оригинал строки — ключ нужен только для сравнения. Строка из одной
-    пунктуации нормализуется в пустую → fallback на оригинал (security L5)."""
+    пунктуации нормализуется в пустую → fallback на оригинал."""
     r = " ".join(str(s).casefold().split()).strip(" .,;:!?…")
     return r or str(s).strip()
 
 
-# --- В3.2 (срез 2, суд 20261011-153040): инвалидация устаревших фактов --------
+# --- инвалидация устаревших фактов --------
 # Устаревший факт НЕ удаляется, а помечается префиксом-маркером [~YYYY-MM-DD]
-# (археология: текст остаётся в данных, delete_observations работает всегда — И3).
+# (археология: текст остаётся в данных, delete_observations работает всегда).
 # Читающие пути: session_start и search показывают/скорят только валидные строки;
 # read_graph/open_nodes — как есть (полная правда, включая помеченные).
 
@@ -711,7 +711,7 @@ def _strip_marker_on_write(text):
 
 
 def _valid_obs(e: dict) -> list:
-    """Наблюдения сущности без инвалидированных (Ч2)."""
+    """Наблюдения сущности без инвалидированных."""
     return [o for o in e.get("observations", []) if not _is_invalidated(o)]
 
 
@@ -720,7 +720,7 @@ def _mark_observation(obs: str, today: str) -> str:
     return obs if _is_invalidated(obs) else f"[~{today}] {obs}"
 
 
-# --- v0.50.0: forget по id ---------------------------------------------------
+# --- forget по id ---------------------------------------------------
 # Стабильный id наблюдения — sha256 текста КАК ХРАНИТСЯ (с [~дата]-маркером,
 # если он есть) — вычисляемый, НЕ хранимый: старые записи работают сразу, а
 # «что видишь в выдаче with_ids, то и удаляешь» (delete_observations_by_id).
@@ -838,7 +838,7 @@ def _create_entities_graph(ents, rels, items, project: str = "", source: str = "
             warnings.append(f"'{e['name']}': {serr} — проигнорирован")
             status = ""
         if etype in _STATUS_BY_TYPE:
-            # явный статус (Ф3 bug: open/fixed; В2.1 task: open/done), default open
+            # явный статус (bug: open/fixed; task: open/done), default open
             d["status"] = status or "open"
         elif status:
             warnings.append(f"'{e['name']}': status применим только к bug/task "
@@ -875,19 +875,19 @@ def op_create_entities(items, project: str = "", source: str = ""):
     merged — в скольких существующих сущностях реально добавились observations;
     observations_added/observations_dedup — счётчики принятых/отброшенных фактов.
 
-    project (Ф1): новые сущности получают slug; сущность project:<slug> автосоздаётся
+    project: новые сущности получают slug; сущность project:<slug> автосоздаётся
     один раз, каждая новая сущность связывается с ней «part of». Merge разрешён, если
     проект сущности совпадает или не задан (легаси-сущность тогда ПРИНИМАЕТ проект,
     счётчик adopted); конфликт проектов (X ≠ Y) → сущность не трогаем, она считается
     в skipped, в ответе warnings[] — имена сущностей глобально уникальны.
 
-    Типы (Ф3): entityType канонизируется (синонимы RU/EN → канонический, см.
+    Типы: entityType канонизируется (синонимы RU/EN → канонический, см.
     CANONICAL_TYPES/_TYPE_SYNONYMS); свободный тип остаётся как есть. Новый bug
-    получает явный status open/fixed, новый task (В2.1) — open/done; без
+    получает явный status open/fixed, новый task  — open/done; без
     переданного — default "open"; status для прочих типов и невалидное значение —
     игнор с warnings[] в ответе.
     """
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         out, changed = _create_entities_graph(ents, rels, items, project, source)
@@ -899,8 +899,8 @@ def op_create_entities(items, project: str = "", source: str = ""):
     nd = _neardup_warnings(out.get("created") or [], scope)
     if nd:
         out.setdefault("warnings", []).extend(nd)
-    # В3.3: подсказки к записи (Т3 similar + Т4 hygiene) — вне лока (embed =
-    # HTTP к своему relay), только совет (И1). Тексты — факты сущности (не
+    # подсказки к записи (similar + hygiene) — вне лока (embed =
+    # HTTP к своему relay), только совет. Тексты — факты сущности (не
     # entity_text как у neardup: name/title размывают containment) — отдельные
     # embed-вызовы, ≤_HINT_TEXTS_MAX на батч (шаринга LRU нет).
     created = out.get("created") or []
@@ -917,7 +917,7 @@ def op_create_entities(items, project: str = "", source: str = ""):
 
 _NEARDUP_COS = 0.85   # слой 2: порог косинуса «похожих сущностей»; ниже — молчим
 _NEARDUP_MAX = 3      # сколько кандидатов показать в одном предупреждении
-_NEARDUP_CHECK_MAX = 20  # security M1: подсказка best-effort — за один вызов
+_NEARDUP_CHECK_MAX = 20  # security: подсказка best-effort — за один вызов
 # проверяем ≤20 новых сущностей, иначе батч из ~800 уникальных текстов выжег бы
 # дневной кап embed (200k tok) для всех клиентов, а висящий эндпоинт держал бы
 # запрос N×EMBED_TIMEOUT
@@ -939,7 +939,7 @@ def _neardup_warnings(created: list, scope: set) -> list:
         store = embed.load_store(str(EMBEDDINGS_FILE), model=cfg["model"])
         if not store:
             return []
-        cands = [n for n in scope if n in store]  # security L1: не весь store
+        cands = [n for n in scope if n in store]  # security: не весь store
         if not cands:
             return []
         warnings = []
@@ -964,27 +964,27 @@ def _neardup_warnings(created: list, scope: set) -> list:
                     f"проверь search_nodes, прежде чем плодить дубли")
         return warnings
     except Exception as ex:
-        log.warning("neardup check skipped: %s", ex)  # security L3: было info —
+        log.warning("neardup check skipped: %s", ex)  # security: было info —
         return []                                     # поломка embed не видна
 
 
-# --- В3.3 (срез 3, суд 20261011-153040): подсказки качества записи ------------
-# Т3 similar: ≤3 похожих записей на новые тексты (embed-косинус ≥0.92 через СВОЙ
-# relay — И2; embed выключен/сбой/нет вектора → FTS-фоллбэк: containment стемов
-# ≥0.8, ≥3 стемов). Т4 hygiene: «15+ наблюдений — разделить?», «нет связей»,
-# «нет тегов» — ≤3. И1: ТОЛЬКО совет — граф и пульс не меняются, запись не
+# --- подсказки качества записи ------------
+# similar: ≤3 похожих записей на новые тексты (embed-косинус ≥0.92 через СВОЙ
+# relay — ; embed выключен/сбой/нет вектора → FTS-фоллбэк: containment стемов
+# ≥0.8, ≥3 стемов). hygiene: «15+ наблюдений — разделить?», «нет связей»,
+# «нет тегов» — ≤3. ТОЛЬКО совет — граф и пульс не меняются, запись не
 # блокируется, любой сбой → подсказок нет (учёт embed-квоты в embed.state.json —
 # это счётчик сервиса, не память). Вызывать ВНЕ _lock (embed = HTTP).
 
-_HINT_SIMILAR_COS = 0.92      # Т3: «почти дубликат» по эмбеддингам (порог плана)
+_HINT_SIMILAR_COS = 0.92      # «почти дубликат» по эмбеддингам
 _HINT_SIMILAR_CONTAIN = 0.8   # FTS-фоллбэк: доля стемов нового текста в сущности
-_HINTS_MAX = 3                # не больше трёх подсказок каждого вида (суд)
+_HINTS_MAX = 3                # не больше трёх подсказок каждого вида
 _HINT_TEXTS_MAX = 5           # новых текстов на вызов проверяем (кап embed/API)
-_HINT_OBS_SPLIT = 15          # Т4: «много наблюдений — разделить?»
+_HINT_OBS_SPLIT = 15          # «много наблюдений — разделить?»
 
 
 def _similar_hints(new_texts, ents, project, self_names) -> list:
-    """Т3: [{text, similar_to, title, score, via}] ≤_HINTS_MAX. Кандидаты — сущности
+    """[{text, similar_to, title, score, via}] ≤_HINTS_MAX. Кандидаты — сущности
     видимого проекта (проект "" → полный граф, как read-пути),
     кроме записанных (self). Embed-скан — только по сущностям с векторами
     (scorer → None без вектора); FTS — по стемам из prep-кэша searchrank
@@ -998,7 +998,7 @@ def _similar_hints(new_texts, ents, project, self_names) -> list:
         store = {}
         if embed.enabled(cfg):
             store = embed.load_store(str(EMBEDDINGS_FILE), model=cfg["model"])
-        scope = []  # один проход: (имя, сущность-с-валидными-obs для Ч2)
+        scope = []  # один проход: (имя, сущность-с-валидными-obs для фильтра [~дата])
         for n, e in ents.items():
             if n in self_names or (project and not _in_project(e, project)):
                 continue
@@ -1038,12 +1038,12 @@ def _similar_hints(new_texts, ents, project, self_names) -> list:
                     return out
         return out
     except Exception as ex:
-        log.warning("similar hints skipped: %s", ex)  # И1: подсказка не роняет запись
+        log.warning("similar hints skipped: %s", ex)  # подсказка не роняет запись
         return []
 
 
 def _hygiene_hints(ents, rels, touched_names) -> list:
-    """Т4: [{entity, hint}] ≤_HINTS_MAX — механические правила гигиены графа."""
+    """[{entity, hint}] ≤_HINTS_MAX — механические правила гигиены графа."""
     linked = {r["from"] for r in rels} | {r["to"] for r in rels}
     out = []
     for n in touched_names:
@@ -1064,8 +1064,8 @@ def _hygiene_hints(ents, rels, touched_names) -> list:
 
 
 def _quality_hints(ents, rels, touched_names, new_texts, project) -> dict:
-    """В3.3: {"similar": [...], "hygiene": [...]} — только непустые части.
-    И1: подсказки не роняют запись — любой сбой → {} (двойная страховка над
+    """{"similar": [...], "hygiene": [...]} — только непустые части.
+    подсказки не роняют запись — любой сбой → {} (двойная страховка над
     внутренними try _similar_hints)."""
     try:
         hints = {}
@@ -1083,13 +1083,13 @@ def _quality_hints(ents, rels, touched_names, new_texts, project) -> dict:
 
 def op_update_entity(item, project: str = "", source: str = ""):
     """Update title/tags/entityType/status of an existing entity.
-    project (Ф1): сущность адресуема только внутри своего проекта.
-    Ф3: entityType канонизируется (синонимы → канонический; свободный — как есть).
-    status — для bug (open/fixed) и task (open/done, В2.1): для остальных типов
+    project: сущность адресуема только внутри своего проекта.
+    entityType канонизируется (синонимы → канонический; свободный — как есть).
+    status — для bug (open/fixed) и task (open/done): для остальных типов
     и при невалидном значении — игнор с warnings[] в ответе. Смена типа на тип
     без статуса снимает status, на bug/task — ставит default "open" (явный status
     в том же вызове важнее); статус, валидный для нового типа, сохраняется."""
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         name = item.get("name", "")
@@ -1121,7 +1121,7 @@ def op_update_entity(item, project: str = "", source: str = ""):
             else:
                 warnings.append(f"status применим только к bug/task "
                                 f"(тип '{e['entityType']}') — проигнорирован")
-        # В3.2 (Т2, откат supersedes — признанный пробел суда): restore=[строки]
+        # restore=[строки] — откат supersedes:
         # снимает маркер [~YYYY-MM-DD]. Принимает строку как с маркером, так и
         # без; ненайденные — в restoreNotFound ответа (молча не теряем).
         # Валидация типов: строка → один элемент, прочие
@@ -1163,7 +1163,7 @@ def op_update_entity(item, project: str = "", source: str = ""):
 
 
 def op_create_relations(items, project: str = ""):
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         existing = {(r["from"], r["to"], r["relationType"]) for r in rels}
@@ -1186,17 +1186,17 @@ def op_create_relations(items, project: str = ""):
 
 
 def op_add_observations(items, project: str = ""):
-    """project (Ф1): сущность адресуема только внутри своего проекта — чужая
+    """project: сущность адресуема только внутри своего проекта — чужая
     сущность с тем же именем считается ненайденной (имена глобально уникальны).
     Дедуп — по _norm_obs (регистр/пробелы/краевая пунктуация), и против
     имеющихся, и внутри входящего списка; хранится оригинал строки.
 
-    В3.2 (Т2): item["supersedes"] — список УСТАРЕВШИХ строк этой же сущности:
+    item["supersedes"] — список УСТАРЕВШИХ строк этой же сущности:
     каждая помечается маркером [~YYYY-MM-DD] и остаётся в данных (археология;
-    удаление — delete_observations всегда, И3). Совпадение — точное по сырой
+    удаление — delete_observations всегда). Совпадение — точное по сырой
     строке; уже помеченная — идемпотентный пропуск; ненайденные — в
     supersedesNotFound ответа (молча не теряем)."""
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    project = _resolve_project(project)  # legacy slug → канон
     today = now_iso()[:10]
     with _lock:
         ents, rels = _load()
@@ -1209,7 +1209,7 @@ def op_add_observations(items, project: str = ""):
                 errors.append(f"Entity '{name}' not found{suffix}")
                 continue
             obs_list = ents[name]["observations"]
-            # Т2: инвалидация устаревших строк (до добавления новых — новый факт
+            # инвалидация устаревших строк (до добавления новых — новый факт
             # может текстом совпадать с помечаемым старым, порядок важен).
             # Валидация типов: строка → одноимённый элемент
             # (без посимвольной итерации), прочие не-списки → error по item.
@@ -1273,7 +1273,7 @@ def op_add_observations(items, project: str = ""):
         _reprime_tick(project, out)
         touched = [r["entityName"] for r in results]
         new_texts = [c for r in results for c in r["addedObservations"]]
-    # В3.3: подсказки ПОСЛЕ записи, вне лока (embed = HTTP); только совет (И1)
+    # подсказки ПОСЛЕ записи, вне лока (embed = HTTP); только совет
     hints = _quality_hints(ents, rels, touched, new_texts, project)
     if hints:
         out["hints"] = hints
@@ -1281,9 +1281,9 @@ def op_add_observations(items, project: str = ""):
 
 
 def op_delete_entities(names, project: str = ""):
-    """project (Ф1): удаляются только сущности этого проекта — чужие с тем же
+    """project: удаляются только сущности этого проекта — чужие с тем же
     именем не трогаем (изоляция деструктивных операций)."""
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         deleted = [n for n in names
@@ -1299,8 +1299,8 @@ def op_delete_entities(names, project: str = ""):
 
 
 def op_delete_observations(items, project: str = ""):
-    """project (Ф1): затрагиваются только сущности этого проекта."""
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    """project: затрагиваются только сущности этого проекта."""
+    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         removed = 0
@@ -1321,12 +1321,12 @@ def op_delete_observations(items, project: str = ""):
 
 
 def op_delete_observations_by_id(items, project: str = ""):
-    """Точечный forget по id наблюдения (v0.50.0): items — [{entity, ids}].
+    """Точечный forget по id наблюдения: items — [{entity, ids}].
     id = _obs_id текста КАК ХРАНИТСЯ (см. with_ids у search_nodes/open_nodes).
     Сущность обязана существовать и быть видимой в проекте — иначе errors[]
     (как op_add_observations); ненайденные ids — в notFound записи результата
     (молча не теряем). Пульс — как у op_delete_observations: без события."""
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         results, errors = [], []
@@ -1367,9 +1367,9 @@ def op_delete_observations_by_id(items, project: str = ""):
 
 
 def op_delete_relations(items, project: str = ""):
-    """project (Ф1): удаляются только связи, чьи ОБА конца видимы в проекте —
+    """project: удаляются только связи, чьи ОБА конца видимы в проекте —
     кросс-проектные связи из контекста проекта не трогаем."""
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         drop = {(r["from"], r["to"], r["relationType"]) for r in items}
@@ -1387,23 +1387,23 @@ def op_delete_relations(items, project: str = ""):
 
 
 def op_read_graph(project: str = "", all_projects: bool = False):
-    canon = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    canon = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
     es, rs = _filter_graph(ents, rels, canon, all_projects)
     out = {"entities": es, "relations": rs}
     if canon != project and project and not all_projects:
-        out["meta"] = {"aliased_to": canon}  # v0.50.0: чтение по legacy-slug
+        out["meta"] = {"aliased_to": canon}  # чтение по legacy-slug
     return out
 
 
 def _hybrid_search(query_str: str):
-    """В2.2: (vector_weight, cosine_fn) для searchrank.rank; (0.0, None) — чистый FTS.
+    """(vector_weight, cosine_fn) для searchrank.rank; (0.0, None) — чистый FTS.
 
     Гибрид применяется ТОЛЬКО когда embed включён (EMBED_URL+EMBED_KEY) И у
     запроса есть вектор (LRU-кэш в embed; промах = один /embeddings вызов с
     EMBED_TIMEOUT; сбой/кап → None). Любой сбой → (0.0, None): поведение
-    byte-identical 0.14.x. Корпус уже отфильтрован (Ф1/Ф3) ДО вызова rank —
+    поведение без изменений. Корпус уже отфильтрован ДО вызова rank —
     косинусы считаются только по именам из видимого корпуса (изоляция
     проектов сохраняется, вектора чужих проектов не читаются)."""
     cfg = embed.config_from_env()
@@ -1423,38 +1423,38 @@ def _hybrid_search(query_str: str):
 
 def op_search(query, project: str = "", all_projects: bool = False, type_filter: str = "",
               limit: int = searchrank.DEFAULT_LIMIT, with_ids: bool = False):
-    """Поиск. Непустой query (Ф6) — ранжированный FTS-lite (searchrank): BM25-подобный
+    """Поиск. Непустой query — ранжированный FTS-lite (searchrank): BM25-подобный
     скор по полям name×3/title×2/tags×1.5/observations×1 + фразовый бонус + recency ≤10%,
     топ-limit (default 20); у сущностей ответа + score, snippet, highlights (позиции
     совпадений в snippet — без HTML, безопасно для esc()). Ранжирование идёт внутри
-    видимого корпуса: Ф1 (project/all_projects) и Ф3 (type= после нормализации)
+    видимого корпуса: фильтры project/all_projects и type= (после нормализации)
     комбинируются как фильтры корпуса ДО скоринга.
 
-    В2.2 (опционально): при заданных EMBED_URL+EMBED_KEY — гибрид FTS+косинус
+    Опционально: при заданных EMBED_URL+EMBED_KEY — гибрид FTS+косинус
     эмбеддингов (searchrank.rank(vector_weight=HYBRID_VECTOR_WEIGHT, default 0.6);
     корпус ≤2000 → косинус по всем (full-scan), больше → FTS top-200 предфильтр;
     score ответа становится blended 0..1).
-    Без эмбеддингов (выключен/сбой/нет векторов) — чистый FTS 0.14.x.
+    Без эмбеддингов (выключен/сбой/нет векторов) — чистый FTS.
 
-    В2.3 (default ON, отключается ACTR_MAX_BOOST=0): ACT-R буст — часто и недавно
+    ACT-R буст (default ON, отключается ACTR_MAX_BOOST=0) — часто и недавно
     читаемые сущности получают множитель ≤ 1+ACTR_MAX_BOOST (default +25%) к
     итоговому скору (FTS или blended); top-20 выдачи учитывается как обращение
     (_touch). Счётчики глобальны по имени, но имена глобально уникальны и буст
-    применяется после фильтра корпуса (Ф1/Ф3) — изоляция проектов сохраняется.
+    применяется после фильтра корпуса — изоляция проектов сохраняется.
 
     Пустой query — старое поведение: все сущности (с фильтрами), без score-полей,
     без лимита. Query без извлекаемых терминов (пунктуация, CJK — вне алфавита
     токенизатора) — фоллбек на старое подстрочное совпадение (без score-полей).
 
     Сущности ответа несут канонический type; bug — ещё и status (явный, а для legacy
-    без поля — выведенный эвристикой _bug_is_open); task (В2.1) — status
+    без поля — выведенный эвристикой _bug_is_open); task — status
     (явный open/done, битое/отсутствующее хранимое значение → "open").
 
-    with_ids (v0.50.0): observations сущностей ответа — объекты {id, text}
+    with_ids: observations сущностей ответа — объекты {id, text}
     (id = _obs_id, для delete_observations_by_id); default False — старый
     формат (список строк), обратная совместимость."""
     tf = _canonical_type(type_filter) if str(type_filter or "").strip() else ""
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
     corpus = list(ents.values())
@@ -1462,7 +1462,7 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
         corpus = [e for e in corpus if _in_project(e, project)]
     if tf:
         corpus = [e for e in corpus if _canonical_type(e.get("entityType")) == tf]
-    # Ч2 (В3.2): инвалидированные ([~дата]) наблюдения исключаются из поиска —
+    # инвалидированные ([~дата]) наблюдения исключаются из поиска —
     # ни из скоринга (FTS), ни из сниппета, ни из полей ответа (устаревшая цена
     # не должна всплывать). Полная правда с маркерами — read_graph/open_nodes.
     # Векторная составляющая гибрида — по последнему embed-снимку (маркер
@@ -1480,15 +1480,15 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
     if _changed:
         corpus = _corpus
     query_str = str(query or "")
-    # W3 (v0.27.0): FTS-ветка расширяется словарём синонимов (rank/tokenize/snippet
-    # согласованно); векторный запрос остаётся исходным (решение W3-Q3).
+    # FTS-ветка расширяется словарём синонимов (rank/tokenize/snippet
+    # согласованно); векторный запрос остаётся исходным.
     expanded_str = rankcfg.expand_query(query_str)
     qts = searchrank.tokenize(expanded_str)
     if query_str.strip() and qts:
-        vec_w, cos_fn = _hybrid_search(query_str)  # В2.2: (0.0, None) → чистый FTS
+        vec_w, cos_fn = _hybrid_search(query_str)  # (0.0, None) → чистый FTS
         pairs = searchrank.rank(corpus, expanded_str, limit=limit,
                                 vector_weight=vec_w, cosine_fn=cos_fn,
-                                actr_fn=_actr_boost_fn())  # В2.3: None → без изменений
+                                actr_fn=_actr_boost_fn())  # None → без изменений
         ranked = True
     else:
         ranked = False
@@ -1514,7 +1514,7 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
             st = str(e.get("status") or "").strip().lower()
             v["status"] = st if st in BUG_STATUSES else ("open" if _bug_is_open(e) else "fixed")
         elif v["type"] == "task":
-            # В2.1: контракт ответа — open|done; задачи через границу записи всегда
+            # контракт ответа — open|done; задачи через границу записи всегда
             # имеют явный status (default open), прочее → «не закрыта»
             v["status"] = _task_status_out(e)
         if ranked:
@@ -1522,15 +1522,15 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
             text, highlights = searchrank.snippet(e, qts)
             v["snippet"] = text
             v["highlights"] = highlights
-        if with_ids:  # v0.50.0: {id, text} вместо строк (id от текста как хранится)
+        if with_ids:  # {id, text} вместо строк (id от текста как хранится)
             v["observations"] = _obs_with_ids(v.get("observations", []))
         out_entities.append(v)
     if query_str.strip():
-        # В2.3: «осмысленное» чтение — top-20 выдачи (ranked и CJK-фоллбек).
+        # «осмысленное» чтение — top-20 выдачи (ranked и CJK-фоллбек).
         # Пустой query (дамп корпуса) не учитываем — как read_graph, это не
         # сигнал интереса к конкретным фактам (и это O(N) касаний на вызов).
         _touch([e["name"] for e in out_entities[:actr.TOUCH_TOP]])
-    # W2 learn-events: источник связки search→open. Только память, сети нет;
+    # learn-events: источник связки search→open. Только память, сети нет;
     # не-ранжированные ветки (пустой query, CJK-фоллбек) сбрасывают связку.
     if ranked:
         learn.record_search(query_str,
@@ -1542,9 +1542,9 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
 
 
 def op_open(names, project: str = "", with_ids: bool = False):
-    """with_ids (v0.50.0): observations — объекты {id, text} (id = _obs_id,
+    """with_ids: observations — объекты {id, text} (id = _obs_id,
     для delete_observations_by_id); default False — старый формат строк."""
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    project = _resolve_project(project)  # legacy slug → канон
     want = set(names)
     with _lock:
         ents, rels = _load()
@@ -1552,14 +1552,14 @@ def op_open(names, project: str = "", with_ids: bool = False):
         # как раньше: связи — оба конца среди запрошенных имён (даже если узла нет)
         found = [e for n, e in ents.items() if n in want]
         frels = [r for r in rels if r["from"] in want and r["to"] in want]
-        _touch([e["name"] for e in found])  # В2.3: явное открытие = обращение
-        learn.record_open([e["name"] for e in found])  # W2: связка со свежим поиском
+        _touch([e["name"] for e in found])  # явное открытие = обращение
+        learn.record_open([e["name"] for e in found])  # связка со свежим поиском
     else:
         found = [e for n, e in ents.items() if n in want and _in_project(e, project)]
         found_names = {e["name"] for e in found}
         frels = [r for r in rels if r["from"] in found_names and r["to"] in found_names]
-        _touch([e["name"] for e in found])  # В2.3: только реально найденные имена
-        learn.record_open([e["name"] for e in found])  # W2: связка со свежим поиском
+        _touch([e["name"] for e in found])  # только реально найденные имена
+        learn.record_open([e["name"] for e in found])  # связка со свежим поиском
     if with_ids:  # копии — хранимый граф не трогаем
         found = [dict(e, observations=_obs_with_ids(e.get("observations", [])))
                  for e in found]
@@ -1567,7 +1567,7 @@ def op_open(names, project: str = "", with_ids: bool = False):
 
 
 def op_timeline(limit=100, project: str = "", all_projects: bool = False):
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         if not EVENTS_FILE.exists():
             return {"events": []}
@@ -1593,9 +1593,9 @@ def op_timeline(limit=100, project: str = "", all_projects: bool = False):
     return {"events": events}
 
 
-# ---------------------------------------------------- work_state (В2.1) -----
+# ---------------------------------------------------- work_state -----
 
-# В2.1 (аналог work_state у claude-mem): открытые дела проекта — сущности
+# (аналог work_state у claude-mem): открытые дела проекта — сущности
 # entityType "task" со status open/done (default open). Имя — task-<slug(title)>
 # (транслит RU→lat, kebab); коллизия (имена глобально уникальны) → суффикс -2, -3…
 _TASK_NAME_MAX = 64   # потолок длины name целиком (включая префикс «task-»)
@@ -1637,7 +1637,7 @@ def _task_name_free(ents: dict, title: str, taken=()) -> str:
 def _task_is_open(e: dict) -> bool:
     """Открыта ли задача: status != done. Задачи через границу записи несут явный
     status (default open); битое/отсутствующее значение ≠ done → открыта («никто
-    не закрыл — открыта», как у legacy-багов Ф2)."""
+    не закрыл — открыта», как у legacy-багов)."""
     return str(e.get("status") or "").strip().lower() != "done"
 
 
@@ -1650,14 +1650,14 @@ def _task_status_out(e: dict) -> str:
 
 def op_task_add(title, note: str = "", project: str = "", source: str = "",
                 links=()) -> dict:
-    """Создать задачу (В2.1): entityType task, status open, имя task-<slug(title)>
+    """Создать задачу: entityType task, status open, имя task-<slug(title)>
     (коллизия → -2…), note — первый факт (опционально). Проектная семантика
     (автосоздание project:<slug>, part-of) — из _create_entities_graph.
-    В3.4 (Т5): links=[имена] — связи «relates to» к существующим сущностям
+    links=[имена] — связи «relates to» к существующим сущностям
     своего проекта в том же вызове (контекст задачи не теряется); неизвестные/
     чужие — в links_skipped (молча не теряем).
     → {"created": entity, "linked": [...], "links_skipped": [...]} | {"error": …}."""
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    project = _resolve_project(project)  # legacy slug → канон
     title = re.sub(r"\s+", " ", str(title or "")).strip()[:_TASK_TITLE_MAX]
     if not title:
         return {"error": "task_add: пустой title"}
@@ -1674,7 +1674,7 @@ def op_task_add(title, note: str = "", project: str = "", source: str = "",
             result = {"created": out["created"][0]}
             if out.get("warnings"):
                 result["warnings"] = out["warnings"]
-            # Т5: связи в том же вызове (Ф1: только внутри проекта, как Л5 В3.1)
+            # связи в том же вызове (только внутри проекта)
             linked, skipped = [], []
             rel_keys = {(r["from"], r["to"], r["relationType"]) for r in rels}
             for l in (links or []):
@@ -1703,14 +1703,14 @@ def op_task_add(title, note: str = "", project: str = "", source: str = "",
 
 
 def op_task_done(name: str, project: str = "", source: str = "") -> dict:
-    """Закрыть задачу (В2.1): status=done + событие task_done в пульс.
+    """Закрыть задачу: status=done + событие task_done в пульс.
     Только entityType=task своего проекта: отсутствующая/чужая → not found,
     не-task → error. Уже закрытая — идемпотентно {"updated", "already": True}
     без повторного события.
-    В3.4 (Т5): при закрытии — связь «discussed» от session-сущности сегодняшнего
+    При закрытии — связь «discussed» от session-сущности сегодняшнего
     дня к задаче, если сессия дня существует (stub SessionEnd-хука тоже считается;
-    новую сессию НЕ создаём — И1, авто-записей нет). Ответ: + linked_to_session."""
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    новую сессию НЕ создаём — авто-записей нет). Ответ: + linked_to_session."""
+    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         e = ents.get(name)
@@ -1725,7 +1725,7 @@ def op_task_done(name: str, project: str = "", source: str = "") -> dict:
             return out
         e["status"] = "done"
         e["updatedAt"] = now_iso()
-        # Т5: связь к сессии дня (вечерняя запись «что сделано» знает свои задачи)
+        # связь к сессии дня (вечерняя запись «что сделано» знает свои задачи)
         proj = project or (e.get("project") or "")
         sname, _closed = _today_session(ents, proj, now_iso()[:10])
         if sname:
@@ -1745,12 +1745,12 @@ def op_task_done(name: str, project: str = "", source: str = "") -> dict:
 
 def op_task_list(project: str = "") -> dict:
     """Открытые задачи (status≠done), recency-first. project задан — только его
-    задачи (Ф1); без project — все открытые задачи графа (плоское чтение, как
+    задачи; без project — все открытые задачи графа (плоское чтение, как
     read_graph без проекта). → {"tasks": [...], "total": N}.
-    Ч2-контракт: task_list — «полная правда», как
+    Контракт чтения: task_list — «полная правда», как
     read_graph/open_nodes: инвалидированные наблюдения видны с маркером
     [~дата] (фильтруют только session_start и search)."""
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, _rels = _load()
     tasks = sorted((e for e in ents.values()
@@ -1766,19 +1766,19 @@ def op_task_list(project: str = "") -> dict:
     return {"tasks": out, "total": len(out)}
 
 
-# --- В3.1 (суд 20261011-153040): закрытие сессии одним вызовом + напоминание --
-# Т1/Ч1 из волны 2: session_close создаёт/мерджит session-сущность дня с итогами
+# --- закрытие сессии одним вызовом + напоминание --
+# session_close создаёт/мерджит session-сущность дня с итогами
 # и discussed-связями за один вызов (вместо 3 забываемых), а session_start
-# напоминает о незакрытой сессии. Условия суда-инварианты: напоминание и
+# напоминает о незакрытой сессии. Инварианты: напоминание и
 # авто-сбор связей из пульса — МЕХАНИЧЕСКИЕ (без LLM) и НИЧЕГО не пишут за
 # агента (напоминание — только строка в context_block; авто-линки — лишь внутри
 # явного вызова session_close самим агентом).
 
 _SESSION_CLOSE_TAG = "session-close"  # «сессия закрыта агентом с итогами»
 _SESSION_LINKS_MAX = 20               # потолок discussed-связей за вызов
-_UNCLOSED_MIN_WRITES = 5              # Ч1: напоминание при ≥5 пишущих событиях за день
-_UNCLOSED_TOUCHED_MAX = 5             # Ч1: сколько имён затронутых показать
-_WRITE_ACTIONS = frozenset({          # пишущие события пульса (для Ч1 и авто-лinкс)
+_UNCLOSED_MIN_WRITES = 5              # напоминание при ≥5 пишущих событиях за день
+_UNCLOSED_TOUCHED_MAX = 5             # сколько имён затронутых показать
+_WRITE_ACTIONS = frozenset({          # пишущие события пульса (для авто-линков)
     "create_entity", "merge_entity", "create_relation", "update_entity",
     "add_observation", "delete_entity", "task_done", "session_close",
 })
@@ -1864,13 +1864,13 @@ def _touched_today(project: str, today: str, exclude: str = "", lines=None) -> l
 
 def op_session_close(summary: str = "", done=(), links=(), project: str = "",
                      source: str = "") -> dict:
-    """Закрыть сессию дня одним вызовом (В3.1): session-сущность дня (merge в уже
+    """Закрыть сессию дня одним вызовом: session-сущность дня (merge в уже
     созданную сегодня, в т.ч. в stub от SessionEnd-хука) + summary/done как
     наблюдения + discussed-связи. links пуст → авто-сбор из сегодняшнего пульса
     (механически, по пишущим событиям). Повторный вызов за день — домердж.
     → {"session", "merged", "linked", "links_skipped", "open_tasks_hint",
        "already_closed"} | {"error": …} (пустые summary+done)."""
-    project = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    project = _resolve_project(project)  # legacy slug → канон
     summary = re.sub(r"\s+", " ", str(summary or "")).strip()
     obs = []
     if summary:
@@ -1922,7 +1922,7 @@ def op_session_close(summary: str = "", done=(), links=(), project: str = "",
                 l = str(l or "").strip()
                 if not l or l == name:
                     continue
-                # Ф1: явные связи тоже внутри проекта
+                # явные связи тоже внутри проекта
                 if l in ents and _in_project(ents[l], project):
                     want.append(l)
                 else:
@@ -1930,7 +1930,7 @@ def op_session_close(summary: str = "", done=(), links=(), project: str = "",
             auto = False
         else:
             want, skipped, auto = touched, [], True
-        if len(want) > _SESSION_LINKS_MAX:  # Л3: хвост не теряем молча
+        if len(want) > _SESSION_LINKS_MAX:  # хвост не теряем молча
             skipped.extend(want[_SESSION_LINKS_MAX:])
             want = want[:_SESSION_LINKS_MAX]
         existing = {(r["from"], r["to"], r["relationType"]) for r in rels}
@@ -1945,7 +1945,7 @@ def op_session_close(summary: str = "", done=(), links=(), project: str = "",
             linked.append(l)
         hint = [t for t in touched
                 if ents[t].get("entityType") == "task" and _task_is_open(ents[t])]
-        # Л4: пустой повторный вызов (ничего не добавилось) — без _save и без
+        # пустой повторный вызов (ничего не добавилось) — без _save и без
         # события в пульс, ответ идемпотентный
         if changed or linked:
             _save(ents, rels)
@@ -1959,7 +1959,7 @@ def op_session_close(summary: str = "", done=(), links=(), project: str = "",
 
 
 def _open_tasks_from_data(data) -> list:
-    """SessionEnd data.open_tasks (В2.1) → нормализованные title'ы. Ввод
+    """SessionEnd data.open_tasks → нормализованные title'ы. Ввод
     недоверенный (хук): только строки, whitespace схлопнут, ≤_TASK_TITLE_MAX,
     пустые/дубли отброшены, ≤_TASK_OPEN_TASKS_MAX пунктов."""
     raw = (data or {}).get("open_tasks")
@@ -1977,25 +1977,25 @@ def _open_tasks_from_data(data) -> list:
     return out
 
 
-# ------------------------------------------------------ session_start (Ф2) --
+# ------------------------------------------------------ session_start --
 
-# Ф2 (MEMORY-SYSTEM-v2): бюджетная инъекция контекста проекта — аналог
+# бюджетная инъекция контекста проекта — аналог
 # SessionStart-блока claude-mem (~50 наблюдений + ~10 сессий, жёсткий бюджет
 # ~10k chars). Операция чтения: событие в пульс НЕ пишем, лог-строку — да.
 SESSION_START_BUDGET = 10000   # default budget_chars
 _SS_CAP_PROJECT_FACTS = 5      # 3-5 ключевых фактов сущности project:<slug>
 _SS_CAP_DECISION_LINES = 50    # строк наблюдений decisions (дословно)
 _SS_CAP_BUG_LINES = 30         # строк открытых багов
-_SS_CAP_TASK_LINES = 10        # строк открытых задач (В2.1)
+_SS_CAP_TASK_LINES = 10        # строк открытых задач
 _SS_CAP_SESSIONS = 10          # прошлых сессий
 _SS_CAP_EVENTS = 15            # событий пульса
 # Запас под маркер усечения: «… (ещё N, усечено бюджетом)\n» ≤ 32 chars, т.к.
 # N ≤ сумме кэпов (120); берём с запасом — иначе маркер мог бы превысить бюджет.
 _SS_MARKER_RESERVE = 40
 
-# Эвристика статуса бага — ФОЛЛБЕК для legacy-багов без явного поля status (Ф3):
+# Эвристика статуса бага — ФОЛЛБЕК для legacy-багов без явного поля status:
 # последнее статусное слово в фактах («status: fixed», «закрыт»…) или тег
-# (closed / status:open). Новые баги несут явный status open/fixed (Ф3).
+# (closed / status:open). Новые баги несут явный status open/fixed.
 _BUG_STATUS_WORD = re.compile(
     r"\b(open|reopened|fixed|closed|resolved|done|открыт\w*|закрыт\w*|исправлен\w*|пофикш\w*)\b",
     re.IGNORECASE)
@@ -2007,8 +2007,8 @@ def _bug_word_is_open(word: str) -> bool:
 
 
 def _bug_is_open(e: dict) -> bool:
-    """Открыт ли баг. Ф3: ЯВНЫЙ status (open/fixed) решает первым. Legacy-баг без
-    status (или с неизвестным значением) — эвристика Ф2: закрыт, если тег
+    """Открыт ли баг. ЯВНЫЙ status (open/fixed) решает первым. Legacy-баг без
+    status (или с неизвестным значением) — эвристика: закрыт, если тег
     (closed/fixed/status:closed…) или ПОСЛЕДНЕЕ статусное слово в фактах —
     закрывающее. Без сигналов баг считается открытым: никто не закрыл — открыт."""
     st = str(e.get("status") or "").strip().lower()
@@ -2048,7 +2048,7 @@ def _ss_ts(e: dict) -> float:
 
 def _ss_sort_recent(entities, mult_fn=None):
     """Recency-first сортировка секций session_start. Без mult_fn — ровно старое
-    поведение (_recency_key, byte-identical). С mult_fn (В2.3 ACT-R) ключ —
+    поведение (_recency_key, byte-identical). С mult_fn (ACT-R) ключ —
     ts × множитель: часто читаемая и чуть более старая сущность обгоняет свежую
     нетронутую (множитель ≤ 1+ACTR_MAX_BOOST, т.е. перекрывает разрыв ≤25%
     по свежести — большие разрывы во времени остаются решающими)."""
@@ -2123,18 +2123,18 @@ def _fit_budget(sections: list, budget: int):
 
 
 def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
-    """Бюджетная инъекция контекста проекта (Ф2): {context_block, meta}.
+    """Бюджетная инъекция контекста проекта: {context_block, meta}.
 
     Секции по приоритету (обрезка бюджетом — снизу вверх, от последней; порядок
     жертвования: events → sessions → unclosed → tasks → bugs → decisions):
       # Проект: <slug>    — title + до 5 ключевых фактов project:<slug>
       ## Решения владельца — entityType=decision, recency-first, дословно (≤50 строк)
-      ## Открытые баги    — entityType=bug, явный status≠fixed (Ф3); legacy без
+      ## Открытые баги    — entityType=bug, явный status≠fixed; legacy без
                             status — эвристика тега/статусного слова (≤30 строк)
-      ## Открытые задачи  — entityType=task, status≠done (В2.1 work_state, ≤10
+      ## Открытые задачи  — entityType=task, status≠done (work_state, ≤10
                             строк): title + первый факт; дела важнее истории,
                             поэтому выше сессий
-      ## Незакрытая сессия — В3.1 (1 строка, только если ≥5 пишущих событий
+      ## Незакрытая сессия — (1 строка, только если ≥5 пишущих событий
                             сегодня и сессия дня без тега session-close);
                             механическое напоминание, ничего не пишет
       ## Прошлые сессии   — entityType=session, recency-first (≤10): имя + первые 2 факта
@@ -2144,17 +2144,17 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
     строк/единиц секции в блоке, total — всего кандидатов в графе; расхождение
     без truncated=true означает срабатывание кэпа секции, а не бюджета.
 
-    В2.3 (ACT-R, default ON; ACTR_MAX_BOOST=0 → выкл., byte-identical):
+    ACT-R (default ON; ACTR_MAX_BOOST=0 → выкл., byte-identical):
     внутри секций decisions/bugs/tasks сортировка — recency × множитель
     частоты обращений (≤+25%); сущности, попавшие в итоговый context_block
     (после бюджетной обрезки), учитываются как обращения (_touch). Сессии —
     чистая хронология (свежесть сессии важна сама по себе), секция событий —
     журнал, не чтение фактов сущности: ни буста, ни учёта.
 
-    v0.50.0: legacy-slug резолвится в канон по алиасу (данные канона), в meta
+    legacy-slug резолвится в канон по алиасу (данные канона), в meta
     добавляется "aliased_to": "<canon>".
     """
-    canon = _resolve_project(project)  # v0.50.0: legacy slug → канон
+    canon = _resolve_project(project)  # legacy slug → канон
     aliased_to = canon if canon != project else ""
     project = canon
     try:
@@ -2162,7 +2162,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
     except (TypeError, ValueError):
         budget = SESSION_START_BUDGET
     pname = _project_entity_name(project)
-    mult_fn = _actr_boost_fn()  # В2.3: None → сортировки byte-identical 0.14.x
+    mult_fn = _actr_boost_fn()  # None → сортировки без изменений
     with _lock:
         ents, _rels = _load()
         ev_lines = (EVENTS_FILE.read_text(encoding="utf-8").splitlines()
@@ -2170,11 +2170,11 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
         _reprime_writes[project] = 0  # слой 2: свежий прайм — счётчик с нуля
     proj_ent = ents.get(pname)
     proj_ents = [e for e in ents.values() if (e.get("project") or "") == project]
-    # Ч2 (В3.2): инвалидированные ([~дата]) строки в контекст не попадают
+    # инвалидированные ([~дата]) строки в контекст не попадают
     proj_facts = _valid_obs(proj_ent) if proj_ent else []
 
     # события проекта: один проход файла — счёт + последние N (кольцевой буфер)
-    # + Ч1 (В3.1): счётчик СЕГОДНЯШНИХ пишущих событий для напоминания
+    # + счётчик СЕГОДНЯШНИХ пишущих событий для напоминания
     # «незакрытая сессия» (чтение журнала, ничего не пишется).
     today = now_iso()[:10]
     writes_today = 0
@@ -2196,9 +2196,9 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
     header = f"# Проект: {project}" + (f" — {title}" if title != project else "")
     totals = {"project": len(proj_facts), "decisions": 0, "bugs": 0,
               "tasks": 0, "sessions": 0, "events": total_events,
-              "unclosed": 0}  # В3.1: 1 — напоминание «незакрытая сессия» показано
+              "unclosed": 0}  # 1 — напоминание «незакрытая сессия» показано
     sections = []  # (key, header, lines) — только секции с контентом (+ всегда project)
-    sec_names = []  # В2.3: имя сущности каждой строки sections ("" = без сущности)
+    sec_names = []  # имя сущности каждой строки sections ("" = без сущности)
 
     if not proj_ents and not proj_facts and not total_events:
         notice = (f"Проект «{project}» новый или пуст: в памяти по этому slug пока ничего нет. "
@@ -2213,13 +2213,13 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
         sections.append(("project", header, plines))
         sec_names.append([pname] * len(plines))  # факты — это строки project:<slug>
 
-        # В2.3: внутри decisions/bugs/tasks — recency × ACT-R множитель
+        # внутри decisions/bugs/tasks — recency × ACT-R множитель
         # (mult_fn=None → ровно старый recency-first).
         decisions = _ss_sort_recent(
             (e for e in proj_ents if e.get("entityType") == "decision"), mult_fn)
         dlines, dnames = [], []
         for e in decisions:
-            obs_valid = _valid_obs(e)  # Ч2: инвалидированные решения не показываем
+            obs_valid = _valid_obs(e)  # инвалидированные решения не показываем
             totals["decisions"] += len(obs_valid)
             prefix = _ss_head(e) + ": "
             for obs in obs_valid:
@@ -2238,7 +2238,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
              if e.get("entityType") == "bug" and _bug_is_open(e)), mult_fn)
         blines, bnames = [], []
         for e in bugs:
-            obs_valid = _valid_obs(e)  # Ч2
+            obs_valid = _valid_obs(e)
             totals["bugs"] += max(1, len(obs_valid))
             head = _ss_head(e)
             if not obs_valid:
@@ -2257,7 +2257,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
             sections.append(("bugs", "## Открытые баги", blines))
             sec_names.append(bnames)
 
-        # В2.1 (work_state): открытые задачи — после багов, перед сессиями
+        # (work_state): открытые задачи — после багов, перед сессиями
         # (дела важнее истории); бюджетом режутся после сессий, до багов.
         tasks = _ss_sort_recent(
             (e for e in proj_ents
@@ -2266,7 +2266,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
         tlines, tnames = [], []
         for e in tasks[:_SS_CAP_TASK_LINES]:
             line = _ss_head(e)
-            obs_valid = _valid_obs(e)  # Ч2: первый ВАЛИДНЫЙ факт как note
+            obs_valid = _valid_obs(e)  # первый ВАЛИДНЫЙ факт как note
             if obs_valid:
                 line += ": " + str(obs_valid[0])
             tlines.append(line)
@@ -2275,9 +2275,9 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
             sections.append(("tasks", "## Открытые задачи", tlines))
             sec_names.append(tnames)
 
-        # Ч1 (В3.1): «незакрытая сессия» — сегодня были пишущие события, но
+        # «незакрытая сессия» — сегодня были пишущие события, но
         # session-сущности дня с итогами (тег session-close) нет. Только строка
-        # в context_block: НИЧЕГО не записывается (инвариант суда И1). Секция —
+        # в context_block: НИЧЕГО не записывается (строгий инвариант). Секция —
         # про сегодняшние дела, поэтому выше истории сессий.
         if writes_today >= _UNCLOSED_MIN_WRITES:
             _sname, sclosed = _today_session(ents, project, today)
@@ -2300,7 +2300,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
         slines, snames = [], []
         for e in sessions[:_SS_CAP_SESSIONS]:
             line = _ss_head(e, "name")
-            facts2 = [str(o) for o in _valid_obs(e)[:2]]  # Ч2
+            facts2 = [str(o) for o in _valid_obs(e)[:2]]
             if facts2:
                 line += ": " + "; ".join(facts2)
             slines.append(line)
@@ -2317,7 +2317,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
             if ent:
                 line += f" {ent}"
             det = str(ev.get("detail") or "")
-            # Ч2: detail add_observation несёт сырой
+            # detail add_observation несёт сырой
             # текст факта — инвалидированная строка не должна жить в контексте
             # через журнал; действие/сущность/время остаются
             if det and ev.get("action") != "add_observation":
@@ -2328,7 +2328,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
             sec_names.append([""] * len(elines))  # журнал — не чтение фактов
 
     text, shown, truncated = _fit_budget(sections, budget)
-    # В2.3: обращениями считаются сущности, реально попавшие в context_block
+    # обращениями считаются сущности, реально попавшие в context_block
     # (после бюджетной обрезки — shown[i] строк секции i, порядок = порядок
     # строк). Пульс НЕ пишется (операция чтения, как и раньше).
     touched, seen = [], set()
@@ -2344,7 +2344,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
         sec_meta[key]["items"] = n
     meta = {"project": project, "budget_chars": budget, "used_chars": len(text),
             "sections": sec_meta, "truncated": truncated}
-    if aliased_to:  # v0.50.0: запросили по legacy-slug — отдали данные канона
+    if aliased_to:  # запросили по legacy-slug — отдали данные канона
         meta["aliased_to"] = aliased_to
     log.info("session_start: project=%s budget=%d used=%d truncated=%s",
              project, budget, len(text), truncated)
@@ -2359,7 +2359,7 @@ class EntityIn(BaseModel):
     title: str = ""
     tags: list[str] = Field(default_factory=list)
     observations: list[str] = Field(default_factory=list)
-    status: str = ""  # Ф3/В2.1: только bug (open/fixed) и task (open/done), default open
+    status: str = ""  # только bug (open/fixed) и task (open/done), default open
 
 
 class RelationIn(BaseModel):
@@ -2372,7 +2372,7 @@ class RelationIn(BaseModel):
 class ObservationsIn(BaseModel):
     entityName: str
     contents: list[str] = Field(default_factory=list)
-    # В3.2 (Т2): устаревшие строки этой сущности — пометить [~дата], не удалять
+    # устаревшие строки этой сущности — пометить [~дата], не удалять
     supersedes: list[str] = Field(default_factory=list)
 
 
@@ -2382,7 +2382,7 @@ class DeletionIn(BaseModel):
 
 
 class ObsIdDeletionIn(BaseModel):
-    """v0.50.0: forget по id — {entity, ids} (id = _obs_id из выдачи with_ids)."""
+    """forget по id — {entity, ids} (id = _obs_id из выдачи with_ids)."""
     entity: str
     ids: list[str] = Field(default_factory=list)
 
@@ -2390,7 +2390,7 @@ class ObsIdDeletionIn(BaseModel):
 # ------------------------------------------------------------- licensing ---
 
 def _license_status() -> dict:
-    """licensing.status с fail-closed при внутренней ошибке + свежая версия магазина (v0.18.2)."""
+    """licensing.status с fail-closed при внутренней ошибке + свежая версия магазина."""
     try:
         st = licensing.status(DATA_DIR, LICENSE_SECRET)
         latest = licensing.latest_version(DATA_DIR, LICENSE_SECRET)
@@ -2455,7 +2455,7 @@ mcp = FastMCP("maxgraph", host="0.0.0.0", port=PORT, streamable_http_path="/mcp"
               stateless_http=True, instructions=_MCP_INSTRUCTIONS)
 # FastMCP (mcp 1.x) НЕ принимает version= и не пробрасывает её в низкоуровневый
 # Server → serverInfo.version при initialize отдавал версию MCP SDK (покупатель
-# видел "1.30.0" вместо версии продукта). Выставляем версию продукта напрямую.
+# видел "" вместо версии продукта). Выставляем версию продукта напрямую.
 try:
     mcp._mcp_server.version = VERSION
 except Exception:  # стабы в тестах (FastMCP-заглушка без _mcp_server) — не ломаем
@@ -2518,7 +2518,7 @@ def create_relations(relations: list[RelationIn], project: str = "") -> dict:
 
 @mcp.tool()
 def add_observations(observations: list[ObservationsIn], project: str = "") -> dict:
-    """Add new observations to existing entities. Одно наблюдение = один атомарный факт (с датой, если важно). Пиши СРАЗУ, как узнал, — не в конце разговора. В3.2: факт УСТАРЕЛ (цена, версия, решение) — не удаляй и не дублируй: передай старую строку в supersedes того же item (пометится [~дата] и уйдёт из поиска/session_start, оставшись в архиве; вернуть — update_entity(restore=[...]); физически удалить можно всегда — delete_observations). Ненайденные строки — в supersedesNotFound ответа. project: kebab-slug — сущности чужого проекта считаются ненайденными."""
+    """Add new observations to existing entities. Одно наблюдение = один атомарный факт (с датой, если важно). Пиши СРАЗУ, как узнал, — не в конце разговора. Факт УСТАРЕЛ (цена, версия, решение) — не удаляй и не дублируй: передай старую строку в supersedes того же item (пометится [~дата] и уйдёт из поиска/session_start, оставшись в архиве; вернуть — update_entity(restore=[...]); физически удалить можно всегда — delete_observations). Ненайденные строки — в supersedesNotFound ответа. project: kebab-slug — сущности чужого проекта считаются ненайденными."""
     ro = _readonly_guard()
     if ro:
         return ro
@@ -2563,7 +2563,7 @@ def delete_observations(deletions: list[DeletionIn], project: str = "") -> dict:
 
 @mcp.tool()
 def delete_observations_by_id(items: list[ObsIdDeletionIn], project: str = "") -> dict:
-    """Точечный forget по id наблюдения (v0.50.0). items: [{entity, ids}] — id бери из выдачи search_nodes/open_nodes с with_ids=true (id стабилен: sha256 текста как хранится, включая [~дата]-маркер). Ответ: results[] с deleted/notFound по каждой сущности; отсутствующая сущность — errors[]. project: kebab-slug — затрагиваются только сущности этого проекта"""
+    """Точечный forget по id наблюдения. items: [{entity, ids}] — id бери из выдачи search_nodes/open_nodes с with_ids=true (id стабилен: sha256 текста как хранится, включая [~дата]-маркер). Ответ: results[] с deleted/notFound по каждой сущности; отсутствующая сущность — errors[]. project: kebab-slug — затрагиваются только сущности этого проекта"""
     ro = _readonly_guard()
     if ro:
         return ro
@@ -2603,7 +2603,7 @@ def read_graph(project: str = "", all_projects: bool = False) -> dict:
 @mcp.tool()
 def search_nodes(query: str, project: str = "", all_projects: bool = False, type: str = "",
                  limit: int = 20, with_ids: bool = False) -> dict:
-    """Search for nodes by query. Используй вместо read_graph, когда нужна одна тема, и ПЕРЕД create_entities — чтобы не создать дубликат. project: kebab-slug — искать только в этом проекте; all_projects=true — явный кросс-поиск. type: фильтр по типу после нормализации (канонические: project/session/bug/decision/request/event/task; «bugfix»/«баг» → bug; свободный тип — точное совпадение). Непустой query — ранжированный FTS-lite (Ф6): сортировка по релевантности, limit — топ-N (default 20), у сущностей ответа + score, snippet, highlights (позиции совпадений в snippet, без HTML); часто и недавно читаемые сущности дополнительно всплывают (ACT-R, В2.3). Пустой query — все сущности с фильтрами, как раньше. Ответ включает канонический type, а для bug/task — status (open/fixed и open/done). with_ids=true (v0.50.0): observations — объекты {id, text} для delete_observations_by_id; default false — старый формат строк."""
+    """Search for nodes by query. Используй вместо read_graph, когда нужна одна тема, и ПЕРЕД create_entities — чтобы не создать дубликат. project: kebab-slug — искать только в этом проекте; all_projects=true — явный кросс-поиск. type: фильтр по типу после нормализации (канонические: project/session/bug/decision/request/event/task; «bugfix»/«баг» → bug; свободный тип — точное совпадение). Непустой query — ранжированный FTS-lite: сортировка по релевантности, limit — топ-N (default 20), у сущностей ответа + score, snippet, highlights (позиции совпадений в snippet, без HTML); часто и недавно читаемые сущности дополнительно всплывают (ACT-R). Пустой query — все сущности с фильтрами, как раньше. Ответ включает канонический type, а для bug/task — status (open/fixed и open/done). with_ids=true: observations — объекты {id, text} для delete_observations_by_id; default false — старый формат строк."""
     slug, err = _check_project(project)
     if err:
         return {"error": err}
@@ -2612,7 +2612,7 @@ def search_nodes(query: str, project: str = "", all_projects: bool = False, type
 
 @mcp.tool()
 def open_nodes(names: list[str], project: str = "", with_ids: bool = False) -> dict:
-    """Open specific nodes in the knowledge graph by their names. project: kebab-slug — видимы только сущности этого проекта. with_ids=true (v0.50.0): observations — объекты {id, text} для delete_observations_by_id; default false — старый формат строк"""
+    """Open specific nodes in the knowledge graph by their names. project: kebab-slug — видимы только сущности этого проекта. with_ids=true: observations — объекты {id, text} для delete_observations_by_id; default false — старый формат строк"""
     slug, err = _check_project(project)
     if err:
         return {"error": err}
@@ -2630,7 +2630,7 @@ def list_timeline(limit: int = 50, project: str = "", all_projects: bool = False
 
 @mcp.tool()
 def session_start(project: str = "", budget_chars: int = 10000) -> dict:
-    """ВЫЗЫВАЙ ПЕРВЫМ на старте сессии: бюджетный блок контекста проекта — {context_block, meta}. context_block готов к вставке в промпт: # Проект → ## Решения владельца (decision, дословно) → ## Открытые баги (bug, не закрытые) → ## Открытые задачи (task, status≠done — дела на потом) → ## Прошлые сессии (session, имя + 2 факта) → ## Недавние события. Внутри решений/багов/задач порядок — актуальность: свежесть × частота обращений (ACT-R, В2.3). Жёсткий бюджет budget_chars (default 10000): блок никогда его не превышает, усечение построчное с маркером «… (ещё N, усечено бюджетом)», флаг meta.truncated. project ОБЯЗАТЕЛЕН (kebab-slug) — без него весь граф намеренно не читается."""
+    """ВЫЗЫВАЙ ПЕРВЫМ на старте сессии: бюджетный блок контекста проекта — {context_block, meta}. context_block готов к вставке в промпт: # Проект → ## Решения владельца (decision, дословно) → ## Открытые баги (bug, не закрытые) → ## Открытые задачи (task, status≠done — дела на потом) → ## Прошлые сессии (session, имя + 2 факта) → ## Недавние события. Внутри решений/багов/задач порядок — актуальность: свежесть × частота обращений (ACT-R). Жёсткий бюджет budget_chars (default 10000): блок никогда его не превышает, усечение построчное с маркером «… (ещё N, усечено бюджетом)», флаг meta.truncated. project ОБЯЗАТЕЛЕН (kebab-slug) — без него весь граф намеренно не читается."""
     slug, err = _check_project(project)
     if err:
         return {"error": err}
@@ -2645,7 +2645,7 @@ def session_start(project: str = "", budget_chars: int = 10000) -> dict:
 @mcp.tool()
 def update_entity(name: str, title: str = "", entityType: str = "", tags: list[str] | None = None,
                   status: str = "", restore: list[str] | None = None, project: str = "") -> dict:
-    """Update title, type, tags or status of an existing entity. entityType канонизируется (синонимы RU/EN → project/session/bug/decision/request/event/task; свободный тип — как есть). status — для bug (open/fixed) и task (open/done); для остальных типов — игнор с warning в ответе. restore (В3.2): снять маркер [~дата] с наблюдений (откат supersedes) — строки с маркером или без; ненайденные — в restoreNotFound. project: kebab-slug — сущности чужого проекта считаются ненайденными"""
+    """Update title, type, tags or status of an existing entity. entityType канонизируется (синонимы RU/EN → project/session/bug/decision/request/event/task; свободный тип — как есть). status — для bug (open/fixed) и task (open/done); для остальных типов — игнор с warning в ответе. restore: снять маркер [~дата] с наблюдений (откат supersedes) — строки с маркером или без; ненайденные — в restoreNotFound. project: kebab-slug — сущности чужого проекта считаются ненайденными"""
     ro = _readonly_guard()
     if ro:
         return ro
@@ -2659,11 +2659,11 @@ def update_entity(name: str, title: str = "", entityType: str = "", tags: list[s
                              "tags": tags, "status": status, "restore": restore or []}, slug)
 
 
-# --- В2.1 (work_state): открытые задачи проекта — task_add/task_done/task_list ---
+# --- (work_state): открытые задачи проекта — task_add/task_done/task_list ---
 
 @mcp.tool()
 def task_add(title: str, note: str = "", links: list[str] | None = None, project: str = "") -> dict:
-    """Добавить открытое дело «на потом» (work_state): создаёт task-сущность task-<slug(title)> со status=open (коллизия имени → суффикс -2). note — первый факт (опционально: контекст, ссылка). links — имена связанных сущностей (баг, решение, сессия): связи «relates to» создаются в том же вызове, неизвестные имена → links_skipped (В3.4). Пока задача открыта, она попадает в секцию «Открытые задачи» session_start. Закрытие — task_done (само свяжет задачу к сессии дня). project: kebab-slug проекта."""
+    """Добавить открытое дело «на потом» (work_state): создаёт task-сущность task-<slug(title)> со status=open (коллизия имени → суффикс -2). note — первый факт (опционально: контекст, ссылка). links — имена связанных сущностей (баг, решение, сессия): связи «relates to» создаются в том же вызове, неизвестные имена → links_skipped. Пока задача открыта, она попадает в секцию «Открытые задачи» session_start. Закрытие — task_done (само свяжет задачу к сессии дня). project: kebab-slug проекта."""
     ro = _readonly_guard()
     if ro:
         return ro
@@ -2723,7 +2723,7 @@ _DASH_DATA = DATA_DIR / "dashboard.html"  # hot-override без пересбор
 _PAGES = {"dashboard.html": _DASH_DATA, "landing.html": DATA_DIR / "landing.html",
           "billing.html": DATA_DIR / "billing.html",
           "privacy.html": DATA_DIR / "privacy.html", "offer.html": DATA_DIR / "offer.html"}
-# admin.html нет в _PAGES с v0.41.0: страница версионируется в репо.
+# admin.html нет в _PAGES: страница версионируется в репо.
 # DATA_DIR/admin.html на сервере
 # НЕ должен шэдоуить репозиторную — иначе деплой отдаёт старый JS под новый API.
 
@@ -2755,7 +2755,7 @@ _NOCACHE = {
     ),
 }
 
-# Дашборд: connect-src + магазин (покупка Pro из браузера, v0.18.0). PUBLIC_BASE_URL
+# Дашборд: connect-src + магазин (покупка Pro из браузера). PUBLIC_BASE_URL
 # задан ниже по модулю — тут только константа магазина по умолчанию.
 _NOCACHE_DASH = {**_NOCACHE, "Content-Security-Policy": _NOCACHE["Content-Security-Policy"].replace(
     "connect-src 'self'", "connect-src 'self' https://rezon-ai.ru")}
@@ -2781,9 +2781,9 @@ async def api_export(request: Request):
     slug, err = _query_project(request)
     if err:
         return JSONResponse({"error": err}, status_code=400)
-    slug = _resolve_project(slug)  # v0.50.0: legacy slug → канон
+    slug = _resolve_project(slug)  # legacy slug → канон
     with _lock:
-        ents, rels = _load()  # объединение шардов (v0.34.0: файл на диске уже не полная картина)
+        ents, rels = _load()  # объединение шардов (файл на диске уже не полная картина)
         events_raw = EVENTS_FILE.read_text(encoding="utf-8") if EVENTS_FILE.exists() else ""
     es, rs = (ents, rels) if not slug else _filter_graph(ents, rels, slug, False)
     memory_raw = "".join(json.dumps({"type": "entity", **e}, ensure_ascii=False) + "\n"
@@ -2809,7 +2809,7 @@ async def api_export(request: Request):
 
 @mcp.custom_route("/api/search", methods=["GET"])
 async def api_search(request: Request):
-    """?q= — Ф6: непустой запрос → ранжированный FTS-lite (score/snippet/highlights,
+    """?q= — непустой запрос → ранжированный FTS-lite (score/snippet/highlights,
     топ-limit, default 20, cap 500); пустой — все сущности с фильтрами, как раньше."""
     slug, err = _query_project(request)
     if err:
@@ -2829,7 +2829,7 @@ async def api_search(request: Request):
         request.query_params.get("type", ""), limit))
 
 
-# ---------------------------------------------------- recall (v0.49.0) -----
+# ---------------------------------------------------- recall -----
 
 # Символ атрибуции фактов из памяти: клиент-хук помечает им строки, вставленные
 # в контекст агента из /api/recall и /api/session-context. Формат строки —
@@ -2847,7 +2847,7 @@ SESSION_CONTEXT_DEFAULT_BUDGET = 4000   # budget_chars /api/session-context по
 
 @mcp.custom_route("/api/session-context", methods=["GET"])
 async def api_session_context(request: Request):
-    """Фаза 1 «MaxGraph recall» (v0.49.0): op_session_start как REST для
+    """Фаза 1 «MaxGraph recall»: op_session_start как REST для
     клиент-хуков — обратное направление памяти (память сама приходит в контекст
     агента). Ответ — {"context_block", "meta"} как есть.
 
@@ -2876,7 +2876,7 @@ async def api_session_context(request: Request):
 
 @mcp.custom_route("/api/recall", methods=["POST"])
 async def api_recall(request: Request):
-    """Фаза 1 «MaxGraph recall» (v0.49.0): точечный recall по запросу —
+    """Фаза 1 «MaxGraph recall»: точечный recall по запросу —
     {"project": slug, "query": str} → лучшие факты лучших сущностей.
 
     op_search(limit=10) → ≤5 сущностей со score>0 → ≤2 факта на сущность
@@ -2890,7 +2890,7 @@ async def api_recall(request: Request):
     if _rate_limited(ip, "recall", RECALL_RATE_LIMIT, 60):
         return JSONResponse({"error": "too_many_requests"}, status_code=429,
                             headers={"Retry-After": "60"})
-    # v0.49.0 (security Medium-2): тело читаем через _read_capped — потоковый
+    # тело читаем через _read_capped — потоковый
     # кап по факту длины (chunked/врущий Content-Length не раздует память);
     # его 400 маппим в наш 413.
     raw, rerr = await _read_capped(request, RECALL_MAX_BODY)
@@ -2921,7 +2921,7 @@ async def api_recall(request: Request):
 
 def _recall(query: str, slug: str) -> dict:
     """Ядро /api/recall (синхронное; вызывается из хендлера через to_thread)."""
-    slug = _resolve_project(slug)  # v0.50.0: legacy slug → канон
+    slug = _resolve_project(slug)  # legacy slug → канон
     res = op_search(query, slug, limit=10)
     qts = set(searchrank.tokenize(query))  # стемы запроса (lowercase)
     facts, total = [], 0
@@ -2960,8 +2960,8 @@ async def api_timeline(request: Request):
 
 
 def _embed_detail():
-    """v0.40.0: деталь семантики для дашборда — источник (env=свой endpoint,
-    relay=облако магазина) или причина «выкл». v0.41.0: причина telemetry_off
+    """Деталь семантики для дашборда — источник (env=свой endpoint,
+    relay=облако магазина) или причина «выкл». Причина telemetry_off
     удалена — выключателя TELEMETRY=0 больше нет."""
     src = reason = None
     if EMBED_ON:
@@ -2988,10 +2988,10 @@ async def api_stats(request: Request):
         "relations": len(g["relations"]),
         "observations": obs,
         "uptimeSec": int(time.time() - STARTED),
-        "fileBytes": _graph_file_bytes(),  # v0.34.0: memory.json + шарды projects/
+        "fileBytes": _graph_file_bytes(),  # memory.json + шарды projects/
         "license": {"state": lic.get("state"), "daysLeft": lic.get("days_left")},
         "embed": EMBED_ON,
-        "embedDetail": _embed_detail(),  # v0.40.0
+        "embedDetail": _embed_detail(),
     }
     if slug:
         out["project"] = slug
@@ -2999,7 +2999,7 @@ async def api_stats(request: Request):
 
 
 def _body_project(body) -> tuple[str, str]:
-    """project из JSON-тела POST: (slug, "") | ("", ошибка). Граница валидации (Ф1)."""
+    """project из JSON-тела POST: (slug, "") | ("", ошибка). Граница валидации."""
     return _check_project((body or {}).get("project"))
 
 
@@ -3043,7 +3043,7 @@ async def api_entity_update(request: Request):
     return JSONResponse(op_update_entity(body, slug))
 
 
-# --- В2.1 (work_state): REST-аналоги task_add/task_done/task_list ---
+# --- (work_state): REST-аналоги task_add/task_done/task_list ---
 
 @mcp.custom_route("/api/task/add", methods=["POST"])
 async def api_task_add(request: Request):
@@ -3063,7 +3063,7 @@ async def api_task_add(request: Request):
     slug, err = _body_project(body)
     if err:
         return JSONResponse({"error": err}, status_code=400)
-    links = body.get("links")  # В3.4 (Т5): список строк или отсутствует
+    links = body.get("links")  # список строк или отсутствует
     if links is not None and (not isinstance(links, list)
                               or any(not isinstance(x, str) for x in links)):
         return JSONResponse({"error": "links must be an array of strings"},
@@ -3098,7 +3098,7 @@ async def api_tasks(request: Request):
 
 @mcp.custom_route("/api/session/close", methods=["POST"])
 async def api_session_close(request: Request):
-    """В3.1: REST-аналог session_close — {summary, done[], links[], project}."""
+    """REST-аналог session_close — {summary, done[], links[], project}."""
     ro = _readonly_guard()
     if ro:
         return JSONResponse(ro, status_code=403)
@@ -3195,7 +3195,7 @@ async def api_del_observations(request: Request):
 
 @mcp.custom_route("/api/delete/observations-by-id", methods=["POST"])
 async def api_del_observations_by_id(request: Request):
-    """v0.50.0: forget по id — {"items": [{"entity", "ids": [...]}], "project"?}.
+    """forget по id — {"items": [{"entity", "ids": [...]}], "project"?}.
     Те же гварды, что у /api/delete/observations (Bearer — middleware,
     readonly → 403, write_block → 402)."""
     ro = _readonly_guard()
@@ -3204,7 +3204,7 @@ async def api_del_observations_by_id(request: Request):
     blocked = _write_block()
     if blocked:
         return JSONResponse(blocked, status_code=402)
-    body_raw, rerr = await _read_capped(request, 262144)  # L1: кап 256KB, как у соседей
+    body_raw, rerr = await _read_capped(request, 262144)  # кап 256KB, как у соседей
     if rerr is not None:
         return JSONResponse({"error": "payload too large (≤256KB)"}, status_code=413)
     try:
@@ -3237,7 +3237,7 @@ async def api_del_relations(request: Request):
     return JSONResponse(op_delete_relations(body.get("relations", []), slug))
 
 
-# --- Ф5 (MEMORY-SYSTEM-v2): приёмник захват-хуков (hooks/maxgraph_hook.py → /api/ingest) ---
+# --- приёмник захват-хуков (hooks/maxgraph_hook.py → /api/ingest) ---
 # Хуки хоста (Claude Code/DSH) шлют батчи событий из локального spool'а; тяжёлой
 # логики тут нет: событие → дайджест ≤200 символов в пульс (source="hook").
 # Идемпотентность:
@@ -3306,9 +3306,9 @@ def _hook_digest(hook: str, data: dict) -> str:
 
 @mcp.custom_route("/api/ingest", methods=["POST"])
 async def api_ingest(request: Request):
-    """Приёмник захват-хуков (Ф5). Bearer — middleware TokenAuth (путь не публичный).
+    """Приёмник захват-хуков. Bearer — middleware TokenAuth (путь не публичный).
     Тело: {"events": [{"hook","project","ts","data"}, …]} — до 100 событий, ≤1MB.
-    SessionEnd: data.open_tasks (В2.1, список строк) → открытые task-сущности
+    SessionEnd: data.open_tasks (список строк) → открытые task-сущности
     проекта (дедуп по title среди открытых). SessionEnd-сессия + open_tasks всего
     батча пишутся ОДНИМ _load/_save.
     Per-IP rate-limit (общий in-memory лимитер, TRUST_PROXY-aware
@@ -3354,14 +3354,14 @@ async def api_ingest(request: Request):
         slug, err = _check_project(ev.get("project"))
         if err:
             return JSONResponse({"error": err}, status_code=400)
-        slug = _resolve_project(slug)  # v0.50.0: события legacy-slug → в канон
+        slug = _resolve_project(slug)  # события legacy-slug → в канон
         ts = ev.get("ts", "")
         if not isinstance(ts, str):
             return JSONResponse({"error": "event.ts must be a string"}, status_code=400)
         data = ev.get("data", {})
         if not isinstance(data, dict):
             return JSONResponse({"error": "event.data must be an object"}, status_code=400)
-        # v0.50.0: опциональный legacy_project (старый slug из каскада хука) —
+        # опциональный legacy_project (старый slug из каскада хука) —
         # кандидат на алиас; невалидный/совпадающий — молча игнорируем (не
         # роняем батч из-за вспомогательного поля).
         legacy = ""
@@ -3388,7 +3388,7 @@ async def api_ingest(request: Request):
             fresh.append(ev)
         if fresh:
             _ingest_hashes_save(hashes)
-    # v0.50.0: алиас legacy-slug → repo-тег (прозрачная миграция проекта).
+    # алиас legacy-slug → repo-тег (прозрачная миграция проекта).
     # Условия: project — repo-тег (^repo-…-[0-9a-f]{12}$), legacy_project передан
     # и валиден, legacy-проект существует с данными (есть сущности), repo-тег-
     # проекта ещё нет, алиаса ещё нет (идемпотентно). Создаём ДО сущностей
@@ -3409,7 +3409,7 @@ async def api_ingest(request: Request):
                 if cur == canon_tag:
                     continue  # идемпотентно: алиас уже есть → no-op
                 if cur:
-                    # anti-squat (v0.50.4): алиас перезаписываем, только пока
+                    # anti-squat: алиас перезаписываем, только пока
                     # его canon-проект ПУСТ — скваттер удерживает лишь пустой
                     # тег; настоящая миграция перехватывает алиас первым же
                     # пингом, а наполненный данными canon неизменен.
@@ -3419,7 +3419,7 @@ async def api_ingest(request: Request):
                                 legacy, cur, canon_tag)
                 elif len(aliases) >= _ALIASES_CAP:
                     continue  # потолок реестра: дальше — только перезапись
-                # security v0.50.0 M2: легитимный legacy — имя репо, НЕ repo-тег
+                # security: легитимный legacy — имя репо, НЕ repo-тег
                 # (иначе алиас-цепочки repo→repo и перехват чужого тег-проекта).
                 if _REPO_TAG_RE.match(legacy):
                     continue
@@ -3479,7 +3479,7 @@ async def api_ingest(request: Request):
                         "observations": [f"завершена, {n} событий"],
                     }], project=slug, source="hook")
                     changed = changed or ch
-                # v0.50.1 (страховка протокола): SessionEnd пришёл, а session_close
+                # (страховка протокола): SessionEnd пришёл, а session_close
                 # за день не было (нет тега session-close) → одна строка-маркер в
                 # карточку сессии дня: «без итогов». Механика без LLM; дедуп —
                 # подстрока маркера (повторный SessionEnd не плодит строки). Если
@@ -3499,7 +3499,7 @@ async def api_ingest(request: Request):
                         _event("session_unclosed_marker",  # F3: маркер виден в аудите
                                detail=f"SessionEnd без session_close: {name}",
                                project=slug, source="hook")
-                # В2.1 (work_state): SessionEnd data.open_tasks → task-сущности
+                # (work_state): SessionEnd data.open_tasks → task-сущности
                 # (status open). Уже ОТКРЫТАЯ задача проекта с тем же title (без
                 # регистра) не дублируется — open_tasks присылают на каждом конце
                 # сессии; закрытая (done) с таким title — новая работа, создаётся.
@@ -3529,7 +3529,7 @@ async def api_ingest(request: Request):
             if changed:
                 _save(ents, rels)
     out = {"ok": True, "accepted": len(fresh), "dedup": dedup}
-    if aliases_created:  # v0.50.0: какие алиасы legacy→canon заведены этим батчем
+    if aliases_created:  # какие алиасы legacy→canon заведены этим батчем
         out["aliases"] = aliases_created
     return JSONResponse(out)
 
@@ -3538,7 +3538,7 @@ async def api_ingest(request: Request):
 
 CODES_FILE = DATA_DIR / "codes.json"
 _CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"  # без 0/O, 1/I/L
-_TIERS = {"pro": {"price": "от 149₽/мес", "label": "Pro"}}  # team убран в v0.13.0: один тариф, лесенка длительности
+_TIERS = {"pro": {"price": "от 149₽/мес", "label": "Pro"}}  # team убран в один тариф, лесенка длительности
 _PAID_STATUSES = ("success", "paid", "completed", "confirmed", "successfully")
 _REDEEMABLE_STATUSES = ("new", "sold")
 def _plan_for(amount: float, currency: str) -> str:
@@ -3549,7 +3549,7 @@ def _plan_for(amount: float, currency: str) -> str:
     best = "pro1"
     for pid in sorted(PLANS, key=lambda p: PLANS[p].get(cur, PLANS[p]["RUB"])):
         if PLANS[pid].get("donation"):
-            continue  # v0.33.2: донат никогда не конвертируется в лицензию
+            continue  # донат никогда не конвертируется в лицензию
         if amount >= PLANS[pid].get(cur, PLANS[pid]["RUB"]):
             best = pid
     return best
@@ -3587,7 +3587,7 @@ def _save_codes(data: dict):
             pass  # Windows/экзотика — best-effort
         tmp.replace(CODES_FILE)
         try:
-            os.chmod(CODES_FILE, 0o600)  # license keys открытым текстом (tenant-токены — только sha256, №6) — только owner
+            os.chmod(CODES_FILE, 0o600)  # license keys открытым текстом (tenant-токены — только sha256) — только owner
         except OSError:
             pass  # Windows/экзотика — best-effort
 
@@ -3601,7 +3601,7 @@ def _new_code() -> str:
     return f"MG-{group()}-{group()}-{group()}"
 
 
-# --- v0.18.0: реестр отозванных ключей + CORS для покупки из дашборда -----------
+# --- реестр отозванных ключей + CORS для покупки из дашборда -----------
 
 # CORS только для трёх публичных billing-эндпоинтов (дашборд покупателя ходит на
 # магазин кросс-ориджином). Секретов в ответах нет (ref — bearer-секрет покупателя).
@@ -3639,17 +3639,26 @@ def _add_revoked(data: dict, key: str, note: str = "") -> None:
         data["revoked"] = rev[-_REVOKED_MAX:]
 
 
-# --- v0.14: учёт установок (анонимный install-ping self-hosted копий) ----------
+# --- учёт установок (анонимный install-ping self-hosted копий) ----------
 
 _installs_lock = threading.Lock()
 _INSTALL_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-# v0.16.3: серверный якорь триала по machine fingerprint (sha256 hex)
+# серверный якорь триала по machine fingerprint (sha256 hex)
 _FP_RE = re.compile(r"^[0-9a-f]{64}$")
-# v0.39.0: способ установки в install-ping; неизвестное значение не храним
+# способ установки в install-ping; неизвестное значение не храним
 _INSTALL_FLAVORS = frozenset({"docker", "docker-desktop", "rancher", "python", "native"})
 _INSTALLS_CAP = 10000   # потолок installs-дикта; вытеснение самых старых по last_seen
 _TRIALS_CAP = 100_000   # потолок fp-реестра; переполнение → пинг обслуживается, новый якорь не создаётся (не 5xx)
 _FP_KINDS = frozenset({"composite", "legacy", "container"})
+# минимальная валидация email из подписанного payload ключа для записи в
+# machines.json (джойн админки «Пользователи»); кривой/пустой — не храним вовсе
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+$")
+
+
+def _sanitize_email(value) -> str:
+    """email для записи в реестр: lower+strip, кап 254; кривой → '' (не пишем)."""
+    em = str(value or "").strip().lower()[:254]
+    return em if _EMAIL_RE.match(em) else ""
 
 
 def _parse_hostfp_body(body: dict) -> tuple:
@@ -3753,7 +3762,7 @@ _VOLATILE_TTL_SEC = 7 * 86400  # volatile-якорь (установка без 
 
 
 def _gc_ghost_fps(data: dict, now: float) -> tuple:
-    """Ghost-tombstone (v0.41.1): trials-fp, чьи ВСЕ install_id уже ушли на другой
+    """Ghost-tombstone: trials-fp, чьи ВСЕ install_id уже ушли на другой
     fp (installs[iid].fp != fp) — доказуемый дрейф контейнерного fingerprint эпохи
     до HOST_FP: контейнер пересоздавался (автообновление) → fp новый, старый мёртв.
     НЕ удаляем мгновенно: помечаем ghost+ghost_since и стираем после
@@ -3823,7 +3832,7 @@ def _rebind_ghost_licenses(ghosts) -> int:
                     if live not in new:
                         new.append(live)
                 moved += sum(1 for a, b in zip(fps, new) if a != b)
-                if new != fps:  # включая dedup-only (legacy 2-слота) — LOW-1: сохраняем
+                if new != fps:  # включая dedup-only (legacy 2-слота) — сохраняем
                     rec["fps"] = new
                     changed = True
                 al = rec.get("aliases") or []
@@ -3905,7 +3914,8 @@ def _save_machines(data: dict):
 
 
 def _machine_bind(data: dict, key: str, fp: str, now: float,
-                  components: dict | None = None, legacy_fp: str = "") -> tuple:
+                  components: dict | None = None, legacy_fp: str = "",
+                  email: str = "") -> tuple:
     """Привязать effective fp к ключу (зовётся под _machines_lock) → (verdict, rec|None).
 
     verdict: known — fp привязан (или его алиас); bound — свободный слот был,
@@ -3916,9 +3926,17 @@ def _machine_bind(data: dict, key: str, fp: str, now: float,
     Тождество при занятом слоте доказывается двумя путями: преемственностью
     (та же связка ключ + ранее привязанный legacy fp предъявляет композитный)
     или похомпонентным скорингом против сохранённых components (hostfp.score).
-    Legacy-ключ без привязок принимает первый fp, как раньше."""
+    Legacy-ключ без привязок принимает первый fp, как раньше.
+
+    email — из payload ключа, чисто информативное поле записи для джойна
+    админки по владельцу (перевыпуск ключа меняет key_hash, email — нет);
+    обновляется при КАЖДОМ validate, включая known — прод самолечится без
+    миграций. Кривой/пустой email поле не трогает."""
     h = _key_hash(key)
     rec = data["machines"].get(h)
+    em = _sanitize_email(email)
+    if rec is not None and em:
+        rec["email"] = em  # идемпотентно: значение детерминировано ключом
     fps = (rec or {}).get("fps") or []
     aliases = (rec or {}).get("aliases") or []
     if rec and fp in fps:
@@ -3931,6 +3949,8 @@ def _machine_bind(data: dict, key: str, fp: str, now: float,
         return "known", rec
     if rec is None:
         rec = data["machines"][h] = {"fps": [], "first_seen": now}
+        if em:
+            rec["email"] = em
     fps = rec.setdefault("fps", [])
     verdict = "bound"
     if len(fps) >= _MACHINES_MAX_FP:
@@ -3991,7 +4011,7 @@ def _install_id(data_dir=None) -> str:
 
 class _NoRedirectPost(urllib.request.HTTPRedirectHandler):
     """30x → HTTPError: urllib иначе повторяет POST на redirect-target, унося тело
-    (license key в _relay_config_pull) на чужой хост (SECURITY ревью v0.21.0, P1)."""
+    (license key в _relay_config_pull) на чужой хост."""
 
     def redirect_request(self, *a, **k):
         return None
@@ -4013,7 +4033,7 @@ def _post_json(url: str, payload: dict, timeout: int = 5):
 
 
 def _get_json(url: str, timeout: int = 5):
-    """GET → распарсенный dict или None (v0.18.2: проверка новой версии на магазине).
+    """GET → распарсенный dict или None (проверка новой версии на магазине).
     Тело ограничено 64 КБ — скомпрометированный ответ не съест память процесса."""
     raw = urllib.request.urlopen(url, timeout=timeout).read(65536)
     try:
@@ -4050,8 +4070,8 @@ def _client_fp_fields() -> dict:
 
 def _telemetry_ping(post=None, env=None, data_dir=None):
     """Анонимный install-ping на магазин: install_id + версия + install_flavor
-    (v0.39.0) + fp (sha256-хеш машины, v0.16.3). Всегда ON (v0.41.0: выключатель
-    TELEMETRY=0 удалён решением владельца). Магазин отвечает якорем начала триала:
+ + fp (sha256-хеш машины). Всегда ON (выключатель
+    TELEMETRY=0 удалён). Магазин отвечает якорем начала триала:
     started_at РАНЬШЕ локального first_seen → отматываем триал на якорь
     (снос data/ не даёт новые 7 дней); позже/битый ответ — игнор. Best-effort:
     оффлайн/таймаут — молча пропускаем, старт сервера не блокируем (fail-open)."""
@@ -4059,9 +4079,9 @@ def _telemetry_ping(post=None, env=None, data_dir=None):
     if STORE_MODE:
         return
     payload = {"install_id": _install_id(data_dir), "version": VERSION,
-               # v0.39.0: способ установки (доля python-фолбэков). INSTALL_FLAVOR
+               # способ установки (доля python-фолбэков). INSTALL_FLAVOR
                # ставит установщик (install.sh/install.ps1); пусто → autodetect
-               # (native exe = PyInstaller frozen, v1.0.0).
+               # (native exe = PyInstaller frozen).
                "install_flavor": (env.get("INSTALL_FLAVOR") or "").strip()
                or ("native" if _FROZEN else "docker" if os.path.exists("/.dockerenv") else "python")}
     payload.update(_client_fp_fields())
@@ -4079,19 +4099,19 @@ def _telemetry_ping(post=None, env=None, data_dir=None):
 
 
 def _bootstrap_hosted():
-    """v0.28.0: install-ping (регистрирует install_id+fp на магазине) → relay-pull.
+    """install-ping (регистрирует install_id+fp на магазине) → relay-pull.
     Порядок важен для свежей установки: триальный грант принимается магазином
     только для известного fp. Раньше pull шёл только из суточного watchdog'а и
     при активации лицензии — окно «семантика OFF» на минуты после КАЖДОГО
-    рестарта (директива владельца: семантический поиск не выключается)."""
+    рестарта."""
     _telemetry_ping()
     _relay_config_pull()
 
 
 def _relay_config_pull(env=None):
-    """v0.19.0: zero-config hosted-фичи — relay-конфиг по license key магазина (embed).
+    """zero-config hosted-фичи — relay-конфиг по license key магазина (embed).
 
-    v0.28.0: нет ключа, но жив триал — триальный грант {install_id, fp}:
+    нет ключа, но жив триал — триальный грант {install_id, fp}:
     магазин принимает только известную по install-ping пару с неистёкшим
     серверным якорем триала.
 
@@ -4115,13 +4135,13 @@ def _relay_config_pull(env=None):
             payload = {"install_id": _install_id(), **fields}
         cfg = _post_json(PUBLIC_BASE_URL + "/api/relay/config", payload, timeout=8)
         ok = isinstance(cfg, dict) and cfg.get("ok")
-        if not ok:  # v0.40.0: молчание мешало диагностике «нет семантики» у покупателя
+        if not ok:  # молчание мешало диагностике «нет семантики» у покупателя
             err = cfg.get("error") if isinstance(cfg, dict) else None
             log.warning("relay: конфиг не получен (%r)", str(err or "магазин недоступен")[:120])
         base = (PUBLIC_BASE_URL or "").rstrip("/")
-        # SECURITY v0.19.0: конфиг принимаем только с origin самого магазина по
+        # SECURITY: конфиг принимаем только с origin самого магазина по
         # https — иначе скомпрометированный ответ увёл бы relay-токен и поток
-        # текстов сущностей (основной + до 4 окон фактов, ≤4200 симв, v0.20.2)
+        # текстов сущностей (основной + до 4 окон фактов, ≤4200 симв)
         # на чужой хост.
         emb = ok and cfg.get("embed")
         if isinstance(emb, dict) and emb.get("url") and emb.get("key"):
@@ -4136,24 +4156,24 @@ def _relay_config_pull(env=None):
                 _ensure_embed_loop()  # цикл мог не стартовать при boot (embed был выключен)
                 log.info("relay: embed-конфиг применён (model=%.80r)",
                          emb.get("model") or "default")
-        # W3 (v0.27.0): словарь синонимов — независим от embed блок; невалиден/
+        # словарь синонимов — независим от embed блок; невалиден/
         # старая версия → rankcfg молча отклоняет, клиент остаётся на last-good
         rank = ok and cfg.get("rank")
         if isinstance(rank, dict) and rankcfg.apply_rank_config(rank, path=RANK_CONFIG_FILE):
             log.info("relay: rank-конфиг применён (version=%s, синонимов=%d)",
                      rank.get("version"), len(rank.get("synonyms") or {}))
     except Exception as e:
-        # hosted-фичи опциональны — сбой relay не ломает инстанс, но причину пишем (v0.40.0)
+        # hosted-фичи опциональны — сбой relay не ломает инстанс, но причину пишем
         log.warning("relay: конфиг не получен: %r", e)
 
 
 def _watchdog_iteration(env):
-    """Один прогон watchdog (v0.27.0: вынесен из цикла для тестов и decouple).
+    """Один прогон watchdog (вынесен из цикла для тестов и decouple).
 
-    v0.41.0: телеметрия всегда ON (выключатель TELEMETRY=0 удалён) — параметр
+    телеметрия всегда ON (выключатель TELEMETRY=0 удалён) — параметр
     telemetry упразднён; отправка (ревалидация, апдейт-чип) и доставка
     relay-конфигов работают всегда."""
-    # v0.18.2: апдейт-чип — узнаём свежую версию даже без ключа (триал тоже обновляется)
+    # апдейт-чип — узнаём свежую версию даже без ключа (триал тоже обновляется)
     try:
         v = _get_json(PUBLIC_BASE_URL + "/api/version", timeout=8)
         if isinstance(v, dict) and v.get("version"):
@@ -4164,7 +4184,7 @@ def _watchdog_iteration(env):
     if key:
         payload = {"key": key}
         payload.update(_client_fp_fields())  # host-fp: магазин учитывает машину ключа
-        # v0.38.0: + install_id — магазин связывает ключ с инстансом (self-ref блок рефералки)
+        # + install_id — магазин связывает ключ с инстансом (self-ref блок рефералки)
         payload["install_id"] = _install_id()
         try:
             resp = _post_json(PUBLIC_BASE_URL + "/api/license/validate", payload, timeout=8)
@@ -4178,21 +4198,21 @@ def _watchdog_iteration(env):
             elif resp.get("ok"):
                 if licensing.set_revoked(DATA_DIR, LICENSE_SECRET, None):
                     _event("license_unrevoked", "", "магазин снял отзыв")
-                _relay_config_pull(env)  # v0.19.0: свежий relay-токен раз в сутки
+                _relay_config_pull(env)  # свежий relay-токен раз в сутки
             elif resp.get("error") == "machine_limit":
-                # host-fp, решение №6: machine_limit ≠ «ключ невалиден» — локальный
+                # host-fp: machine_limit ≠ «ключ невалиден» — локальный
                 # state НЕ затираем (fail-open), лицензия продолжает работать
                 log.warning("watchdog: магазин ответил machine_limit — лицензия сохранена")
 
 
 def _license_watchdog(env=None):
-    """v0.18.0: суточная онлайн-ревалидация лицензии на магазине (анти-отзыв).
+    """суточная онлайн-ревалидация лицензии на магазине (анти-отзыв).
 
     Магазин сказал «revoked» → licensing.set_revoked(revoked_at сервера) → grace
     72ч на запись, потом expired; «ok» после unrevoke → отметка снимается.
     Строго fail-open: нет сети/ключа/PUBLIC_BASE_URL, STORE_MODE — спим дальше,
     лицензию не трогаем. Пульс пишем только на переходах.
-    v0.41.0: телеметрия всегда ON — выключатель TELEMETRY=0 удалён.
+    телеметрия всегда ON — выключатель TELEMETRY=0 удалён.
     """
     env = env if env is not None else os.environ
     if STORE_MODE:
@@ -4212,7 +4232,7 @@ def _code_rec(code: str, tier: str, status: str = "new", note: str = "",
            "createdAt": now_iso(), "soldAt": now_iso() if status == "sold" else None,
            "activatedAt": None, "tenant": None}
     if days is not None:
-        rec["days"] = days  # срок лицензии при активации кода; 0 = бессрочно (v1.0.4)
+        rec["days"] = days  # срок лицензии при активации кода; 0 = бессрочно
     return rec
 
 
@@ -4235,7 +4255,7 @@ def _token_hash(token: str) -> str:
 
 
 def migrate_token_hashes() -> int:
-    """Одноразовая миграция: легаси-тенанты с plaintext `token` → `token_hash` (№6).
+    """Одноразовая миграция: легаси-тенанты с plaintext `token` → `token_hash`.
 
     Вызывается при старте сервера (plaintext известен из файла). Возвращает число
     мигрированных записей.
@@ -4279,7 +4299,7 @@ def _safe_int(value, default: int = 0) -> int:
 
 async def _read_capped(request: Request, limit: int) -> "tuple[bytes | None, Response | None]":
     """Читать body и капать по ФАКТУ длины — content-length может врать/отсутствовать
-    (SECURITY: публичные эндпоинты, memory-DoS через chunked). Fast-path по заголовку
+    (публичные эндпоинты, memory-DoS через chunked). Fast-path по заголовку
     — дешёвый ранний отказ. Превышение → (None, 400).
     Реальный Request читается ПОТОКОВО с ранним abort (иначе chunked на 1 ГБ
     аллоцируется в память до капа); результат кэшируется в request._body, чтобы
@@ -4305,7 +4325,7 @@ async def _read_capped(request: Request, limit: int) -> "tuple[bytes | None, Res
 def _valid_email(value) -> str | None:
     """Нормализованный email или None. Минимальная валидация: @ без пробелов, ≤254.
     CR/LF/TAB режем сразу: такой адрес вечно ломал бы recovery (EmailMessage → ValueError).
-    Запятая/скобки/кавычки (v0.32.0): «a@b.c,evil@x» иначе проходило → smtplib
+    Запятая/скобки/кавычки: «a@b.c,evil@x» иначе проходило → smtplib
     send_message слал письмо с ключом ОБОИМ адресам (getaddresses по To)."""
     e = str(value or "")[:254].strip().lower()
     if any(c in e for c in "\r\n\t,<>'\""):
@@ -4348,7 +4368,7 @@ async def landing(request: Request):
     try:
         return await _landing_page(request)
     except FileNotFoundError:
-        # покупательская сборка без landing.html (витрина без лендинга, 2026-10-15)
+        # покупательская сборка без landing.html (витрина без лендинга)
         return PlainTextResponse("Not Found", status_code=404)
 
 
@@ -4371,7 +4391,7 @@ async def _landing_page(request: Request):
         _li_b = html.find("<!--/LiveInternet-->")
         if _li_a != -1 and _li_b != -1:
             html = html[:_li_a] + html[_li_b + 20:]
-    # v0.37.0: атрибуция рефералки — ?ref=XXXX-XXXX → кука mg_ref (30д, Lax) +
+    # атрибуция рефералки — ?ref=XXXX-XXXX → кука mg_ref (30д, Lax) +
     # счётчик переходов. Только известные коды (мусор не засоряет метрики);
     # buybox дальше шлёт код в /billing/create, скидка считается серверно.
     code = _ref_norm(request.query_params.get("ref"))
@@ -4380,7 +4400,7 @@ async def _landing_page(request: Request):
             refs = _load_referrals()
             rec = refs.get(code) if refs is not None else None
             if rec is not None:
-                # first-touch (L1) + анти-накрутка (L2): у гостя уже стоит валидная
+                # first-touch + анти-накрутка: у гостя уже стоит валидная
                 # mg_ref → атрибуцию не переписываем и clicks не накручиваем
                 existing = _ref_norm(request.cookies.get("mg_ref"))
                 if not (existing and refs.get(existing)):
@@ -4395,7 +4415,7 @@ async def _landing_page(request: Request):
 @mcp.custom_route("/app", methods=["GET"])
 async def dashboard_app(request: Request):
     # Дашборд — только у self-hosted инстансов; на магазине такой страницы нет.
-    # v0.18.0: connect-src + магазин — диалог покупки ходит на rezon-ai.ru
+    # connect-src + магазин — диалог покупки ходит на rezon-ai.ru
     # (/api/plans, /api/billing/*) прямо из браузера.
     if STORE_MODE:
         return PlainTextResponse("Not Found", status_code=404)
@@ -4441,7 +4461,7 @@ document.getElementById('f').onsubmit=async function(ev){ev.preventDefault();
 @mcp.custom_route("/admin", methods=["GET"])
 async def admin_page(request: Request):
     """Кабинет владельца магазина: статистика, ключи, учёт. ТОЛЬКО на инстансе магазина
-    (STORE_MODE=1). Страница — из репо (app/admin.html); с v0.41.0 admin.html
+    (STORE_MODE=1). Страница — из репо (app/admin.html); admin.html
     версионируется, DATA_DIR-оверрайд убран (шэдоуил новую версию на проде).
     Self-hosted инстансы → 404.
     Без валидной сессии отдаётся минимальная gate-страница _ADMIN_GATE_HTML —
@@ -4454,10 +4474,10 @@ async def admin_page(request: Request):
 
 
 def _store_gate():
-    """v0.18.3: служебные эндпоинты учёта (покупки/активации/коды/установки, вход
+    """служебные эндпоинты учёта (покупки/активации/коды/установки, вход
     владельца, платёжный контур) существуют ТОЛЬКО на инстансе магазина. Self-hosted
     копии покупателей отвечают 404 — они не должны ни иметь доступа, ни знать о
-    существовании учёта. PlainText — неотличимо от 404 роутера (LOW: вкус ответа)."""
+    существовании учёта. PlainText — неотличимо от 404 роутера (ответ не выдаёт существование учёта)."""
     return None if STORE_MODE else PlainTextResponse("Not Found", status_code=404)
 
 
@@ -4497,6 +4517,19 @@ async def og_image(request: Request):
     if not _OG_FILE.exists():
         return PlainTextResponse("Not Found", status_code=404)
     return Response(_OG_FILE.read_bytes(), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+_FAVICON_FILE = _RESOURCE_BASE / "favicon.ico"  # exe: из _MEIPASS (--add-data)
+
+
+@mcp.custom_route("/favicon.ico", methods=["GET"])
+async def favicon(request: Request):
+    """Иконка сайта (логотип «Искра») для dashboard/admin/лендинга.
+    Публичная, кэшируемая — как /og.png."""
+    if not _FAVICON_FILE.exists():
+        return PlainTextResponse("Not Found", status_code=404)
+    return Response(_FAVICON_FILE.read_bytes(), media_type="image/x-icon",
                     headers={"Cache-Control": "public, max-age=86400"})
 
 
@@ -4555,7 +4588,7 @@ async def api_codes_generate(request: Request):
     count = _safe_int(body.get("count", 10), 10)
     if not 1 <= count <= 500:
         return JSONResponse({"error": "count must be 1..500"}, status_code=400)
-    # v1.0.4: срок лицензии при ручной выдаче — days 0..3650, 0 = бессрочно (явно)
+    # срок лицензии при ручной выдаче — days 0..3650, 0 = бессрочно (явно)
     days_raw = body.get("days")
     days = None
     if days_raw is not None:
@@ -4593,10 +4626,9 @@ async def api_codes_list(request: Request):
 
 @mcp.custom_route("/api/telemetry/install", methods=["POST"])
 async def api_telemetry_install(request: Request):
-    """Анонимный install-ping self-hosted копий (v0.14; v0.41.0 — всегда ON,
-    оптаута TELEMETRY=0 больше нет).
-    install_id + версия + install_flavor (v0.39.0) + опциональный fp (sha256-хеш
-    машины, v0.16.3) — ни email, ни контента памяти. IP не логируется.
+    """Анонимный install-ping self-hosted копий (всегда ON, оптаута TELEMETRY=0 нет).
+    install_id + версия + install_flavor + опциональный fp (sha256-хеш
+    машины) — ни email, ни контента памяти. IP не логируется.
     По fp ведём реестр начала триалов (trials в installs.json) и отвечаем якорем
     started_at: снос data/ у клиента
     триал не сбрасывает. Защита от случайного сброса, не от целенаправленного
@@ -4623,7 +4655,7 @@ async def api_telemetry_install(request: Request):
         return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
     host_fp, components, fp_kind = _parse_hostfp_body(body)
     eff = host_fp or fp  # effective id машины: композитный при наличии, иначе legacy
-    flavor = str(body.get("install_flavor") or "")[:16]  # v0.39.0
+    flavor = str(body.get("install_flavor") or "")[:16]
     now = time.time()
     trial_ts = None
     marked = []
@@ -4698,7 +4730,7 @@ async def api_telemetry_install(request: Request):
                 if t.get("volatile"):
                     t["last_seen"] = now
                 trial_ts = t.get("started_at")  # якорь НИКОГДА не двигается вперёд
-        # v0.41.1: ghost-GC (tombstone) раз в UTC-день, до save — персистится тем же файлом
+        # ghost-GC (tombstone) раз в UTC-день, до save — персистится тем же файлом
         global _ghost_gc_day
         if _ghost_gc_day != today:
             _ghost_gc_day = today
@@ -4730,7 +4762,7 @@ async def api_telemetry_install(request: Request):
     return JSONResponse(out, headers=_NOCACHE)
 
 
-# --- W2 v0.26.0: learn-events ---
+# --- learn-events ---
 _learn_lock = threading.Lock()
 _learn_prune_day = ""        # UTC-дата последнего retention-прогона
 _LEARN_RETENTION_SEC = 90 * 86400
@@ -4784,8 +4816,7 @@ def _learn_prune(now):
 
 @mcp.custom_route("/api/telemetry/learn", methods=["POST"])
 async def api_telemetry_learn(request: Request):
-    """Анонимные learn-events «запрос → открытый заголовок» (W2; v0.41.0 — без
-    оптаута, телеметрия всегда ON). Без license key/install_id/fp/IP — только
+    """Анонимные learn-events «запрос → открытый заголовок» (телеметрия всегда ON, без оптаута). Без license key/install_id/fp/IP — только
     тексты запроса (≤200) и заголовок (≤200) + счётчик. ts ставит СЕРВЕР (часам
     клиента не верим). Хранение: learn_events.jsonl, retention 90 дней.
     Пер-событийная валидация: битое событие пропускаем, весь пакет битый → 400."""
@@ -4840,7 +4871,7 @@ async def api_telemetry_learn(request: Request):
     return JSONResponse({"ok": True, "accepted": len(accepted)}, headers=_NOCACHE)
 
 
-# --- T7 (эпик native-client): heartbeat живости клиентов ---
+# --- heartbeat живости клиентов ---
 _hb_lock = threading.Lock()
 _hb_prune_day = ""          # UTC-дата последнего retention-прогона
 _HB_RETENTION_SEC = 90 * 86400   # как learn-events
@@ -4887,8 +4918,7 @@ def _hb_prune(now):
 
 @mcp.custom_route("/api/telemetry/heartbeat", methods=["POST"])
 async def api_telemetry_heartbeat(request: Request):
-    """Анонимный heartbeat клиентов (T7; v0.41.0 — телеметрия всегда ON, без
-    оптаута): {install_id, version, os, flavor, ts}. Без fp/license key/IP —
+    """Анонимный heartbeat клиентов (телеметрия всегда ON, без оптаута): {install_id, version, os, flavor, ts}. Без fp/license key/IP —
     только живость и факты установки. ts в файле — СЕРВЕРНЫЙ (часам клиента не
     верим, как learn-events), клиентский храним рядом в cts. Только STORE_MODE
     (self-hosted копии отвечают 404 через _store_gate)."""
@@ -4938,7 +4968,7 @@ async def api_telemetry_heartbeat(request: Request):
     return JSONResponse({"ok": True}, headers=_NOCACHE)
 
 
-# --- v1.0.8: отчёт о баге из дашборда покупателя (mailto у покупателя мёртв) ---
+# --- отчёт о баге из дашборда покупателя (mailto у покупателя мёртв) ---
 _sup_lock = threading.Lock()
 _SUP_BODY_CAP = 16384                    # text 2000 + update_log_tail 4000 + запас на JSON
 _SUP_BYTES_CAP = 2 * 1024 * 1024         # stat-клапан до append (конвенция heartbeats)
@@ -4947,7 +4977,7 @@ _SUP_BYTES_CAP = 2 * 1024 * 1024         # stat-клапан до append (кон
 @mcp.custom_route("/api/support/report", methods=["POST", "OPTIONS"])
 async def api_support_report(request: Request):
     # CORS: дашборд покупателя (localhost) шлёт cross-origin POST на магазин —
-    # без preflight-ответа fetch не доходит (2026-10-19, владелец поймал живьём)
+    # без preflight-ответа fetch не доходит
     if request.method == "OPTIONS":
         return Response(status_code=204, headers=_CORS)
     resp = await _support_report_inner(request)
@@ -5016,7 +5046,92 @@ async def _support_report_inner(request: Request):
             # read-only data/ → честный отказ (как heartbeats)
             return JSONResponse({"ok": False, "error": "store_unavailable"},
                                 status_code=503)
+    _notify_support_report(rec)  # v1.0.11: письмо владельцу фоном (best-effort)
     return JSONResponse({"ok": True}, headers=_NOCACHE)
+
+
+# --- v1.0.11: письмо владельцу о новом баг-репорте (только магазин) ---
+def _send_support_email(rec: dict):
+    """Письмо владельцу о новом отчёте через существующий SMTP-канал billing.
+    Получатель — OWNER_NOTIFY_EMAIL; не задан/нет SMTP_HOST → тихий пропуск
+    (log.debug). Сбой SMTP → log.warning: отчёт уже на диске, ответ клиенту ушёл.
+    Вызывается из daemon-потока — блокировка SMTP не держит HTTP-ответ."""
+    to_addr = (os.environ.get("OWNER_NOTIFY_EMAIL") or "").strip()
+    if not to_addr or not os.environ.get("SMTP_HOST") or billing is None:
+        log.debug("support email: пропуск — OWNER_NOTIFY_EMAIL/SMTP не настроены")
+        return
+    # version/os попадают в Subject-заголовок: CR/LF недопустимы (клиентские данные)
+    ver = str(rec.get("version") or "?").replace("\r", " ").replace("\n", " ")
+    osname = str(rec.get("os") or "?").replace("\r", " ").replace("\n", " ")
+    subject = f"MaxGraph: новый баг-репорт (v{ver}, {osname})"
+    lines = [str(rec.get("text") or ""), "",
+             f"version: {ver}", f"os: {osname}"]
+    if rec.get("install_id"):
+        lines.append(f"install_id: {rec['install_id']}")
+    for name in ("update_log_tail", "server_log_errors"):
+        v = rec.get(name)
+        if v:
+            lines += ["", f"--- {name} ---", str(v)]
+    try:
+        billing.send_email_smtp(
+            to_addr, subject, "\n".join(lines),
+            {"host": os.environ.get("SMTP_HOST"), "port": os.environ.get("SMTP_PORT"),
+             "user": os.environ.get("SMTP_USER"), "password": os.environ.get("SMTP_PASS"),
+             "sender": os.environ.get("SMTP_FROM") or os.environ.get("SMTP_USER"),
+             "starttls": os.environ.get("SMTP_STARTTLS")})
+    except Exception as e:
+        # type+code, НЕ str(e): SMTPRecipientsRefused тащит адреса (как в recovery)
+        log.warning("support email failed: %s code=%s",
+                    type(e).__name__, getattr(e, "smtp_code", None))
+
+
+def _notify_support_report(rec: dict):
+    """Отправка в фоновом daemon-потоке: отчёт уже на диске, сеть не держит ответ.
+    Поток не делит состояния (env + rec на входе) — thread-safe по построению."""
+    threading.Thread(target=_send_support_email, args=(rec,),
+                     daemon=True, name="support-email").start()
+
+
+# --- v1.0.11: вкладка «Баги» в админке — чтение отчётов ТОЛЬКО под админ-сессией ---
+_SUP_LIST_CAP = 200
+
+
+@mcp.custom_route("/api/admin/support-reports", methods=["GET"])
+async def api_admin_support_reports(request: Request):
+    """Последние 200 отчётов, новые первыми. Только магазин + админ-сессия/Bearer;
+    из интернета отчёты недоступны: /api/support/report остаётся write-only,
+    этот путь НЕ попадает в PUBLIC_PATHS (только _ADMIN_COOKIE_PATHS).
+    Битая строка (обрыв записи) пропускается — выдачу не роняет."""
+    g = _store_gate()
+    if g:
+        return g
+    if not _admin_auth(request):
+        return _admin_401()
+    try:
+        lines = SUPPORT_REPORTS_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    out = []
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        item = {"ts": None, "text": str(rec.get("text") or "")}
+        ts = rec.get("ts")
+        if isinstance(ts, (int, float)):
+            try:
+                item["ts"] = datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
+            except (OverflowError, ValueError):  # экстремальный ts из битой строки —
+                pass                             # выдачу не роняем, item["ts"] остаётся None
+        for name in ("version", "os", "install_id",
+                     "update_log_tail", "server_log_errors"):
+            v = rec.get(name)
+            item[name] = v if isinstance(v, str) else ""
+        out.append(item)
+    return JSONResponse({"reports": out[-_SUP_LIST_CAP:][::-1]}, headers=_NOCACHE)
 
 
 @mcp.custom_route("/api/support/context", methods=["GET"])
@@ -5049,7 +5164,7 @@ async def api_support_context(request: Request):
                         headers=_NOCACHE)
 
 
-# --- W3 v0.27.0: агрегация словаря синонимов из learn-events (SPEC-rank-config) ---
+# --- агрегация словаря синонимов из learn-events ---
 RANK_VETO_FILE = DATA_DIR / "rank_veto.json"   # [[stem_a, stem_b], ...] — вето владельца
 _rank_lock = threading.Lock()
 _rank_cache = {"computed_at": 0.0, "mtime": -1.0,
@@ -5206,7 +5321,7 @@ def _rank_admin_view():
 
 @mcp.custom_route("/api/admin/synonyms", methods=["GET"])
 async def api_admin_synonyms(request: Request):
-    """W3 (v0.27.0): витрина словаря синонимов для владельца магазина."""
+    """витрина словаря синонимов для владельца магазина."""
     g = _store_gate()
     if g:
         return g
@@ -5217,7 +5332,7 @@ async def api_admin_synonyms(request: Request):
 
 @mcp.custom_route("/api/admin/synonyms/veto", methods=["POST"])
 async def api_admin_synonyms_veto(request: Request):
-    """W3 (v0.27.0): вето пары (a,b) — исключается из словаря навсегда
+    """вето пары (a,b) — исключается из словаря навсегда
     (снятие вето — ручной edit data/rank_veto.json). Кэш сбрасывается сразу."""
     g = _store_gate()
     if g:
@@ -5237,7 +5352,7 @@ async def api_admin_synonyms_veto(request: Request):
             or any(ch.isspace() for ch in a + b)):
         return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
     try:
-        (a + b).encode("utf-8")  # LOW (W3): lone surrogate легален в JSON, но
+        (a + b).encode("utf-8")  # lone surrogate легален в JSON, но
     except UnicodeEncodeError:   # ломает запись veto-файла → 400, не 500
         return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
     with _rank_lock:
@@ -5259,7 +5374,7 @@ async def api_admin_synonyms_veto(request: Request):
 
 @mcp.custom_route("/api/installs", methods=["GET"])
 async def api_installs_list(request: Request):
-    """Машины для админки (v0.41.0, заменило плоский список установок):
+    """Машины для админки (заменило плоский список установок):
     группировка installs по fp + trials-реестр (якорь, reinstalls) + джойн
     лицензий (machines.json key_hash → tenants/payments → email/tier/key).
     Установки без fp — отдельная группа unknown_installs (машина неизвестна).
@@ -5385,7 +5500,7 @@ async def api_payments_list(request: Request):
         if em:
             seen.add(em)
     out = [{k: v for k, v in p.items() if k != "raw"} for p in reversed(pays)]
-    # v1.0.4: canceled/failed/expired — не продажи: уходят из payments в failed
+    # canceled/failed/expired — не продажи: уходят из payments в failed
     ok = [p for p in out if p.get("status") not in _FAILED_STATUSES]
     failed = [p for p in out if p.get("status") in _FAILED_STATUSES]
     return JSONResponse({"payments": ok[:500], "failed": failed[:500]}, headers=_NOCACHE)
@@ -5457,7 +5572,7 @@ def _send_recovery_email(email: str, key: str):
 
 
 def _send_redeem_email(email: str, key: str, code: str):
-    """Первая активация кода (v0.43.0): ключ + инструкция «что дальше» письмом.
+    """Первая активация кода: ключ + инструкция «что дальше» письмом.
     Сбой НЕ роняет выдачу (ключ уже показан на экране) — ловится вызывающим."""
     billing.send_email_smtp(email, "MaxGraph — твой ключ активации",
                             billing.redeem_text(key, code),
@@ -5498,7 +5613,7 @@ async def api_codes_redeem(request: Request):
                 return JSONResponse({"ok": False, "error": "Код уже активирован."}, status_code=409)
             # Код MG-… —
             # НЕ долговременный секрет (email, Digiseller, success-URL, перепродажа).
-            # v0.22.3: восстановление = ротация КЛЮЧА АКТИВАЦИИ (раньше ротировался токен
+            # восстановление = ротация КЛЮЧА АКТИВАЦИИ (раньше ротировался токен
             # кабинета — кабинет отменён, токен дашборд не принимал). Повторный redeem ключ
             # НЕ возвращает никогда: при совпадении email новый ключ уходит письмом
             # (нужен SMTP), иначе — честная отсылка в поддержку.
@@ -5569,7 +5684,7 @@ async def api_codes_redeem(request: Request):
                                     status_code=409, headers=_NOCACHE)
             if not lic:
                 # ручной код (/api/codes/generate): срок из записи кода — rec.days
-                # (v1.0.4; 0/отсутствует → бессрочная: generate_key days<=0 → exp=0)
+                # (0/отсутствует → бессрочная: generate_key days<=0 → exp=0)
                 lic = licensing.generate_key(LICENSE_SECRET, email or "buyer@unknown",
                                              rec["tier"], _safe_int(rec.get("days"), 0))
             rec["licenseKey"] = lic  # no-op, если лицензия уже была своя; бэкфилл из платежа
@@ -5624,7 +5739,7 @@ async def api_codes_redeem(request: Request):
                              "message": "Новый ключ отправлен на email активации."}, headers=_NOCACHE)
     emailed = False
     if email and billing and os.environ.get("SMTP_HOST"):  # billing=None на self-hosted витрине
-        # v0.43.0: ключ дублируется письмом с инструкцией. Сбой SMTP НЕ роняет выдачу —
+        # ключ дублируется письмом с инструкцией. Сбой SMTP НЕ роняет выдачу —
         # активация уже закоммичена, ключ показан на экране (страница скажет про письмо).
         import asyncio
         try:
@@ -5639,7 +5754,7 @@ async def api_codes_redeem(request: Request):
                          "emailed": emailed}, headers=_NOCACHE)
 
 
-# --- v0.37.0: реферальная система (SPEC-referral.md) -------------------------
+# --- реферальная система -------------------------
 # Код приглашающего детерминирован из install_id (HMAC), реестр — data/referrals.json
 # {code: {install_id, fp, created, clicks, buys, stack_n, history[]}}. Свой лок;
 # порядок локов везде одинаковый: _codes_lock/_installs_lock → _ref_lock.
@@ -5731,7 +5846,7 @@ def _ref_restore_locked(refs, payment, flag):
     rrec.setdefault("history", []).append(
         {"ts": now_iso(), "payment_id": payment.get("ref") or payment.get("id"),
          "amount": payment.get("amount"), "flagged": flag})
-    rrec["history"] = rrec["history"][-200:]  # L4: кап истории
+    rrec["history"] = rrec["history"][-200:]  # кап истории
     return True
 
 
@@ -5774,7 +5889,7 @@ def _ref_restore_burned(stack_code: str, burned_n: int):
         rrec["stack_n"] = min(_safe_int(rrec.get("stack_n")) + burned_n, REF_STACK_CAP)
         rrec.setdefault("history", []).append(
             {"ts": now_iso(), "flagged": "stack_restore_create_failed"})
-        rrec["history"] = rrec["history"][-200:]  # L4
+        rrec["history"] = rrec["history"][-200:]
         _save_referrals(refs)
 
 
@@ -5783,10 +5898,10 @@ async def api_referral_code(request: Request):
     """Магазин: реф-код инстанса → {code, link, clicks, buys, stack_n}.
 
     Публичный, rate-limit. install_id обязан быть известен по install-ping;
-    fp сверяется, если установка его присылала (v0.16.3+). Код детерминирован —
+    fp сверяется, если установка его присылала. Код детерминирован —
     запись в referrals.json создаётся лениво при первом запросе (lazy-register).
-    M2: install_id+fp — ТОЛЬКО в теле POST: query оседает в access-логах, а пара
-    install_id+fp = креды к стеку (как ?token= в v0.11)."""
+    install_id+fp — ТОЛЬКО в теле POST: query оседает в access-логах, а пара
+    install_id+fp = креды к стеку (как ?token=)."""
     g = _store_gate()
     if g:
         return g
@@ -5822,7 +5937,7 @@ async def api_referral_code(request: Request):
             return JSONResponse({"ok": False, "error": "referrals store corrupted"}, status_code=500)
         rec = refs.get(code)
         if rec is None:
-            # M3: fp легаси-инсталла не дозаписываем из чужого вызова — иначе первый
+            # fp легаси-инсталла не дозаписываем из чужого вызова — иначе первый
             # звонящий навесил бы свой fp на чужой код
             rec = {"install_id": iid, "fp": known_fp, "created": now_iso(),
                    "clicks": 0, "buys": 0, "stack_n": 0, "history": []}
@@ -5842,7 +5957,7 @@ async def api_referral_code(request: Request):
 
 @mcp.custom_route("/api/referral", methods=["GET"])
 async def api_referral(request: Request):
-    """Инстанс: своя реф-карточка для дашборда («Система» → «Пригласи друга», v0.37.0).
+    """Инстанс: своя реф-карточка для дашборда («Система» → «Пригласи друга»).
     Прокси на магазин /api/referral/code с install_id+fp этого инстанса. Bearer —
     middleware (путь не публичный). Магазин недоступен → {ok:false} — блок скрыт,
     инстанс не ломается (fail-open, как весь hosted-контур)."""
@@ -5855,7 +5970,7 @@ async def api_referral(request: Request):
     fp = fields.get("host_fp") or fields.get("fp") or ""
     out = {"ok": False, "install_id": iid, "fp": fp}
     try:
-        # M2: install_id/fp — в теле POST (query оседает в access-логах магазина)
+        # install_id/fp — в теле POST (query оседает в access-логах магазина)
         r = await asyncio.to_thread(_post_json, f"{PUBLIC_BASE_URL}/api/referral/code",
                                     {"install_id": iid, "fp": fp}, 8)
         if isinstance(r, dict) and r.get("ok"):
@@ -5893,7 +6008,7 @@ def _platega_create(plan_id: str, ref: str, amount: "int | None" = None) -> dict
 
 @mcp.custom_route("/api/plans", methods=["GET"])
 async def api_plans(request: Request):
-    """Публичный прайс для диалога покупки в дашборде (v0.18.0). Секретов нет → CORS."""
+    """Публичный прайс для диалога покупки в дашборде. Секретов нет → CORS."""
     plans = [{"id": pid, "label": PLANS[pid]["label"], "rub": PLANS[pid]["RUB"],
               "usd": PLANS[pid]["USD"], "days": PLANS[pid]["days"]}
              for pid in ("pro1", "pro3", "pro6", "pro12") if pid in PLANS]
@@ -5904,13 +6019,13 @@ async def api_plans(request: Request):
 @mcp.custom_route("/api/billing/pay", methods=["OPTIONS"])
 @mcp.custom_route("/api/billing/status", methods=["OPTIONS"])
 async def billing_cors_preflight(request: Request):
-    """Preflight для кросс-ориджин покупки из дашборда (v0.18.0)."""
+    """Preflight для кросс-ориджин покупки из дашборда."""
     return Response(status_code=204, headers=_CORS)
 
 
 @mcp.custom_route("/api/billing/pay", methods=["POST"])
 async def api_billing_pay(request: Request):
-    """Кнопка «Купить» (лендинг/дашборд v0.18.0) → ссылка на оплату Platega.
+    """Кнопка «Купить» (лендинг/дашборд) → ссылка на оплату Platega.
 
     Опциональный extend=<текущий license key>: продление — вебхук прибавит дни
     плана к max(старый exp, сейчас), остаток не сгорает. Ключ проверяется сразу.
@@ -5956,7 +6071,7 @@ async def api_billing_pay(request: Request):
     if body.get("email") is not None and not _valid_email(body.get("email")):
         return JSONResponse({"error": "valid email required"}, status_code=400, headers=_CORS)
     email = extend_email or (_valid_email(body.get("email")) or "")
-    # v0.38.0: рефералка. body.ref — промокод (кука лендинга mg_ref или ручной ввод);
+    # рефералка. body.ref — промокод (кука лендинга mg_ref или ручной ввод);
     # −20% только на НОВЫЙ платёж тарифа (не продление, не донат). Невалидный код →
     # полная цена без ошибки (fail-open для покупателя). shortcut: «первая покупка»
     # не форсится — email опционален (совместимость флота), проверять нечем.
@@ -5968,7 +6083,7 @@ async def api_billing_pay(request: Request):
     buyer_fp = buyer_fp if _FP_RE.match(buyer_fp) else ""
     # Скидки считаются ТОЛЬКО серверно (клиент цену не подсовывает):
     # продление −10% (EXTEND_DISCOUNT); со стеком рефералки — min(10+10×stack_n, 50)%
-    # (формула владельца: стек включает базу). install_id валидируем мягко по
+    # (стек включает базу). install_id валидируем мягко по
     # installs.json: неизвестный / fp не сошёлся → базовые −10%.
     pct = 0
     stack_code = ""
@@ -5979,7 +6094,7 @@ async def api_billing_pay(request: Request):
             with _installs_lock:
                 idata = _load_installs()
                 irec = (idata or {}).get("installs", {}).get(buyer_iid) if idata else None
-            # M3: стек только при ПОДТВЕРЖДЁННОМ fp — легаси-инсталл без fp стек не применяет
+            # стек только при ПОДТВЕРЖДЁННОМ fp — легаси-инсталл без fp стек не применяет
             if irec is not None and irec.get("fp") and irec.get("fp") == buyer_fp:
                 with _ref_lock:
                     refs = _load_referrals()
@@ -6015,7 +6130,7 @@ async def api_billing_pay(request: Request):
     pay_url = pdata.get("redirect") or pdata.get("url") or pdata.get("link") or pdata.get("paymentUrl")
     platega_id = str(pdata.get("id") or pdata.get("transactionId") or "")
     if not pay_url:
-        # L6: сырой ответ Platega наружу не отдаём (внутрянка) — детали в серверном логе
+        # сырой ответ Platega наружу не отдаём (внутрянка) — детали в серверном логе
         _ref_restore_burned(stack_code, burned_n)  # N3
         return JSONResponse({"error": "no pay url"}, status_code=502, headers=_CORS)
     with _codes_lock:
@@ -6050,8 +6165,8 @@ async def api_billing_pay(request: Request):
 @mcp.custom_route("/api/billing/status", methods=["GET", "POST"])
 async def api_billing_status(request: Request):
     """Статус платежа по ref (bearer-секрет покупателя). После оплаты отдаёт
-    licenseKey — дашборд v0.18.0 активирует его сам (автоцикл покупки).
-    ref — в POST-теле (query string оседает в access-логах, SECURITY v0.18);
+    licenseKey — дашборд  активирует его сам (автоцикл покупки).
+    ref — в POST-теле (query string оседает в access-логах);
     GET ?ref= оставлен для старых страниц успеха."""
     ip = _client_ip(request)
     if _rate_limited(ip, "paystatus", 30, 60):
@@ -6095,9 +6210,9 @@ async def api_license(request: Request):
 
 @mcp.custom_route("/api/version", methods=["GET"])
 async def api_version(request: Request):
-    """Публично: текущая версия этого инстанса (магазин отвечает своей — апдейт-чип, v0.18.2).
+    """Публично: текущая версия этого инстанса (магазин отвечает своей — апдейт-чип).
 
-    Осознанный tradeoff (security-ревью L3): точная версия публична → фингерпринтинг
+    Осознанный tradeoff: точная версия публична → фингерпринтинг
     для будущих CVE. Принято: магазину публичность нужна, секретов тут нет.
     """
     return JSONResponse({"version": VERSION}, headers=_NOCACHE)
@@ -6105,7 +6220,7 @@ async def api_version(request: Request):
 
 @mcp.custom_route("/api/update/trigger", methods=["POST"])
 async def api_update_trigger(request: Request):
-    """Кнопка «обновить сейчас» в дашборде (v0.35.0): роняет пустой маркер
+    """Кнопка «обновить сейчас» в дашборде: роняет пустой маркер
     DATA_DIR/.update-now; updater подхватывает его через docker exec и запускает
     цикл вне расписания (даже при AUTO_UPDATE=0). Содержимое маркера игнорируется —
     решение updater принимает сам по свежей подписанной версии магазина."""
@@ -6133,7 +6248,7 @@ async def api_update_trigger(request: Request):
 
 
 def _release_file(suffix: str) -> Response:
-    """Отдать файл релиза текущей VERSION из RELEASES_DIR (магазин, v0.20.0).
+    """Отдать файл релиза текущей VERSION из RELEASES_DIR (магазин).
     Нет файла → 404 (апдейтер трактует как «релиз ещё не упакован»)."""
     p = os.path.join(RELEASES_DIR, "maxgraph-%s.%s" % (VERSION, suffix))
     if suffix == "sha256":
@@ -6146,7 +6261,7 @@ def _release_file(suffix: str) -> Response:
                                  headers={"Cache-Control": "no-store"})
     if not os.path.isfile(p):
         return JSONResponse({"ok": False, "error": "no release"}, status_code=404)
-    # FileResponse — стриминг (M5 ревью: файл целиком в RAM в async-хендлере —
+    # FileResponse — стриминг (иначе файл целиком в RAM в async-хендлере —
     # бесплатная memory-амплификация на анонимном эндпоинте)
     media = "application/octet-stream" if suffix == "sig" else "application/gzip"
     return FileResponse(p, media_type=media,
@@ -6163,7 +6278,7 @@ def _release_guard(request: Request) -> "Response | None":
 
 @mcp.custom_route("/api/releases/latest.tar.gz", methods=["GET"])
 async def api_release_tarball(request: Request):
-    """Публично: tarball последнего релиза для автообновлений (v0.20.0). Канал
+    """Публично: tarball последнего релиза для автообновлений. Канал
     доставки — магазин (репо приватный: GitHub-архивы тегов требуют auth)."""
     guard = _release_guard(request)
     if guard is not None:
@@ -6182,7 +6297,7 @@ async def api_release_sha(request: Request):
 
 @mcp.custom_route("/api/releases/latest.sig", methods=["GET"])
 async def api_release_sig(request: Request):
-    """Публично: ed25519-подпись tarball'а (v0.20.0). Trust anchor — публичный ключ,
+    """Публично: ed25519-подпись tarball'а. Trust anchor — публичный ключ,
     вшитый в образ updater'а при установке: компрометация раздачи (nginx/data) без
     ключа подписи (хранится только на сервере магазина) не даёт подсунуть код клиентам."""
     guard = _release_guard(request)
@@ -6191,7 +6306,7 @@ async def api_release_sig(request: Request):
     return _release_file("sig")
 
 
-# --- native releases (v1.0.0, T5): бинарники клиента без Docker ------------
+# --- native releases: бинарники клиента без Docker ------------
 
 # Имя строго по шаблону клиента (selfupdate.artifact_name) + sidecar-файлы
 # + manifest.json для лендинга/скриптов. Всё прочее → 404 (не 400:
@@ -6202,7 +6317,7 @@ _NATIVE_NAME_RE = re.compile(
 
 
 def _native_release_file(fname: str) -> Response:
-    """Отдать native-артефакт из RELEASES_DIR/native (v1.0.0, T5).
+    """Отдать native-артефакт из RELEASES_DIR/native.
     Нет файла → 404 (selfupdate трактует как «артефакта ещё нет», fail-open)."""
     p = os.path.join(RELEASES_DIR, "native", fname)
     if fname.endswith(".sha256"):
@@ -6223,7 +6338,7 @@ def _native_release_file(fname: str) -> Response:
         # ed25519 -rawin подпись — бинарь, как у latest.sig
         return FileResponse(p, media_type="application/octet-stream",
                             headers={"Cache-Control": "no-store"})
-    # сам артефакт: стриминг (M5 ревью: не читать целиком в RAM на анонимном роуте)
+    # сам артефакт: стриминг (не читать целиком в RAM на анонимном роуте)
     return FileResponse(p, media_type="application/octet-stream",
                         headers={"Cache-Control": "no-store",
                                  "Content-Disposition": 'attachment; filename="%s"' % fname})
@@ -6231,7 +6346,7 @@ def _native_release_file(fname: str) -> Response:
 
 @mcp.custom_route("/api/releases/native/manifest", methods=["GET"])
 async def api_release_native_manifest(request: Request):
-    """Публично: манифест native-артефактов {"version", "artifacts":[...]} (v1.0.0).
+    """Публично: манифест native-артефактов {"version", "artifacts":[...]}.
     Для лендинга/скриптов установки; 404 — манифест ещё не выложен."""
     guard = _release_guard(request)
     if guard is not None:
@@ -6241,7 +6356,7 @@ async def api_release_native_manifest(request: Request):
 
 @mcp.custom_route("/api/releases/native/{fname}", methods=["GET"])
 async def api_release_native(request: Request):
-    """Публично: native-бинарь и sidecar'ы (.sha256/.sig) для selfupdate (v1.0.0).
+    """Публично: native-бинарь и sidecar'ы (.sha256/.sig) для selfupdate.
     Канал доставки — магазин, trust anchor — вшитый в клиента публичный ключ."""
     guard = _release_guard(request)
     if guard is not None:
@@ -6285,7 +6400,7 @@ async def api_license_activate(request: Request):
     _event("license_activated", res.get("email") or "", res.get("tier", ""))
     log.info("license activated: %s · %s", res.get("tier"), res.get("email"))
     try:
-        await asyncio.to_thread(_relay_config_pull)  # v0.19.0: семантика сразу после активации
+        await asyncio.to_thread(_relay_config_pull)  # семантика сразу после активации
     except Exception:
         pass  # fail-open: активация уже прошла
     return JSONResponse({"ok": True, "email": res.get("email"), "tier": res.get("tier")}, headers=_NOCACHE)
@@ -6307,7 +6422,7 @@ def _activate_key(key: str) -> dict:
         return {"ok": False, "error": "активация требует связи с сервером магазина"}
     payload = {"key": key}
     payload.update(_client_fp_fields())
-    payload["install_id"] = _install_id()  # v0.38.0: связка ключ↔инстанс (self-ref блок рефералки)
+    payload["install_id"] = _install_id()  # связка ключ↔инстанс (self-ref блок рефералки)
     try:
         j = _post_json(f"{PUBLIC_BASE_URL}/api/license/validate", payload, timeout=6)
     except Exception as e:
@@ -6367,7 +6482,7 @@ async def api_license_validate(request: Request):
     payload, err = licensing.verify_key(LICENSE_SECRET, key)
     if err:
         return JSONResponse({"ok": False, "error": err}, headers=_NOCACHE)
-    rec = _is_revoked(_load_codes(), key)  # v0.18.0: реестр отзывов (чарджбэк/фрод)
+    rec = _is_revoked(_load_codes(), key)  # реестр отзывов (чарджбэк/фрод)
     if rec:
         _event("license_validate_revoked", payload.get("email") or "", payload.get("tier", ""))
         return JSONResponse({"ok": False, "revoked": True, "error": "license revoked",
@@ -6384,7 +6499,8 @@ async def api_license_validate(request: Request):
             with _machines_lock:
                 mdata = _load_machines()
                 verdict, _rec = _machine_bind(mdata, key, eff, time.time(),
-                                              components=components, legacy_fp=fp)
+                                              components=components, legacy_fp=fp,
+                                              email=payload.get("email") or "")
                 if verdict != "limit":
                     _save_machines(mdata)
         except Exception:  # битый machines.json → fail-closed (500), привязки целы
@@ -6407,7 +6523,7 @@ async def api_license_validate(request: Request):
             # то же, но скоринг в серой зоне — флаг review виден только в админке
             _event("license_machine_review", payload.get("email") or "", eff[:12])
     fp = eff  # дальше (key_installs, self-ref) работает effective fp
-    # v0.38.0: инстанс присылает install_id → связка ключ↔инстанс (key_installs в
+    # инстанс присылает install_id → связка ключ↔инстанс (key_installs в
     # codes.json) для self-ref блока рефералки: ключ куплен по реф-коду и активируется
     # с инстанса владельца кода → откат начисления (лицензию не трогаем — она оплачена).
     iid = str(body.get("install_id") or "")
@@ -6439,7 +6555,7 @@ async def api_license_validate(request: Request):
                             rrec.setdefault("history", []).append(
                                 {"ts": now_iso(), "payment_id": pay.get("ref") or pay.get("id"),
                                  "amount": pay.get("amount"), "flagged": "self_ref_activation"})
-                            rrec["history"] = rrec["history"][-200:]  # L4
+                            rrec["history"] = rrec["history"][-200:]
                             _save_referrals(refs)
                             selfref_msg = (f"⚠️ Self-ref при активации: код {rcode} · "
                                            f"начисление откачено")
@@ -6482,7 +6598,7 @@ _RELAY_EMBED_PASSAGE_PREFIX = _relay_pfx("RELAY_EMBED_PASSAGE_PREFIX", "passage:
 @mcp.custom_route("/api/relay/config", methods=["POST"])
 async def api_relay_config(request: Request):
     """Zero-config hosted-фичи (семантический поиск):
-    {key} → {ok, embed:{url,key,model}}; v0.28.0: {install_id, fp} → то же для
+    {key} → {ok, embed:{url,key,model}}; {install_id, fp} → то же для
     ЖИВОГО триала (известный install-ping fp, якорь не истёк; tier=trial).
 
     Только магазин. Self-hosted инстанс предъявляет license key → получает
@@ -6496,7 +6612,7 @@ async def api_relay_config(request: Request):
     ip = _client_ip(request)
     if _rate_limited(ip, "relayconfig", 20, 60):
         return JSONResponse({"ok": False, "error": "too_many_attempts"}, status_code=429)
-    # body-кап ПОТОКОВО с ранним abort (SECURITY v0.25.0: request.body()
+    # body-кап ПОТОКОВО с ранним abort (request.body()
     # аллоцировал chunked-тело целиком до капа — memory-DoS магазина)
     body, body_err = await _read_capped(request, 16384)
     if body_err is not None:
@@ -6520,9 +6636,9 @@ async def api_relay_config(request: Request):
         exp = int(lic.get("exp") or 0)
         seed, tag, detail = key, lic.get("tier", ""), lic.get("email") or ""
     else:
-        # v0.28.0: триальный грант {install_id, fp} — «семантика не выключается,
-        # даже в триале» (директива владельца). Принимаем install_id, привязанный
-        # к fp с ЖИВЫМ серверным якорем триала (install-ping, v0.16.3); грант
+        # триальный грант {install_id, fp} — «семантика не выключается,
+        # даже в триале». Принимаем install_id, привязанный
+        # к fp с ЖИВЫМ серверным якорем триала (install-ping); грант
         # умирает вместе с триалом.
         iid = str(payload.get("install_id") or "")
         fp = str(payload.get("fp") or "")
@@ -6551,7 +6667,7 @@ async def api_relay_config(request: Request):
             _event("relay_config_rejected", "", "trial grant")
             return JSONResponse({"ok": False, "error": "invalid key"}, status_code=403,
                                 headers=_NOCACHE)
-        # v0.40.0: кап — на НОВУЮ пару (install_id, fp) в сутки с IP;
+        # кап — на НОВУЮ пару (install_id, fp) в сутки с IP;
         # повторный pull с той же пары (рестарт, watchdog) — бесплатно:
         # покупатель с рестартами в день установки больше не гаснет молча.
         if not pair_known:
@@ -6584,17 +6700,20 @@ async def api_relay_config(request: Request):
         "model": _RELAY_EMBED_MODEL,
         "query_prefix": _RELAY_EMBED_QUERY_PREFIX,
         "passage_prefix": _RELAY_EMBED_PASSAGE_PREFIX},
-        "rank": _rank_config_cached()}  # W3 (v0.27.0): словарь синонимов
+        "rank": _rank_config_cached()}  # словарь синонимов
     return JSONResponse(out, headers=_NOCACHE)
 
 
 @mcp.custom_route("/api/tenants", methods=["GET"])
 async def api_tenants_list(request: Request):
-    """Учёт активаций для админки (v0.18.0): tenant ↔ email ↔ код ↔ licenseKey,
+    """Учёт активаций для админки: tenant ↔ email ↔ код ↔ licenseKey,
     флаг revoked. Bearer master ИЛИ admin-сессия (cookie, STORE_MODE).
-    v1.0.4: блок «Пользователи» — к каждому tenant его машины из machines.json
+    блок «Пользователи» — к каждому tenant его машины из machines.json
     (по licenseKey), expires из payload ключа (0 = бессрочно), плюс unattached —
-    привязки, чей key_hash не совпал ни с одним tenant."""
+    привязки, не сматчившиеся ни с одним tenant.
+    джойн по EMAIL записи машины (перевыпуск ключа меняет key_hash,
+    машина не должна выпадать в unattached); фолбэк для легаси-записей без
+    email — старое поведение по key_hash."""
     g = _store_gate()
     if g:
         return g
@@ -6605,22 +6724,35 @@ async def api_tenants_list(request: Request):
         mregs = _load_machines().get("machines") or {}
     except Exception:
         mregs = {}
+    # MINOR-1: пред-индекс по email — джойн O(tenants + machines) вместо O(tenants × machines)
+    by_email: dict = {}
+    for mkh, mrec in mregs.items():
+        m_email = str(mrec.get("email") or "").strip().lower()
+        if m_email:
+            by_email.setdefault(m_email, []).append((mkh, mrec))
     rows = []
     matched_kh = set()
     for t in data.get("tenants", []):
         lk = t.get("licenseKey") or ""
+        t_email = str(t.get("email") or "").strip().lower()
+        kh = _key_hash(lk) if lk else ""
         machines, exp = [], None
-        if lk:
-            kh = _key_hash(lk)
-            mrec = mregs.get(kh)
-            if mrec:
-                matched_kh.add(kh)
-                fp_class = "composite" if mrec.get("components") else "legacy"
-                machines = [{"fp": str(fp)[:8], "fp_class": fp_class,
+        candidates = by_email.get(t_email, []) if t_email else []
+        if kh and kh in mregs:
+            candidates = candidates + [(kh, mregs[kh])]
+        seen_kh = set()  # запись может попасть в кандидаты и по email, и по key_hash
+        for mkh, mrec in candidates:
+            if mkh in seen_kh:
+                continue
+            seen_kh.add(mkh)
+            matched_kh.add(mkh)
+            fp_class = "composite" if mrec.get("components") else "legacy"
+            machines.extend({"fp": str(fp)[:8], "fp_class": fp_class,
                              "first_seen": mrec.get("first_seen"),
                              "updated": mrec.get("updated"),
                              "review": bool(mrec.get("review"))}
-                            for fp in mrec.get("fps") or []]
+                            for fp in mrec.get("fps") or [])
+        if lk:
             payload, _e = licensing.verify_key(LICENSE_SECRET, lk, now=0)  # now=0: истёкший тоже читаем
             if payload:
                 exp = int(payload.get("exp") or 0)
@@ -6629,16 +6761,22 @@ async def api_tenants_list(request: Request):
                      "paidAt": t.get("paidAt"), "licenseKey": lk, "expires": exp,
                      "machines": machines,
                      "revoked": bool(lk) and bool(_is_revoked(data, lk))})
-    unattached = [{"fp": str(fp)[:8], "first_seen": mrec.get("first_seen"),
-                   "updated": mrec.get("updated")}
-                  for kh, mrec in mregs.items() if kh not in matched_kh
-                  for fp in mrec.get("fps") or []]
+    unattached = []
+    for kh, mrec in mregs.items():
+        if kh in matched_kh:
+            continue
+        for fp in mrec.get("fps") or []:
+            u = {"fp": str(fp)[:8], "first_seen": mrec.get("first_seen"),
+                 "updated": mrec.get("updated")}
+            if mrec.get("email"):  # помогает опознать сироту в админке
+                u["email"] = mrec["email"]
+            unattached.append(u)
     rows.sort(key=lambda r: r.get("createdAt") or "", reverse=True)
     return JSONResponse({"tenants": rows[:500], "unattached": unattached[:500]},
                         headers=_NOCACHE)
 
 
-# ------------------------------------------------------------------ admin auth (v0.18.0) ----
+# ------------------------------------------------------------------ admin auth ----
 # Вход владельца магазина по логину+паролю (не master-токен в localStorage).
 # Пароль — pbkdf2-hmac-sha256 (200k итераций, соль 16B) в data/admin.json (chmod 600).
 # Сессия 12ч — httpOnly-кука mg_admin (SameSite=Lax; Secure на https); хранилище сессий
@@ -6653,7 +6791,8 @@ _ADMIN_COOKIE_PATHS = {"/api/payments", "/api/tenants", "/api/codes", "/api/code
                        "/api/codes/export", "/api/installs", "/api/admin/revoke",
                        "/api/admin/logout", "/api/admin/password",
                        "/api/admin/machines", "/api/admin/machines/unbind",  # host-fp
-                       "/api/admin/synonyms", "/api/admin/synonyms/veto"}  # W3 (v0.27.0)
+                       "/api/admin/synonyms", "/api/admin/synonyms/veto",
+                       "/api/admin/support-reports"}  # вкладка «Баги» (GET отчётов)
 
 
 def _admin_cfg() -> dict | None:
@@ -6898,7 +7037,7 @@ async def api_admin_password(request: Request):
 
 @mcp.custom_route("/api/admin/revoke", methods=["POST"])
 async def api_admin_revoke(request: Request):
-    """Отзыв/восстановление license key (v0.18.0, анти-чарджбэк). Bearer-only.
+    """Отзыв/восстановление license key (анти-чарджбэк). Bearer-only.
 
     {key} → revoke; {key, unrevoke:true} → снять отзыв. В реестре — sha256 ключа
     + серверный ts (якорь grace 72ч на self-hosted). Подпись ключа проверяется,
@@ -7067,9 +7206,9 @@ async def billing_create(request: Request):
         return JSONResponse({"error": "plan must be pro1|pro3|pro6|pro12|donate99|donate249|donate499"}, status_code=400)
     if not email:
         return JSONResponse({"error": "valid email required"}, status_code=400)
-    # v0.37.0: промокод рефералки (кука mg_ref → buybox шлёт body.ref) — −20% на
+    # промокод рефералки (кука mg_ref → buybox шлёт body.ref) — −20% на
     # платёж тарифа (донатам фикс-цена). Невалидный код → полная цена, без ошибки.
-    # shortcut: «первая покупка» по email не проверяется (SPEC-referral §2, антифрод по email).
+    # shortcut: «первая покупка» по email не проверяется (антифрод по email).
     ref_code = "" if PLANS[plan_id].get("donation") else _ref_lookup(body.get("ref"))
     amount = None
     if ref_code:
@@ -7117,7 +7256,7 @@ def _success_page(pid: str) -> str:
     paid = bool(p and p.get("status") in _PAID_STATUSES and p.get("code"))
     esc = _html.escape
     if paid and p.get("donation"):
-        # v0.33.2: донат — без кода и ключа, просто спасибо
+        # донат — без кода и ключа, просто спасибо
         body = """
 <h1>💛 Спасибо за поддержку</h1>
 <p class="dim">Платёж дошёл. Это чистая поддержка проекта — без ключа и подписки, просто спасибо.
@@ -7203,8 +7342,8 @@ async def billing_webhook_platega(request: Request):
     if not isinstance(body, dict):  # JSON-массив и т.п. → пусто
         body = {}
     delivery = None  # (code, lic_key, tier, email) — доставим после снятия лока
-    donation_delivery = None  # v0.33.2: (email, label) — thank-you письмо донатеру
-    ref_msgs = []  # v0.37.0: TG владельцу о реф-событиях — отправка строго после локов
+    donation_delivery = None  # (email, label) — thank-you письмо донатеру
+    ref_msgs = []  # TG владельцу о реф-событиях — отправка строго после локов
     with _codes_lock:
         data = _load_codes()
         pid = str(body.get("id") or body.get("payment_id") or body.get("order_id") or "")[:128]
@@ -7249,7 +7388,7 @@ async def billing_webhook_platega(request: Request):
                 _event("payment_amount_mismatch", pid,
                        f"{plan_id} · оплачено {amount}{currency} · выставлено {exp_amt}")
             if PLANS[plan_id].get("donation"):
-                # v0.33.2: донат — чистая поддержка: без кода/ключа/лицензии.
+                # донат — чистая поддержка: без кода/ключа/лицензии.
                 # code="DONATION" — маркер обработанности для дедупа повторных callback.
                 payment["plan"] = plan_id
                 payment["tier"] = "donation"
@@ -7263,7 +7402,7 @@ async def billing_webhook_platega(request: Request):
                 result["donation"] = True
             else:
                 days = PLANS[plan_id]["days"]
-                # v0.18.0: продление — дни плана поверх max(старый exp, сейчас), остаток не сгорает
+                # продление — дни плана поверх max(старый exp, сейчас), остаток не сгорает
                 ext = str(payment.get("extend") or "")[:600].strip()
                 ext_ok = False
                 if ext:
@@ -7281,18 +7420,18 @@ async def billing_webhook_platega(request: Request):
                 payment["code"] = code
                 payment["plan"] = plan_id
                 payment["tier"] = "pro"
-                # license key: tier всегда pro (v0.13.0), срок = длительность плана со дня оплаты
+                # license key: tier всегда pro, срок = длительность плана со дня оплаты
                 email = (payment.get("email") or _valid_email(body.get("email"))) or None
                 lic_key = licensing.generate_key(LICENSE_SECRET, email or "buyer@unknown", "pro", days)
                 payment["licenseKey"] = lic_key
                 if ext_ok:
-                    # продление = ротация (как recovery v0.22.3): старый ключ гасим с grace 72ч,
+                    # продление = ротация (как recovery): старый ключ гасим с grace 72ч,
                     # иначе один ключ мультиплицирует дни повторными покупками
                     _add_revoked(data, ext, "superseded: продление")
                 if email:
                     payment["email"] = email
                 # легаси: платёж, привязанный к тенанту (покупка из кабинета, кабинет
-                # отменён v0.22.2 — для новых платежей tenant не выставляется) → код
+                # отменён — для новых платежей tenant не выставляется) → код
                 # сразу активирован, license key закреплён за тенантом
                 tenant_id = payment.get("tenant")
                 if tenant_id:
@@ -7309,7 +7448,7 @@ async def billing_webhook_platega(request: Request):
                 delivery = (code, lic_key, "pro", email, payment.get("ref") or pid)
                 _event("payment", pid, f"{plan_id} · {amount}{currency} · код {code}")
                 result["code"] = code
-                # --- v0.37.0: рефералка (SPEC-referral §3.3–3.4) — начисление
+                # --- рефералка — начисление
                 # приглашающему / self-ref блок / сгорание стека при продлении.
                 # refs под своим локом; порядок локов _codes_lock → _ref_lock (везде одинаково).
                 ref_code = str(payment.get("ref_code") or "")
@@ -7336,7 +7475,7 @@ async def billing_webhook_platega(request: Request):
                                         payment["selfref"] = True
                                         hist["flagged"] = "self_ref"
                                         rrec.setdefault("history", []).append(hist)
-                                        rrec["history"] = rrec["history"][-200:]  # L4
+                                        rrec["history"] = rrec["history"][-200:]
                                         ref_msgs.append(f"⚠️ Self-ref блок: код {ref_code} · "
                                                         f"{amount:.0f} {currency} · начисление отклонено")
                                         _event("ref_self_blocked", ref_code, f"{amount:.0f}{currency}")
@@ -7345,7 +7484,7 @@ async def billing_webhook_platega(request: Request):
                                         rrec["stack_n"] = min(_safe_int(rrec.get("stack_n")) + 1,
                                                               REF_STACK_CAP)
                                         rrec.setdefault("history", []).append(hist)
-                                        rrec["history"] = rrec["history"][-200:]  # L4
+                                        rrec["history"] = rrec["history"][-200:]
                                         ref_msgs.append(f"🤝 Реф-продажа по {ref_code}: "
                                                         f"{amount:.0f} {currency} · всего {rrec['buys']}")
                                         _event("ref_sale", ref_code, f"{amount:.0f}{currency} · buys={rrec['buys']}")
@@ -7370,7 +7509,7 @@ async def billing_webhook_platega(request: Request):
                             if dirty:
                                 _save_referrals(refs)
         _save_codes(data)
-    if donation_delivery:  # v0.33.2: thank-you донатеру — сеть строго вне лока, best-effort
+    if donation_delivery:  # thank-you донатеру — сеть строго вне лока, best-effort
         import asyncio
         d_email, d_label = donation_delivery
         try:
@@ -7388,7 +7527,7 @@ async def billing_webhook_platega(request: Request):
             log.info("deliver_code %s: %s", code, res)
         except Exception as e:  # deliver_code сам не бросает; страховка
             log.error("deliver_code упал целиком (%s): код %s уже в codes.json и на success-странице", e, code)
-    if ref_msgs:  # v0.37.0: TG владельцу о реф-продаже/self-ref — после локов, best-effort
+    if ref_msgs:  # TG владельцу о реф-продаже/self-ref — после локов, best-effort
         import asyncio
         tg_token = os.environ.get("TG_BOT_TOKEN", "")
         if TG_NOTIFY_CHAT_ID and tg_token:
@@ -7400,7 +7539,7 @@ async def billing_webhook_platega(request: Request):
     return JSONResponse(result, headers=_NOCACHE)
 
 
-# --- digiseller per-order (v0.7) ---
+# --- digiseller per-order ---
 
 async def _digiseller_params(request: Request) -> dict:
     """Плоский dict[str,str] из query + тела (form или JSON) — Digiseller шлёт POST, принимаем и GET."""
@@ -7431,7 +7570,7 @@ def _dg_response(*, code=None, error=None, fmt="text", status=200, product_id=""
 async def billing_digiseller_gen(request: Request):
     """Digiseller «данные, полученные от вашего сервера»: свежий код по номеру заказа.
 
-    Контракт и настройка кабинета — внутренние заметки владельца (вне репо). Идемпотентно по order id
+    Контракт и настройка кабинета задокументированы вне репо. Идемпотентно по order id
     (Digiseller дёргает повторно). Код пишется в codes.json ДО ответа; доставка
     письмом — best-effort после снятия лока. Бизнес-отказы — HTTP 200 + поле error
     (по контракту HTTP-ошибка/ответ без goods/error = до 50 ретраев).
@@ -7495,11 +7634,11 @@ async def billing_digiseller_gen(request: Request):
     # иначе их движок не сопоставляет ответ заказу и товар не выдаётся.
     ok_id = params.get("id") or digiseller.product_id_of(params) or str(DIGISELLER_PRODUCT_ID or "")
     ok_inv = params.get("inv") or res["order"]
-    # товар = код + пошаговая инструкция (голый код терял покупателя, 2026-10-15)
+    # товар = код + пошаговая инструкция (голый код терял покупателя)
     return _dg_response(code=digiseller.goods_text(res["code"]), fmt=fmt, product_id=ok_id, inv=ok_inv)
 
 
-# --- digiseller уведомления (v0.9.1): sale/message → webhooks.jsonl + Telegram ---
+# --- digiseller уведомления: sale/message → webhooks.jsonl + Telegram ---
 
 def _hook_authorized(request: Request) -> bool:
     import hmac as _h
@@ -7589,13 +7728,13 @@ async def digiseller_hook_message(request: Request):
     return await _digiseller_hook(request, "message")
 
 
-# --- telegram deep-link доставка (v0.11): t.me/Maxgraph_bot?start=<ref> → код в личку ---
+# --- telegram deep-link доставка: t.me/Maxgraph_bot?start=<ref> → код в личку ---
 
 def _tg_on_start(chat_id: str, payload: str) -> str:
     """Deep-link /start <ref> → код+license key платежа в личку.
 
     ref (r-<16 hex>, 64 бита) раньше показывался на success-странице (ссылка
-    убрана в v0.27.2 — бот не работает с покупателями); обработчик оставлен
+    убрана — бот не работает с покупателями); обработчик оставлен
     для старых ссылок: знание ref = доказательство владения платежом.
     Вызывается из потока tgbot — только чтение codes.json, без сети
     (sendMessage делает сам поллер).
@@ -7612,7 +7751,7 @@ def _tg_on_start(chat_id: str, payload: str) -> str:
     return billing.delivery_text(p["code"], p.get("licenseKey") or "", p.get("tier") or "pro")
 
 
-# --- embed (В2.2): фоновый пополнитель векторов для гибридного поиска ---
+# --- embed: фоновый пополнитель векторов для гибридного поиска ---
 
 def embed_loop(cfg: dict):
     """Фоновый цикл пополнителя embeddings (daemon-поток).
@@ -7640,7 +7779,7 @@ _embed_start_lock = threading.Lock()
 
 
 def _ensure_embed_loop():
-    """v0.19.0: embed включился в рантайме (relay zero-config после активации
+    """embed включился в рантайме (relay zero-config после активации
     лицензии) — поднять цикл, если при boot он не стартовал (embed был выключен).
     Идемпотентно; READONLY-зеркало не пишет — не стартуем."""
     global EMBED_ON
@@ -7655,7 +7794,7 @@ def _ensure_embed_loop():
         log.info("embed: enabled в рантайме (relay zero-config)")
 
 
-# --- actr (В2.3): периодический flush счётчиков обращений → access.json ---
+# --- actr: периодический flush счётчиков обращений → access.json ---
 
 def _actr_flush_quiet():
     """atexit: финальный flush при graceful shutdown. Никогда не падает:
@@ -7688,36 +7827,36 @@ class TokenAuth:
     (лендинг, оболочка /app, redeem/trial, биллинг, вебхуки, /healthz).
 
     Master-токен — ТОЛЬКО точное совпадение `Authorization: Bearer <MEMORY_TOKEN>`:
-    аутентификации по query нет — `?token=` удалён в v0.11: токен не должен
+    аутентификации по query нет — `?token=` удалён: токен не должен
     жить в access-логах uvicorn/nginx.
 
     /admin — HTML-оболочка только на инстансе магазина (STORE_MODE=1,
     иначе 404); её данные идут через непубличные /api/* под Bearer.
     """
 
-    PUBLIC_PATHS = {"/healthz", "/", "/admin", "/app", "/landing", "/og.png",
+    PUBLIC_PATHS = {"/healthz", "/", "/admin", "/app", "/landing", "/og.png", "/favicon.ico",
                     "/privacy", "/offer",  # правовые страницы лендинга
                     "/.well-known/security.txt",  # RFC 9116: контакт для security-репортов
                     "/api/codes/redeem", "/api/plans",
                     "/api/billing/pay", "/api/billing/status", "/billing/result", "/billing/webhook/platega",
                     "/billing/create", "/billing/success", "/api/license/validate",
-                    "/api/telemetry/install",  # v0.14: анонимный install-ping
-                    "/api/telemetry/learn",  # v0.26.0: анонимные learn-events (W2)
-                    "/api/telemetry/heartbeat",  # T7: анонимный heartbeat живости (native-client)
-                    "/api/support/report",  # v1.0.8: отчёт о баге из дашборда (только магазин, rate-limited)
-                    "/api/version",  # v0.18.2: апдейт-чип дашборда (публичная версия)
-                    "/api/admin/me",  # v0.18.0: страница входа админки (configured/authed — не секрет)
-                    "/api/admin/login", "/api/admin/setup",  # v0.18.0: логин/первичная настройка (rate-limited)
-                    "/api/relay/config",  # v0.19.0: zero-config hosted embed (license key → relay-токен)
-                    "/api/referral/code",  # v0.37.0: реф-код инстанса (install_id+fp → code+статы)
-                    "/api/releases/latest.tar.gz", "/api/releases/latest.sha256",  # v0.20.0: автообновления
-                    "/api/releases/latest.sig",  # v0.20.0: ed25519-подпись релиза
-                    "/billing/digiseller/gen",  # --- digiseller per-order (v0.7) ---
-                    "/webhook/digiseller/sale", "/webhook/digiseller/message",  # уведомления (v0.9.1)
-                    "/api/hooks/github"}  # v0.33.0: GitHub-вебхук витрины → TG владельцу
+                    "/api/telemetry/install",  # анонимный install-ping
+                    "/api/telemetry/learn",  # анонимные learn-events
+                    "/api/telemetry/heartbeat",  # анонимный heartbeat живости (native-client)
+                    "/api/support/report",  # отчёт о баге из дашборда (только магазин, rate-limited)
+                    "/api/version",  # апдейт-чип дашборда (публичная версия)
+                    "/api/admin/me",  # страница входа админки (configured/authed — не секрет)
+                    "/api/admin/login", "/api/admin/setup",  # логин/первичная настройка (rate-limited)
+                    "/api/relay/config",  # zero-config hosted embed (license key → relay-токен)
+                    "/api/referral/code",  # реф-код инстанса (install_id+fp → code+статы)
+                    "/api/releases/latest.tar.gz", "/api/releases/latest.sha256",  # автообновления
+                    "/api/releases/latest.sig",  # ed25519-подпись релиза
+                    "/billing/digiseller/gen",  # --- digiseller per-order ---
+                    "/webhook/digiseller/sale", "/webhook/digiseller/message",  # уведомления
+                    "/api/hooks/github"}  # GitHub-вебхук витрины → TG владельцу
 
     # Префиксные публичные пути: статика лендинга (self-hosted шрифты);
-    # native-релизы (v1.0.0, T5) — клиенты ходят за апдейтами без токена;
+    # native-релизы — клиенты ходят за апдейтами без токена;
     # имя файла дополнительно жёстко валидируется regex в хендлере.
     PUBLIC_PREFIXES = ("/static/", "/api/releases/native/")
 
@@ -7734,7 +7873,7 @@ class TokenAuth:
     async def __call__(self, scope, receive, send):
         if scope["type"] == "http":
             path = scope.get("path", "")
-            # v0.38.1: канонический хост self-hosted UI — localhost. Токен дашборда живёт
+            # канонический хост self-hosted UI — localhost. Токен дашборда живёт
             # в localStorage и привязан к origin, а Docker Desktop открывает 127.0.0.1 →
             # покупатель видел гейт без токена. Только GET/HEAD: POST /mcp и /api/*
             # с 127.0.0.1 продолжают работать без редиректа.
@@ -7756,7 +7895,7 @@ class TokenAuth:
                 auth = headers.get(b"authorization", b"").decode("utf-8", "ignore")
                 ok = bool(TOKEN) and hmac.compare_digest(auth, f"Bearer {TOKEN}")  # без timing-оракула
                 if not ok and STORE_MODE and path in _ADMIN_COOKIE_PATHS:
-                    # v0.18.0: админка магазина — сессионная кука; хендлер сам проверит
+                    # админка магазина — сессионная кука; хендлер сам проверит
                     # _admin_auth() и вернёт 401. Self-hosted: кука не играет.
                     ok = _admin_session_ok_cookie(
                         headers.get(b"cookie", b"").decode("utf-8", "ignore"))
@@ -7769,7 +7908,7 @@ class TokenAuth:
 
 def main():
     _require_store_token()  # магазин без явного MEMORY_TOKEN → fail-fast, не ротация
-    _migrate_to_shards()  # v0.34.0: одноразовая разрезка memory.json → projects/ (с бэкапом)
+    _migrate_to_shards()  # одноразовая разрезка memory.json → projects/ (с бэкапом)
     st = _license_status()  # при старте: создаёт license.json на первом запуске, ловит fail-closed
     log.info("license: %s (days_left=%s)%s", st.get("state"), st.get("days_left"),
              "" if licensing.allows_write(st) else " — МУТАЦИИ ЗАБЛОКИРОВАНЫ, activate: /#activate")
@@ -7787,21 +7926,21 @@ def main():
     elif _TOKEN_SOURCE == "ephemeral":
         log.warning("MEMORY_TOKEN: data/ read-only — эфемерный токен процесса: %s", TOKEN)
     if not STORE_MODE:
-        threading.Thread(target=_bootstrap_hosted, daemon=True, name="bootstrap-hosted").start()  # v0.28.0: ping → relay-pull при boot
-        threading.Thread(target=_license_watchdog, daemon=True, name="license-watchdog").start()  # v0.18.0
-        learn.start_learn_loop(post=_post_json, base_url=PUBLIC_BASE_URL)  # W2 (v0.26.0)
-        # T7: heartbeat раз в 6ч — всем установкам (docker/python/native), не только exe;
+        threading.Thread(target=_bootstrap_hosted, daemon=True, name="bootstrap-hosted").start()  # ping → relay-pull при boot
+        threading.Thread(target=_license_watchdog, daemon=True, name="license-watchdog").start()
+        learn.start_learn_loop(post=_post_json, base_url=PUBLIC_BASE_URL)
+        # heartbeat раз в 6ч — всем установкам (docker/python/native), не только exe;
         # flavor внутри: "native" при _FROZEN, иначе autodetect как у install-ping.
         # native stdlib-only при импорте (pystray/PIL — лениво) и входит в Docker-образ (COPY app/).
         import native
         native.start_heartbeat(_post_json, PUBLIC_BASE_URL, DATA_DIR, lambda: VERSION)
-    rankcfg.load(RANK_CONFIG_FILE)  # W3 (v0.27.0): last-good словарь синонимов
+    rankcfg.load(RANK_CONFIG_FILE)  # last-good словарь синонимов
     env_key = os.environ.get("LICENSE_KEY", "").strip()  # лицензия из env (self-hosted pro)
-    if env_key and not STORE_MODE and st.get("state") != "licensed":  # на магазине self-activation не нужен (LOW-1)
+    if env_key and not STORE_MODE and st.get("state") != "licensed":  # на магазине self-activation не нужен
         res = _activate_key(env_key)
         log.info("LICENSE_KEY: %s", f"ok ({res.get('tier')} · {res.get('email')})" if res.get("ok")
                                    else f"отклонён: {res.get('error')}")
-    migrate_token_hashes()  # одноразово: легаси plaintext-токены в codes.json → sha256 (№6)
+    migrate_token_hashes()  # одноразово: легаси plaintext-токены в codes.json → sha256
     app = TokenAuth(mcp.streamable_http_app())
     if os.environ.get("TG_BOT_TOKEN"):
         try:
@@ -7811,7 +7950,7 @@ def main():
         except ImportError:
             log.warning("tgbot: TG_BOT_TOKEN задан, но компонент отсутствует в этой сборке")
     global EMBED_ON
-    emb_cfg = embed.config_from_env()  # В2.2: семантический слой (опционально, офлайн-safe)
+    emb_cfg = embed.config_from_env()  # семантический слой (опционально, офлайн-safe)
     EMBED_ON = embed.should_start(emb_cfg, READONLY)
     if EMBED_ON:  # READONLY-зеркало не пишет → не запускаем
         threading.Thread(target=embed_loop, args=(emb_cfg,), daemon=True,
@@ -7821,7 +7960,7 @@ def main():
     else:
         log.info("embed: disabled (%s)",
                  "READONLY mirror" if embed.enabled(emb_cfg) else "no EMBED_URL/KEY")
-    # В2.3: ACT-R reinforcement. Буст default ON (ACTR_MAX_BOOST=0 → off).
+    # ACT-R reinforcement. Буст default ON (ACTR_MAX_BOOST=0 → off).
     # Flush — daemon-поток + atexit (daemon'ы умирают с процессом,
     # graceful shutdown = atexit). READONLY-зеркало не пишет (как embed);
     # буст на зеркале при этом работает по счётчикам, завезённым ресинком.
@@ -7844,7 +7983,7 @@ def main():
 
 
 if __name__ == "__main__":
-    # T4: helper-процесс подмены exe (Windows не даёт заменить бегущий файл):
+    # helper-процесс подмены exe (Windows не даёт заменить бегущий файл):
     # `maxgraph.exe --mg-apply-update <new_exe> <parent_pid> <sha256> <sig>` —
     # ждёт смерти родителя, ПЕРЕПРОВЕРЯЕТ sha256+ed25519 (B-1), атомарно
     # подменяет exe, перезапускает, healthcheck, откат.
@@ -7857,8 +7996,9 @@ if __name__ == "__main__":
         native.ensure_hostfp()
         native.ensure_autostart()
         native.ensure_shortcuts()  # Windows: MaxGraph.lnk на рабочий стол + в меню «Пуск»
-        import selfupdate  # T4: фоновые обновления по подписанному каналу магазина
-        selfupdate.start_update_loop(lambda: VERSION, PUBLIC_BASE_URL, DATA_DIR, PORT)
+        import selfupdate  # фоновые обновления по подписанному каналу магазина
+        selfupdate.start_update_loop(lambda: VERSION, PUBLIC_BASE_URL, DATA_DIR, PORT,
+                                     on_update=native.notify_update_available)
         if os.environ.get("MG_NO_TRAY") != "1":
             native.run_tray(main)
         else:

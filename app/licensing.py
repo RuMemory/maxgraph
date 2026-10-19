@@ -11,7 +11,7 @@ Maxgraph licensing — 7-дневный локальный триал + HMAC lic
   {"first_seen": ts, "last_seen": ts, "license": null|{email,tier,exp,iat,key,revoked_at?}, "sig": hmac}
 Подпись sig — HMAC-SHA256 по каноничному json полей ключом LICENSE_HMAC_SECRET.
 
-  key — исходный license key покупателя (v0.18.0): нужен суточному watchdog'у для
+  key — исходный license key покупателя: нужен суточному watchdog'у для
   онлайн-ревалидации на магазине. revoked_at (unix ts магазина) — ключ отозван:
   grace 72ч (запись живёт), потом expired. Значение приходит с магазина (серверное
   время), локально его выставляет только watchdog через set_revoked() — самописанный
@@ -23,7 +23,7 @@ Fail-closed:
   - откат часов (now < last_seen) → expired;
   - last_seen обновляется при каждом вызове status().
 
-Серверный якорь триала (v0.16.3): machine_fingerprint() — sha256-хеш машины
+Серверный якорь триала: machine_fingerprint() — sha256-хеш машины
 (уходит только хеш, не значения); anchor_trial_start() перезаписывает first_seen
 на более ранний started_at от магазина (по fp) — снос data/ не даёт новые 7 дней.
 Якорь ПОЗЖЕ локального first_seen игнорируется: триал никогда не отдаляется.
@@ -160,11 +160,11 @@ def _state_valid(st: dict, secret: str) -> bool:
 
 def _new_state(now: float) -> dict:
     return {"first_seen": now, "last_seen": now, "license": None,
-            "latest": None, "latest_checked": None}  # v0.18.2: апдейт-чип дашборда
+            "latest": None, "latest_checked": None}  # апдейт-чип дашборда
 
 
 def version_newer(latest, current) -> bool:
-    """latest строго новее current? Семвер-подобное сравнение '0.18.1' → (0,18,1). Мусор → False."""
+    """latest строго новее current? Семвер-подобное сравнение '1.2.3' → (1,2,3). Мусор → False."""
     def _parse(v):
         try:
             parts = str(v).strip().lstrip("vV").split(".")
@@ -214,7 +214,7 @@ def latest_version(data_dir, secret: str) -> str | None:
 def reissue_key(secret: str, email: str, tier: str, exp: int, now: float | None = None) -> str:
     """Перевыпуск ключа с ТОЧНЫМ сроком exp (unix ts; 0 = бессрочный), iat = сейчас.
 
-    Recovery (v0.22.3): новый ключ наследует срок заменяемого — истёкший остаётся
+    Recovery: новый ключ наследует срок заменяемого — истёкший остаётся
     истёкшим, бессрочный бессрочным. Старый ключ гасится revoke-реестром на магазине.
     """
     if tier not in TIERS:
@@ -261,9 +261,9 @@ def verify_key(secret: str, key: str, now: float | None = None):
 # доменная приставка "relay:" в подписываемой строке отделяет токены от ключей.
 #
 # Формат (каноничный, синхронизирован с services/embed/main.py):
-#   <p64>.<hmac>  где  p64  = _b64e(json{"lk": sha256(license_key)[:16], "exp": epoch})
-#   (без padding, ключи именно в порядке lk,exp),  hmac = _hmac_hex(secret, "relay:"+p64)
-#   — подпись HEX-строкой, считается по ПРИНЯТОМУ сегменту p64 без пересериализации.
+# <p64>.<hmac> где p64 = _b64e(json{"lk": sha256(license_key)[:16], "exp": epoch})
+# (без padding, ключи именно в порядке lk,exp), hmac = _hmac_hex(secret, "relay:"+p64)
+# — подпись HEX-строкой, считается по ПРИНЯТОМУ сегменту p64 без пересериализации.
 
 RELAY_TOKEN_TTL = 7 * _DAY  # короткий TTL: revoke распространяется ≤7д, конфиг перетягивается демоном
 
@@ -271,7 +271,7 @@ RELAY_TOKEN_TTL = 7 * _DAY  # короткий TTL: revoke распростра�
 def relay_secret(secret: str, env=None) -> str:
     """Секрет relay-токенов: env RELAY_HMAC_SECRET, иначе — производная от
     LICENSE_HMAC_SECRET (односторонняя). Embed-сервис знает ТОЛЬКО её: утечка
-    embed-контейнера не компрометирует лицензионную подпись (SECURITY v0.19.0)."""
+    embed-контейнера не компрометирует лицензионную подпись."""
     env = os.environ if env is None else env
     val = (env.get("RELAY_HMAC_SECRET") or "").strip()
     if val:
@@ -288,7 +288,7 @@ def relay_token(secret: str, license_key: str, exp: int) -> str:
     return f"{p64}.{_hmac_hex(secret, 'relay:' + p64)}"
 
 
-REVOKE_GRACE_SEC = 72 * 3600  # v0.18.0: отозванный ключ — 72ч на запись, потом expired
+REVOKE_GRACE_SEC = 72 * 3600  # отозванный ключ — 72ч на запись, потом expired
 
 
 # ------------------------------------------------------------------- API ----
@@ -329,7 +329,7 @@ def status(data_dir, secret: str, now: float | None = None) -> dict:
     if lic:
         exp = lic.get("exp") or 0
         out = {"email": lic.get("email"), "tier": lic.get("tier"), "exp": exp}
-        if lic.get("key"):  # v0.18.0: ключ нужен дашборду (продление) — свой инстанс, свой ключ
+        if lic.get("key"):  # ключ нужен дашборду (продление) — свой инстанс, свой ключ
             out["key"] = lic["key"]
         revoked_at = lic.get("revoked_at") or 0
         if revoked_at:
@@ -373,7 +373,7 @@ def activate(data_dir, secret: str, key: str, now: float | None = None) -> dict:
         st = _new_state(now)  # состояние утеряно/подделано — начинаем с чистого, лицензия честная
     st["license"] = {"email": payload.get("email"), "tier": payload["tier"],
                      "exp": payload.get("exp") or 0, "iat": payload.get("iat"),
-                     "key": key}  # ключ — для watchdog-ревалидации и продления (v0.18.0)
+                     "key": key}  # ключ — для watchdog-ревалидации и продления
     st["last_seen"] = max(st["last_seen"], now)
     _save_state(data_dir, st, secret)
     return {"ok": True, "email": payload.get("email"), "tier": payload["tier"],
@@ -409,7 +409,7 @@ def grant(data_dir, secret, payload: dict, now: float | None = None, key: str | 
 
 
 def set_revoked(data_dir, secret: str, revoked_at, now: float | None = None) -> bool:
-    """Отметить/снять отзыв текущей лицензии (v0.18.0, зовёт только watchdog).
+    """Отметить/снять отзыв текущей лицензии (зовёт только watchdog).
 
     revoked_at — unix ts отзыва НА МАГАЗИНЕ (серверное время, клиенту не доверяем);
     None/falsy → снять отметку (unrevoke). True — state изменился. Битая подпись
@@ -452,7 +452,7 @@ def allows_write(st: dict) -> bool:
     return st.get("state") in ("trial", "licensed")
 
 
-# ------------------------------------------- v0.16.3: серверный якорь триала ---
+# ------------------------------------------- серверный якорь триала ---
 
 FP_FILES = (
     "/sys/class/dmi/id/product_uuid",
@@ -464,15 +464,14 @@ _HOST_FP_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def machine_fingerprint(env=None) -> str | None:
-    """Стабильный хеш машины для серверного якоря триала (v0.16.3).
+    """Стабильный хеш машины для серверного якоря триала.
 
     Приоритет — env HOST_FP (host-fp): sha256-хеш железа ХОСТА, вычисленный
     установщиком ДО docker compose up (Windows: MachineGuid реестра, macOS:
     IOPlatformUUID, Linux: /etc/machine-id хоста) и проброшенный в контейнер.
     Контейнерный fingerprint при пересоздании контейнера плывёт, HOST_FP — нет.
     Валиден строго ^[0-9a-f]{64}$ (пробелы/регистр нормализуются); мусорный env
-    молча игнорируется → fallback на контейнерные источники (fail-open, поведение
-    ≤v0.36 сохранено).
+    молча игнорируется → fallback на контейнерные источники (fail-open).
 
     Legacy (без HOST_FP): sha256 от конкатенации доступных источников (порядок
     фиксирован): DMI product_uuid, /etc/machine-id, /var/lib/dbus/machine-id,
@@ -512,7 +511,7 @@ def machine_fingerprint(env=None) -> str | None:
 
 
 def anchor_trial_start(data_dir, secret: str, started_at, now=None) -> bool:
-    """Серверный якорь начала триала (v0.16.3): started_at (unix ts магазина для
+    """Серверный якорь начала триала: started_at (unix ts магазина для
     этого fp) РАНЬШЕ локального first_seen → перезаписать first_seen с переподписью.
     True — применили. Fail-open: нечисловой/неположительный ts, якорь ПОЗЖЕ
     локального старта (триал не отдаляем), битая локальная подпись (fail-closed

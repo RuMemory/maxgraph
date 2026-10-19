@@ -1,4 +1,4 @@
-"""Самообновление нативного exe-клиента по подписанному каналу магазина (T4).
+"""Самообновление нативного exe-клиента по подписанному каналу магазина.
 
 Зеркало services/updater/updater.sh, но для onefile-exe без Docker:
   1) check(): GET {store}/api/version → {"version": "X.Y.Z"} (fail-open);
@@ -20,12 +20,17 @@
      (GET http://localhost:{PORT}/healthz), провал → откат prev → текущий
      (тоже с ретраями — машина не должна остаться без exe).
      prev.exe НЕ удаляется — это и есть механизм отката; живёт до следующего
-     успешного обновления (MINOR-6, решение: не чинить).
+     успешного обновления (осознанно не чиним).
 
 Только stdlib. Все сетевые/ФС ошибки — log.warning, цикл живёт (fail-open
 на скачивании, fail-CLOSED на криптографии: битая сумма/подпись → None).
 MG_NO_UPDATE=1 — update-цикл не стартует. MG_UPDATE_INTERVAL_SEC — интервал
 (для тестов; дефолт 3600).
+
+Новая версия НЕ ставится сразу: update_loop пишет data/update-state.json и
+зовёт on_update (балун + пункт трея «Обновить до …» в native.py); скачивание —
+по клику (apply_pending_update) или автоматически через FALLBACK_AFTER_SEC (7д)
+от ПЕРВОГО обнаружения версии.
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ import json
 import logging
 import os
 import platform as _platform
+import re
 import shutil
 import socket
 import subprocess
@@ -52,6 +58,8 @@ log = logging.getLogger("maxgraph.selfupdate")
 MAX_ARTIFACT_BYTES = 256 * 1024 * 1024  # как у updater.sh (pkeyutl читает в RAM)
 _CHUNK = 1 << 16
 _UPDATE_FLAG = "--mg-apply-update"
+FALLBACK_AFTER_SEC = 7 * 24 * 3600  # автофолбэк: 7 дней без подтверждения пользователя
+UPDATE_STATE_NAME = "update-state.json"
 
 # ---------------------------------------------------------------------------
 # Ed25519 verify (RFC 8032), компактная чистая реализация на stdlib.
@@ -117,7 +125,7 @@ def _prime_subgroup(P) -> bool:
 
     Без этого identity/small-order A и R пропускали подпись A=identity,
     R=identity, s=0 (тождество [s]B == R + [h]A выполняется при любом h) —
-    MINOR-1 security review 2026-10-18. [L]P == identity для всех точек
+    [L]P == identity для всех точек
     подгруппы порядка L; у точек порядка 2/4/8 (L нечётно) [L]P != identity.
     """
     if P == _IDENTITY:
@@ -134,7 +142,7 @@ def ed25519_verify(pubkey32: bytes, message: bytes, sig64: bytes) -> bool:
     if A is None or R is None:
         return False
     if not _prime_subgroup(A) or not _prime_subgroup(R):
-        return False  # small-order/identity pubkey или R (MINOR-1)
+        return False  # small-order/identity pubkey или R
     s = int.from_bytes(sig64[32:], "little")
     if s >= _L:
         return False
@@ -379,7 +387,7 @@ def _spawn_detached(argv):
         # случай дочернего процесса console-системы (старые билды exe без
         # --windowed, python.exe из исходников) — консольное окно не должно
         # мелькать у пользователя ни при автозапуске, ни при обновлении
-        # (кейс покупателя 1.0.1: кнопка обновления открывала консоль helper'а).
+        # (кейс покупателя: кнопка обновления открывала консоль helper'а).
         kwargs["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
                                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
                                    | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
@@ -399,7 +407,7 @@ def apply_update(new_exe_path) -> bool:
         # helper = КОПИЯ нового exe (updates/.helper.exe): свежий код helper'а,
         # и — критично — onefile читает lazy-модули из СВОЕГО exe-файла по пути
         # запуска; helper НЕ может жить в файле, который сам подменяет
-        # (2026-10-18: self-move нового exe → FileNotFoundError/zlib в helper'е).
+        # (self-move нового exe → FileNotFoundError/zlib в helper'е).
         helper_exe = str(Path(new).with_name(".helper.exe"))
         shutil.copy2(new, helper_exe)  # перезаписывает копию прошлого обновления
         argv = [helper_exe, _UPDATE_FLAG, new, str(os.getpid())]
@@ -418,15 +426,14 @@ def apply_update(new_exe_path) -> bool:
 def _healthz(port: int, timeout: float = 2.0) -> bool:
     try:
         with urllib.request.urlopen(f"http://localhost:{port}/healthz", timeout=timeout) as r:
-            return r.read(4096).strip() == b"ok"  # строгое равенство (MINOR-5)
+            return r.read(4096).strip() == b"ok"  # строгое равенство
     except Exception:
         return False
 
 
 def _start_detached(exe: Path):
     """Запуск exe ВНЕ дерева процессов helper'а. Windows: os.startfile (ShellExecute) —
-    дети DETACHED-спавна умирали вместе с завершающимся helper'ом (2026-10-18:
-    подмена проходила, новый exe не переживал выход helper'а). Unix: как раньше."""
+    дети DETACHED-спавна умирали вместе с завершающимся helper'ом (подмена проходила, новый exe не переживал выход helper'а). Unix: как раньше."""
     if sys.platform == "win32":
         os.startfile(str(exe))  # noqa: S606 — путь наш, подпись проверена выше
         return None
@@ -491,8 +498,8 @@ def _helper_data_dir() -> Path:
 
 def _setup_helper_log(target_exe=None) -> None:
     """Лог helper'а в data/update.log ЦЕЛЕВОГО exe: stdout detached-процесса
-    нечитаем — инцидент 2026-10-18 диагностировался вслепую. Только в frozen exe.
-    (helper с v1.0.5 запущен из НОВОГО exe в updates/ — считать data от цели!)"""
+    нечитаем — такие сбои иначе диагностируются вслепую. Только в frozen exe.
+    (helper запущен из НОВОГО exe в updates/ — считать data от цели!)"""
     if not getattr(sys, "frozen", False):
         return
     try:
@@ -531,7 +538,7 @@ def apply_update_main(argv) -> int:
         log.error("selfupdate: helper: нужны <new_exe> <parent_pid> <sha256_file> <sig_file>")
         return 2
     new_arg, pid_arg, sha_arg, sig_arg = argv[0], argv[1], argv[2], argv[3]
-    # цель подмены: с v1.0.5 — явный argv[4] (helper запущен из НОВОГО exe,
+    # цель подмены: явный argv[4] (helper запущен из НОВОГО exe,
     # sys.executable ≠ цель); старый формат — цель = свой exe
     target_exe = argv[4] if len(argv) > 4 else None
     _setup_helper_log(target_exe)
@@ -544,7 +551,7 @@ def apply_update_main(argv) -> int:
         log.error("selfupdate: helper: невалидный parent_pid %r — отказ", pid_arg)
         return 2
     # (б) new обязан лежать внутри updates ЦЕЛЕВОГО exe — чужие пути отклоняем
-    # (helper с v1.0.5 живёт в updates сам — считать data от target, не от себя)
+    # (helper живёт в updates сам — считать data от target, не от себя)
     target_dir = (Path(target_exe).resolve().parent / "data") if target_exe else _helper_data_dir()
     try:
         allowed = (target_dir / "updates").resolve()
@@ -554,7 +561,7 @@ def apply_update_main(argv) -> int:
         log.error("selfupdate: helper: %s вне DATA_DIR/updates — отказ (%r)", new_arg, e)
         return 2
     exe = Path(target_exe).resolve() if target_exe else Path(sys.executable).resolve()
-    # prev — механизм отката (MINOR-6: НЕ удалять; живёт до следующего
+    # prev — механизм отката (НЕ удалять; живёт до следующего
     # успешного обновления, затирается при нём).
     prev = exe.with_name(exe.stem + ".prev" + exe.suffix)
     try:
@@ -627,13 +634,149 @@ def apply_update_main(argv) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Стейт ожидающего обновления (data/update-state.json): момент ПЕРВОГО
+# обнаружения версии персистим, чтобы перезапуск не сбрасывал 7-дневный отсчёт.
+# Этот же файл читает трей (пункт «Обновить до …») — один источник правды,
+# без межпоточных объектов; headless-режим просто не читает его.
+# ---------------------------------------------------------------------------
+
+def _update_state_path(data_dir) -> Path:
+    return Path(data_dir) / UPDATE_STATE_NAME
+
+
+def read_update_state(data_dir) -> dict:
+    """{"version": ..., "first_seen": epoch} или {} — битый/отсутствующий файл не страшен."""
+    try:
+        st = json.loads(_update_state_path(data_dir).read_text(encoding="utf-8"))
+        if isinstance(st, dict) and st.get("version"):
+            return st
+    except Exception:
+        pass
+    return {}
+
+
+def _write_update_state(data_dir, version: str, first_seen: float) -> None:
+    f = _update_state_path(data_dir)
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_name(f.name + ".tmp")
+        tmp.write_text(json.dumps({"version": version, "first_seen": first_seen}),
+                       encoding="utf-8")
+        os.replace(tmp, f)  # атомарно: трей может читать файл в этот момент
+    except OSError as e:
+        log.warning("selfupdate: не записать %s: %r", f, e)
+
+
+# ---------------------------------------------------------------------------
+# Чистка data/updates: остаются файлы двух СВЕЖИХ версий (текущая + предыдущая).
+# ---------------------------------------------------------------------------
+
+_ARTIFACT_FILE_RE = re.compile(
+    r"^maxgraph-(?P<ver>\d+(?:\.\d+){0,2})-(?:windows|macos|linux)-(?:amd64|arm64)"
+    r"(?:\.exe)?(?:\.(?:sha256|sig|part))?$")
+
+
+def cleanup_updates(data_dir, keep: int = 2) -> int:
+    """Удалить файлы версий старше keep свежих из data/updates. → число удалённых.
+    .helper.exe (подменщик exe при apply) и неартефактные файлы НЕ трогаем;
+    maxgraph.prev.exe живёт в корне установки, сюда не входит. Ошибки — warning."""
+    upd = Path(data_dir) / "updates"
+    try:
+        entries = [(m.group("ver"), p) for p in upd.iterdir() if p.is_file()
+                   for m in [_ARTIFACT_FILE_RE.match(p.name)] if m]
+    except OSError as e:
+        log.warning("selfupdate: cleanup: не прочитать %s: %r", upd, e)
+        return 0
+    versions = sorted({v for v, _ in entries},
+                      key=lambda v: _parse_semver(v) or (), reverse=True)
+    stale = set(versions[keep:])
+    removed = 0
+    for v, p in entries:
+        if v not in stale:
+            continue
+        try:
+            p.unlink()
+            removed += 1
+        except OSError as e:
+            log.warning("selfupdate: cleanup: не удалить %s: %r", p, e)
+    if removed:
+        log.info("selfupdate: cleanup: удалено %s файлов старых версий из %s", removed, upd)
+    return removed
+
+
+# ---------------------------------------------------------------------------
 # Фоновый цикл
 # ---------------------------------------------------------------------------
 
-def update_loop(get_version, store_url, data_dir, port, interval=None) -> None:
+_notified: set = set()  # версии, о которых уведомили в ЭТОМ процессе (балун — не каждый час)
+
+
+def _download_apply_exit(store_url, version, data_dir) -> bool:
+    """Скачать/проверить/применить version; успех → os._exit(0) (helper подменит
+    exe и перезапустит). False — скачивание/запуск helper'а не удался, живём дальше."""
+    path = download_and_verify(store_url, version, Path(data_dir) / "updates")
+    if not path or not apply_update(path):
+        return False
+    time.sleep(1)   # дать helper'у подняться до смерти родителя
+    os._exit(0)     # helper ждёт parent_pid, подменит и перезапустит
+    return True     # unreachable без подмены os._exit (тесты)
+
+
+def apply_pending_update(store_url, data_dir) -> bool:
+    """Клик по пункту трея «Обновить до …»: поставить версию из update-state.json.
+    True — helper запущен и процесс умирает; False — нечего ставить / сбой."""
+    if not _store_url_allowed(store_url):  # тот же гард, что у start_update_loop:
+        log.warning("selfupdate: store_url не https и не loopback — обновление отклонено")
+        return False                       # ручной путь (apply_update_from_ui) не обходит его
+    version = read_update_state(data_dir).get("version")
+    if not version:
+        return False
+    if not _parse_semver(version):  # version из файла идёт в artifact_name → URL магазина
+        log.warning("selfupdate: в update-state мусорная версия %r — отказ", version)
+        return False
+    log.info("selfupdate: пользователь подтвердил обновление до %s", version)
+    return _download_apply_exit(store_url, version, data_dir)
+
+
+def _update_iteration(get_version, store_url, data_dir, on_update=None, now=None) -> None:
+    """Одна проверка магазина. Новая версия → стейт + уведомление (on_update);
+    скачивание — ТОЛЬКО по клику (apply_pending_update) или автоматически,
+    когда версия ждёт подтверждения дольше FALLBACK_AFTER_SEC."""
+    info = check(store_url, get_version())
+    latest = info.get("version", "")
+    if not (latest and info.get("newer")):
+        return
+    now = time.time() if now is None else now
+    st = read_update_state(data_dir)
+    if st.get("version") != latest:  # первое обнаружение ЭТОЙ версии — отсчёт с нуля
+        st = {"version": latest, "first_seen": now}
+        _write_update_state(data_dir, latest, now)
+    if latest not in _notified:
+        _notified.add(latest)
+        log.info("selfupdate: доступна %s (текущая %s) — жду подтверждения "
+                 "(авто через 7д)", latest, get_version())
+        if on_update is not None:
+            try:
+                on_update(latest)
+            except Exception as e:  # балун/трей не должны ронять цикл
+                log.warning("selfupdate: уведомление об обновлении: %r", e)
+    try:
+        first_seen = float(st.get("first_seen") or now)
+    except (TypeError, ValueError):  # мусорный first_seen: ValueError каждую итерацию
+        log.warning("selfupdate: first_seen=%r невалиден — отсчёт заново с сейчас",
+                    st.get("first_seen"))
+        first_seen = now
+        _write_update_state(data_dir, latest, now)  # лечим стейт, иначе warning повторится
+    if now - first_seen < FALLBACK_AFTER_SEC:
+        return
+    log.info("selfupdate: %s ждёт подтверждения более 7д — ставлю автоматически", latest)
+    _download_apply_exit(store_url, latest, data_dir)
+
+
+def update_loop(get_version, store_url, data_dir, port, interval=None, on_update=None) -> None:
     """Daemon-цикл: раз в interval (env MG_UPDATE_INTERVAL_SEC, дефолт 3600)
-    + по маркеру data_dir/.update-now: check → новее → download_and_verify →
-    apply_update + os._exit(0) (helper подменит exe и перезапустит)."""
+    + по маркеру data_dir/.update-now: check → новее → стейт + уведомление;
+    установка — по клику из трея или по 7-дневному фолбэку (_update_iteration)."""
     if interval is None:
         try:
             interval = int(os.environ.get("MG_UPDATE_INTERVAL_SEC") or 3600)
@@ -654,15 +797,7 @@ def update_loop(get_version, store_url, data_dir, port, interval=None) -> None:
                 log.warning("selfupdate: маркер: %r", e)
             time.sleep(min(5, max(1, due - time.monotonic())))
         try:
-            info = check(store_url, get_version())
-            latest = info.get("version", "")
-            if not (latest and info.get("newer")):
-                continue
-            log.info("selfupdate: доступна %s (текущая %s) — скачиваю", latest, get_version())
-            path = download_and_verify(store_url, latest, Path(data_dir) / "updates")
-            if path and apply_update(path):
-                time.sleep(1)   # дать helper'у подняться до смерти родителя
-                os._exit(0)     # helper ждёт parent_pid, подменит и перезапустит
+            _update_iteration(get_version, store_url, data_dir, on_update)
         except Exception as e:
             log.warning("selfupdate: итерация цикла: %r", e)
 
@@ -670,7 +805,7 @@ def update_loop(get_version, store_url, data_dir, port, interval=None) -> None:
 def _store_url_allowed(store_url) -> bool:
     """https — всегда; http — ТОЛЬКО loopback netloc (localhost/127.0.0.1,
     с портом или без). Подстрока «localhost» пропускала
-    http://localhost.evil.tld (MINOR-2)."""
+    http://localhost.evil.tld."""
     try:
         u = urllib.parse.urlparse(str(store_url or "").strip())
         host = (u.hostname or "").lower()
@@ -681,17 +816,21 @@ def _store_url_allowed(store_url) -> bool:
     return u.scheme == "http" and host in ("localhost", "127.0.0.1")
 
 
-def start_update_loop(get_version, store_url, data_dir, port):
+def start_update_loop(get_version, store_url, data_dir, port, on_update=None):
     """Запустить daemon-поток обновлений. MG_NO_UPDATE=1 → не стартует (None).
     Открытый (не-https) канал до не-локального магазина → не стартует:
-    подпись по открытому каналу бессмысленна (зеркало гарда updater.sh)."""
+    подпись по открытому каналу бессмысленна (зеркало гарда updater.sh).
+    on_update(version) — колбэк «есть новая версия» (балун трея; None в headless).
+    Заодно при старте чистим data/updates от версий старше двух свежих
+    (после успешного обновления это делает старт нового процесса)."""
     if os.environ.get("MG_NO_UPDATE") == "1":
         log.info("selfupdate: MG_NO_UPDATE=1 — автообновление выключено")
         return None
     if not _store_url_allowed(store_url):
         log.warning("selfupdate: store_url не https и не loopback — автообновление отключено")
         return None
+    cleanup_updates(data_dir)
     t = threading.Thread(target=update_loop, args=(get_version, store_url, data_dir, port),
-                         daemon=True, name="selfupdate")
+                         kwargs={"on_update": on_update}, daemon=True, name="selfupdate")
     t.start()
     return t

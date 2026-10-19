@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""searchrank — ранжированный FTS-lite поверх графа памяти (Ф6, чистый stdlib).
+"""searchrank — ранжированный FTS-lite поверх графа памяти (чистый stdlib).
 
 Замена подстроки в op_search на BM25-подобный скоринг:
 
@@ -17,7 +17,7 @@
 - rank(entities, query, limit, *, vector_weight=0.0, cosine_fn=None,
   actr_fn=None): топ-N с score>0, стабильная сортировка (score desc →
   updatedAt desc → name asc).
-  В2.2 (опциональный гибрид): при vector_weight>0 и заданном cosine_fn(name)
+  Опциональный гибрид: при vector_weight>0 и заданном cosine_fn(name)
   → cos|None итоговый score = (1−w)·fts_norm + w·cos_norm, где fts_norm =
   fts/max(fts) по кандидатам, cos_norm = (cos+1)/2 ∈ [0,1], отсутствующий
   вектор → нейтраль 0.5. Корпус ≤ HYBRID_FULL_SCAN_MAX → косинус по ВСЕМ
@@ -25,8 +25,8 @@
   fts=0 у непопавших, формула корректна); корпус больше → косинус только по
   FTS top-HYBRID_CANDIDATES (предфильтр: 10k×1024 dims полным проходом на
   чистом stdlib — ~секунды; 200×1024 ≈ миллисекунды; замеры — у констант).
-  w≤0/без cosine_fn → byte-identical поведение 0.14.x (чистый FTS).
-  В2.3 (опциональный ACT-R): при заданном actr_fn(name) → множитель ≥0
+  w≤0/без cosine_fn → поведение без изменений (чистый FTS).
+  Опциональный ACT-R: при заданном actr_fn(name) → множитель ≥0
   итоговый score кандидата (FTS или blended) домножается на него ПОСЛЕ
   основной сортировки, затем пересортировка тем же стабильным ключом и срез
   [:limit] — часто читаемые сущности всплывают (модуль actr; максимум
@@ -46,7 +46,7 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 
-# Веса полей (спека Ф6): name ×3, title ×2, tags ×1.5, observations ×1.
+# Веса полей: name ×3, title ×2, tags ×1.5, observations ×1.
 # Порядок dict = порядок убывания веса — используется для «один фразовый бонус
 # по самому сильному полю».
 FIELD_WEIGHTS = {"name": 3.0, "title": 2.0, "tags": 1.5, "observations": 1.0}
@@ -56,7 +56,7 @@ B = 0.75                      # BM25: нормировка по длине по�
 RECENCY_MAX_BONUS = 0.10      # recency — лёгкий бонус: не более +10% к скору
 RECENCY_DECAY_DAYS = 30.0     # exp-затухание: свежая сущность ≈ полный бонус
 DEFAULT_LIMIT = 20
-# В2.2: предфильтр гибрида — косинус считаем только по FTS top-N кандидатам
+# предфильтр гибрида — косинус считаем только по FTS top-N кандидатам
 # (N ≥ limit). 10k сущностей × 1024 dims на чистом stdlib = ~0.5–1с полным
 # проходом (numpy нельзя); 200×1024 ≈ 10–20мс — укладываемся в цель <150мс.
 HYBRID_CANDIDATES = 200
@@ -237,27 +237,27 @@ def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=N
     Стабильная сортировка: score desc → updatedAt desc → name asc.
     Запрос без извлекаемых терминов → [] (фоллбек на подстроку — в op_search).
 
-    В2.2 (гибрид, опционально): vector_weight w∈[0,1] + cosine_fn(name)
+    Гибрид (опционально): vector_weight w∈[0,1] + cosine_fn(name)
     → cos|None (модуль embed). Применяется ТОЛЬКО при w>0 и cosine_fn —
-    иначе поведение byte-identical 0.14.x. Корпус ≤ HYBRID_FULL_SCAN_MAX →
+    иначе поведение без изменений. Корпус ≤ HYBRID_FULL_SCAN_MAX →
     косинус по всем кандидатам (full-scan: fts=0 у непопавших — парафраз без
     общих токенов поднимается, в выдачу входит весь корпус, хвост = w·0.5);
     корпус больше → косинус по FTS top-HYBRID_CANDIDATES (предфильтр — перф,
     см. шапку). score кандидата: (1−w)·fts_norm + w·cos_norm; fts_norm =
     fts/max(fts) по кандидатам, cos_norm — mean-anchored по кандидатам запроса:
-    (cos−mean)/(max−mean) обрезанное в [0,1] ((cos+1)/2 сжимало диапазон e5 —
-    бенч Q4 в bench/); без вектора → 0.5 (нейтраль, не штраф). Сбой cosine_fn →
+    (cos−mean)/(max−mean) обрезанное в [0,1] ((cos+1)/2 сжимало диапазон e5 — по бенчам);
+    без вектора → 0.5 (нейтраль, не штраф). Сбой cosine_fn →
     тоже 0.5 (fail-open: векторный слой не должен ронять поиск).
     В гибридном режиме возвращаемый score — blended (0..1), не FTS.
     С actr_fn итог домножается на множитель до ACTR_MAX_BOOST →
     верхняя граница score ~1.25.
 
-    В2.3 (ACT-R reinforcement, опционально): actr_fn(name) → множитель ≥0
+    ACT-R reinforcement (опционально): actr_fn(name) → множитель ≥0
     (модуль actr; нейтраль 1.0). Домножает итоговый скор каждого кандидата
     (FTS или blended) после основного скоринга, затем пересортировка и
     срез [:limit] — часто читаемое всплывает в пределах +ACTR_MAX_BOOST.
     Сбой/NaN/≤0/не-число → 1.0 (fail-open: ACT-R не роняет поиск). Без
-    actr_fn ветка не исполняется — byte-identical 0.14.x/В2.2."""
+    actr_fn ветка не исполняется — поведение без изменений."""
     qts = tokenize(query)
     if not qts:
         return []
@@ -302,8 +302,8 @@ def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=N
         lim = max(1, int(limit))
     except (TypeError, ValueError):
         lim = DEFAULT_LIMIT
-    # --- В2.2: гибрид FTS+vector. Только при w>0 и cosine_fn; иначе —
-    # чистый FTS, byte-identical 0.14.x. ---
+    # --- гибрид FTS+vector. Только при w>0 и cosine_fn; иначе —
+    # чистый FTS, поведение без изменений. ---
     final = scored
     if w > 0.0 and (scored or n <= HYBRID_FULL_SCAN_MAX):
         # Full-scan (корпус ≤ HYBRID_FULL_SCAN_MAX): косинус по ВСЕМ сущностям
@@ -332,7 +332,7 @@ def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=N
                 cos = min(1.0, max(-1.0, cos))
                 coses.append(cos)
             raw.append((s, e, cos))
-        # cos_norm — mean-anchored (v0.19.0+, по бенчу Q4): (cos+1)/2 сжимал
+        # cos_norm — mean-anchored: (cos+1)/2 сжимал
         # рабочий диапазон e5 (0.7..0.9) в 0.85..0.95 — векторный сигнал тонул
         # в fts_norm при w=0.35 (silent-hit 43%). Якорь — среднее косинусов
         # кандидатов запроса: выше среднего → (0..1], ниже → 0. Без вектора —
@@ -351,7 +351,7 @@ def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=N
         blended.sort(key=lambda se: se[1].get("updatedAt") or "", reverse=True)
         blended.sort(key=lambda se: se[0], reverse=True)
         final = blended
-    # --- В2.3: ACT-R reinforcement. Только при actr_fn; иначе ветка не
+    # --- ACT-R reinforcement. Только при actr_fn; иначе ветка не
     # исполняется (byte-identical). Множитель применяется к итоговому скору
     # (FTS или blended) ДО среза [:lim]: поднятый кандидат может войти в топ. ---
     if actr_fn is not None and final:

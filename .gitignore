@@ -8,9 +8,18 @@ __pycache__/
 .venv/
 .tmp-issues/
 
-# артефакты установщика на машине покупателя (v0.39.0)
+# артефакты установщика на машине покупателя
 install-state.json
 install.log
+install-native.log
 
 # hostfp.json — отпечаток железа конкретной машины (хеши), пишет установщик
 hostfp.json
+
+# магазинные env (только прод-магазин, см. deploy/store.env.example)
+store.env
+
+# артефакты локальной сборки PyInstaller (иконки build/maxgraph.ico и build/maxgraph-512.png — в репо)
+dist/
+maxgraph.spec
+build/maxgraph/
