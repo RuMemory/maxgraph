@@ -60,7 +60,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -5476,9 +5476,14 @@ async def api_installs_list(request: Request):
                          "last_seen": last})
     machines.sort(key=lambda m: m["last_seen"], reverse=True)
     unknown.sort(key=lambda r: r.get("last_seen", 0), reverse=True)
+    # KPI «установок» — уникальные install_id (первая регистрация), НЕ пинги/старты:
+    # installs — dict {install_id: rec}, повторный пинг того же install_id лишь
+    # обновляет rec (starts+1), нового ключа не создаёт. set() — явный дедуп,
+    # чтобы счётчик не зависел от формата хранения (инциденты 18.10/19.10).
+    unique_installs = len(set(installs))
     return JSONResponse({"machines": machines[:500],
                          "unknown_installs": unknown[:500],
-                         "kpi": {"machines": len(machines), "installs": len(installs),
+                         "kpi": {"machines": len(machines), "installs": unique_installs,
                                  "volatile": volatile_n}},
                         headers=_NOCACHE)
 
@@ -5504,6 +5509,83 @@ async def api_payments_list(request: Request):
     ok = [p for p in out if p.get("status") not in _FAILED_STATUSES]
     failed = [p for p in out if p.get("status") in _FAILED_STATUSES]
     return JSONResponse({"payments": ok[:500], "failed": failed[:500]}, headers=_NOCACHE)
+
+
+@mcp.custom_route("/api/admin/stats", methods=["GET"])
+async def api_admin_stats(request: Request):
+    """Сводка для вкладки «Статистика» админки: выручка/продажи по дням
+    (30 суток, UTC) и воронка триал→Pro по неделям (12 недель): начавших — по
+    createdAt, конверсия — paidAt или выданный licenseKey (ручная выдача кода
+    тоже считается Pro). Сумма платежа — сохранённая amount (репрайсинг не
+    искажает историю); легаси без amount — текущий прайс плана (та же конвенция,
+    что на клиенте админки). Вся агрегация здесь — сырые записи не выгружаются."""
+    g = _store_gate()
+    if g:
+        return g
+    if not _admin_auth(request):
+        return _admin_401()
+
+    def _ts(val) -> float:
+        """epoch из ISO-строки или числа; мусор → 0 (запись пропускаем)."""
+        if isinstance(val, bool):
+            return 0.0
+        if isinstance(val, (int, float)):
+            return float(val)
+        if isinstance(val, str):
+            try:
+                dt = datetime.fromisoformat(val)
+                if dt.tzinfo is None:
+                    # naive ISO без смещения — трактуем как UTC, а не локальное время
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.timestamp()
+            except (ValueError, OverflowError):
+                return 0.0
+        return 0.0
+
+    def _week_start(ts: float):
+        d = datetime.fromtimestamp(ts, timezone.utc).date()
+        return d - timedelta(days=d.weekday())  # понедельник, UTC
+
+    data = _load_codes()
+    now = time.time()
+    today = datetime.fromtimestamp(now, timezone.utc).date()
+
+    daily: dict = {}
+    for p in data.get("payments", []):
+        if p.get("status") in _FAILED_STATUSES:  # незавершённые — не продажи (как /api/payments)
+            continue
+        ts = _ts(p.get("at"))
+        if ts <= 0:
+            continue
+        amount = p.get("amount")
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)) or amount <= 0:
+            amount = plans.PRICES.get(p.get("plan"), {}).get("RUB", 0)
+        day = datetime.fromtimestamp(ts, timezone.utc).date()
+        slot = daily.setdefault(day, [0, 0])
+        slot[0] += int(amount)
+        slot[1] += 1
+    days = []
+    for i in range(30):
+        d = today - timedelta(days=29 - i)
+        rev, sales = daily.get(d, (0, 0))
+        days.append({"day": d.isoformat(), "revenue": rev, "sales": sales})
+
+    weekly: dict = {}
+    for t in data.get("tenants", []):
+        ts = _ts(t.get("createdAt"))
+        if ts <= 0:
+            continue
+        slot = weekly.setdefault(_week_start(ts), [0, 0])
+        slot[0] += 1
+        if t.get("paidAt") or t.get("licenseKey"):
+            slot[1] += 1
+    w0 = _week_start(now) - timedelta(weeks=11)
+    weeks = []
+    for i in range(12):
+        w = w0 + timedelta(weeks=i)
+        trials, conv = weekly.get(w, (0, 0))
+        weeks.append({"week": w.isoformat(), "trials": trials, "converted": conv})
+    return JSONResponse({"days": days, "weeks": weeks}, headers=_NOCACHE)
 
 
 @mcp.custom_route("/api/codes/export", methods=["GET", "POST"])
@@ -6792,7 +6874,8 @@ _ADMIN_COOKIE_PATHS = {"/api/payments", "/api/tenants", "/api/codes", "/api/code
                        "/api/admin/logout", "/api/admin/password",
                        "/api/admin/machines", "/api/admin/machines/unbind",  # host-fp
                        "/api/admin/synonyms", "/api/admin/synonyms/veto",
-                       "/api/admin/support-reports"}  # вкладка «Баги» (GET отчётов)
+                       "/api/admin/support-reports",  # вкладка «Баги» (GET отчётов)
+                       "/api/admin/stats"}            # вкладка «Статистика» (агрегация)
 
 
 def _admin_cfg() -> dict | None:
@@ -7993,6 +8076,19 @@ if __name__ == "__main__":
     # native exe: привязка к железу (hostfp) + автозапуск ОС + трей; MG_NO_TRAY=1 — headless
     if _FROZEN:
         import native  # stdlib-only при импорте; pystray/PIL — лениво в run_tray
+        import singleinstance  # stdlib-only; MG_NO_LOCK=1 отключает guard
+        if not singleinstance.acquire(DATA_DIR):
+            # Второй процесс на тот же data/ (автозапуск HKCU + ручной старт).
+            # Сервер НЕ поднимаем: проигравший иначе уходил в «эфемерный токен»
+            # и весь API отвечал 401 (конфиги несут файловый токен). Вместо этого
+            # открываем дашборд уже живого экземпляра и выходим.
+            log.info("single-instance: экземпляр уже запущен (data=%s) — дашборд живого, выход", DATA_DIR)
+            native.open_dashboard(PORT)
+            sys.exit(0)
+        # Гонка ПЕРВОГО старта: до guard'а (на импорте) лузер мог успеть записать
+        # СВОЙ mg_local_* в local_token.txt. Под локом файл авторитетен — перечитываем,
+        # иначе в памяти победителя чужой токен и снова 401 (тот самый баг).
+        TOKEN = _resolve_token()
         native.ensure_hostfp()
         native.ensure_autostart()
         native.ensure_shortcuts()  # Windows: MaxGraph.lnk на рабочий стол + в меню «Пуск»
@@ -8004,4 +8100,13 @@ if __name__ == "__main__":
         else:
             main()
     else:
+        # python-фолбэк (dev/spike): тот же guard, но headless — без webbrowser,
+        # просто лог и exit 0. Магазин (STORE_MODE) и Docker (/.dockerenv) — без
+        # guard: там процесс на data/ один по устройству среды, поведение не меняем.
+        if not STORE_MODE and not os.path.exists("/.dockerenv"):
+            import singleinstance
+            if not singleinstance.acquire(DATA_DIR):
+                log.info("single-instance: экземпляр уже запущен (data=%s) — выход", DATA_DIR)
+                sys.exit(0)
+            TOKEN = _resolve_token()  # перечитать под локом (гонка первого старта, см. выше)
         main()

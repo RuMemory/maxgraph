@@ -515,6 +515,12 @@ def _dashboard_url(port: int, token: str = "") -> str:
     return f"http://localhost:{port}/app" + (f"#{token}" if token else "")
 
 
+def open_dashboard(port: int | None = None) -> None:
+    """Дашборд живого экземпляра в браузере (токен из data/local_token.txt,
+    если читается). single-instance guard зовёт это из второго процесса."""
+    webbrowser.open(_dashboard_url(port or _default_port(), _read_local_token()))
+
+
 def request_update_now(data_dir=None) -> bool:
     """Пункт трея «Проверить обновления»: пустой маркер DATA_DIR/.update-now —
     selfupdate.update_loop слушает его внутри интервала и триггерится мгновенно

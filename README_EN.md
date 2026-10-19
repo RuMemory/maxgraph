@@ -10,7 +10,7 @@
   <a href="https://rezon-ai.ru">Website</a> ·
   <a href="https://rezon-ai.ru/en/blog/">Blog</a> ·
   <a href="https://t.me/maxgraph_mcp">Telegram</a> ·
-  <a href="#installation">Installation</a>
+  <a href="#one-step-connection">Integrations</a>
 </p>
 
 <p align="center">
