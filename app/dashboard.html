@@ -720,7 +720,7 @@ ru:{
  'buy.pay':'Оплатить','buy.extend':'Текущий ключ (продление −10% — дни суммируются)',
  'buy.email':'Email — чек и ключ активации','buy.emailph':'you@example.com',
  'buy.emailfromkey':'Email возьмём из ключа продления','buy.emailbad':'Проверь email: нужен @ и без пробелов',
- 'buy.waiting':'Оплата открыта в новой вкладке. Жду подтверждение…','buy.reopen':'открыть оплату снова','buy.cancel':'отмена',
+ 'buy.waiting':'Оплата открыта в новой вкладке. Жду подтверждение…','buy.waitmail':'Оплата открыта в новой вкладке. Ключ придёт на email после оплаты.','buy.reopen':'открыть оплату снова','buy.cancel':'отмена',
  'buy.done':'Готово! Pro активирован. Сохрани ключ на всякий случай:','buy.copy':'Скопировать ключ',
  'buy.manual':'Ввести ключ вручную','buy.err':'Оплата не прошла. Попробуй ещё раз или напиши: help@rezon-ai.ru',
  'buy.close':'Закрыть','close':'Закрыть',
@@ -772,7 +772,7 @@ en:{
  'buy.pay':'Pay','buy.extend':'Current key (renewal −10% — days add up)',
  'buy.email':'Email — receipt and activation key','buy.emailph':'you@example.com',
  'buy.emailfromkey':'We\'ll take the email from your renewal key','buy.emailbad':'Check the email: needs @ and no spaces',
- 'buy.waiting':'Payment opened in a new tab. Waiting for confirmation…','buy.reopen':'reopen payment','buy.cancel':'cancel',
+ 'buy.waiting':'Payment opened in a new tab. Waiting for confirmation…','buy.waitmail':'Payment opened in a new tab. Your key will arrive by email once the payment clears.','buy.reopen':'reopen payment','buy.cancel':'cancel',
  'buy.done':'Done! Pro activated. Save the key just in case:','buy.copy':'Copy key',
  'buy.manual':'Enter key manually','buy.err':'Payment failed. Retry or contact: help@rezon-ai.ru',
  'buy.close':'Close','close':'Close',
@@ -921,13 +921,15 @@ function renderPlans(){const en=LANG==='en';const b0=(plansCache&&plansCache[0])
       else if(e.key==='ArrowUp'||e.key==='ArrowLeft'){e.preventDefault();buyStep(-1);}};});}
 function buySelect(id){const refocus=document.activeElement&&document.activeElement.closest&&document.activeElement.closest('#buyPlans');buySel=id;renderPlans();updPayBtn();if(refocus){const el=document.querySelector('#buyPlans .plan-row.sel');if(el)el.focus();}}
 function buyStep(d){const ids=(plansCache||PLANS_FALLBACK).map(p=>p.id);const i=ids.indexOf(buySel);buySel=ids[(i+d+ids.length)%ids.length];renderPlans();updPayBtn();const el=document.querySelector('#buyPlans .plan-row.sel');if(el)el.focus();}
-function updPayBtn(){const p=(plansCache||PLANS_FALLBACK).find(x=>x.id===buySel)||PLANS_FALLBACK[0];const ext=$('#buyExtend').value.trim();const hasExt=ext.startsWith('mg_')&&ext.length>10;
-  /* v0.38.0: стек рефералки в цене кнопки — только отображение, сервер пересчитает сам */
-  const pct=(hasExt&&refInfo&&refInfo.ok)?Math.min(10+10*(refInfo.stack_n||0),50):(hasExt?10:0);
-  const useUsd=LANG==='en'&&p.usd;const price=useUsd?(pct?p.usd*(100-pct)/100:p.usd):(pct?Math.round(p.rub*(100-pct)/100):p.rub);
+function updPayBtn(){const p=(plansCache||PLANS_FALLBACK).find(x=>x.id===buySel)||PLANS_FALLBACK[0];const ext=$('#buyExtend').value.trim();const hasExt=ext.startsWith('mg_')&&ext.length>10;const en=LANG==='en';
+  /* v0.38.0: стек рефералки в цене кнопки — только отображение, сервер пересчитает сам.
+     EN платит через lava.top: скидок продления там нет (pct=0), поле ключа скрыто */
+  const pct=en?0:((hasExt&&refInfo&&refInfo.ok)?Math.min(10+10*(refInfo.stack_n||0),50):(hasExt?10:0));
+  const useUsd=en&&p.usd;const price=useUsd?(pct?p.usd*(100-pct)/100:p.usd):(pct?Math.round(p.rub*(100-pct)/100):p.rub);
   $('#buyPay').textContent=t('buy.pay')+' '+fmtPlanPrice(p,price);
-  $('#buyEmailBox').style.display=hasExt?'none':'';$('#buyEmailHint').style.display=hasExt?'':'none';}
-function buyShow(st){$('#buyChoose').style.display=st==='choose'?'':'none';$('#buyWait').style.display=st==='wait'?'':'none';$('#buyDone').style.display=st==='done'?'':'none';}
+  $('#buyExtend').style.display=en?'none':'';const el=document.querySelector('label[for=buyExtend]');if(el)el.style.display=en?'none':'';
+  $('#buyEmailBox').style.display=(hasExt&&!en)?'none':'';$('#buyEmailHint').style.display=(hasExt&&!en)?'':'none';}
+function buyShow(st){if(st==='wait')$('#buyWait .sub').textContent=t('buy.waiting');$('#buyChoose').style.display=st==='choose'?'':'none';$('#buyWait').style.display=st==='wait'?'':'none';$('#buyDone').style.display=st==='done'?'':'none';}
 async function buyOpen(){buyOpener=document.activeElement;$('#buyPop').classList.add('on');buyShow('choose');await loadPlans();$('#buyExtend').value=(licInfo&&licInfo.key)||'';$('#buyEmail').classList.remove('err');$('#buyEmail').removeAttribute('aria-invalid');renderPlans();updPayBtn();const f=document.querySelector('#buyPlans .plan-row.sel');if(f)f.focus();}
 function buyClose(){$('#buyPop').classList.remove('on');if(buyTimer){clearInterval(buyTimer);buyTimer=null;}if(buyOpener&&buyOpener.focus)buyOpener.focus();buyOpener=null;}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('#buyPop').classList.contains('on'))buyClose();});
@@ -943,6 +945,7 @@ document.addEventListener('keydown',e=>{
   else if(!$('#buyPop').contains(document.activeElement)){e.preventDefault();first.focus();}
 });
 async function buyPay(){const ext=$('#buyExtend').value.trim();const hasExt=ext.startsWith('mg_')&&ext.length>10;const em=$('#buyEmail').value.trim();
+  if(LANG==='en')return buyPayLava(em);  /* EN → lava.top (USD); RU — Platega ниже */
   if(!ext&&(em.indexOf('@')<0||/\s/.test(em))){$('#buyEmail').classList.add('err');$('#buyEmail').setAttribute('aria-invalid','true');$('#buyEmail').focus();toast(t('buy.emailbad'));return;}
   $('#buyPay').disabled=true;
   if(!refInfo)await loadReferral();  /* install_id/fp инстанса → магазин: стек продления + self-ref блок */
@@ -952,6 +955,22 @@ async function buyPay(){const ext=$('#buyExtend').value.trim();const hasExt=ext.
     const j=await r.json();if(!j.ok)throw new Error(j.error||'pay');
     buyRef=j.ref;buyPayUrl=j.payUrl;window.open(j.payUrl,'_blank','noopener');
     buyShow('wait');buyGiveup=Date.now()+15*60000;buyTimer=setInterval(buyPoll,5000);
+  }catch(e){toast(t('buy.err'));}finally{$('#buyPay').disabled=false;}}
+/* EN-флоу: lava.top через магазин. Продление отдельной веткой не нужно —
+   lava шлёт НОВЫЙ ключ на email, его активация суммирует дни с текущим сроком. */
+async function buyPayLava(em){
+  if(em.indexOf('@')<0||/\s/.test(em)){$('#buyEmail').classList.add('err');$('#buyEmail').setAttribute('aria-invalid','true');$('#buyEmail').focus();toast(t('buy.emailbad'));return;}
+  $('#buyPay').disabled=true;
+  try{
+    const p=(plansCache||PLANS_FALLBACK).find(x=>x.id===buySel)||PLANS_FALLBACK[0];
+    const r=await fetch(STORE+'/api/billing/lava/invoice',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({plan:String(Math.max(1,Math.round(p.days/31))),email:em})});
+    const j=await r.json().catch(()=>null);
+    const payUrl=j&&j.paymentUrl;let u=null;try{u=new URL(payUrl||'');}catch(_){}
+    /* security: открываем только платёжный шлюз lava.top (гард open redirect, как на лендинге) */
+    if(!r.ok||!u||u.protocol!=='https:'||!(u.hostname==='lava.top'||u.hostname.slice(-9)==='.lava.top'))throw new Error('lava');
+    buyPayUrl=payUrl;window.open(payUrl,'_blank','noopener');
+    buyShow('wait');$('#buyWait .sub').textContent=t('buy.waitmail');  // ref у lava нет — без поллинга, ключ придёт на email
   }catch(e){toast(t('buy.err'));}finally{$('#buyPay').disabled=false;}}
 async function buyPoll(){if(!buyRef)return;if(Date.now()>buyGiveup){buyClose();toast(t('buy.err'));return;}
   try{const r=await fetch(STORE+'/api/billing/status',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ref:buyRef})});const j=await r.json();
@@ -965,6 +984,7 @@ $('#buyClose').onclick=buyClose;
 $('#buyPop').addEventListener('click',e=>{if(e.target.id==='buyPop')buyClose();});
 $('#buyPay').onclick=buyPay;
 $('#buyCancel').addEventListener('click',e=>{e.preventDefault();buyClose();});
+/* buyPayUrl присваивается только после host-гарда (buyPayLava: *.lava.top) или от магазина (Platega) — повторный гард тут не нужен */
 $('#buyReopen').addEventListener('click',e=>{e.preventDefault();if(buyPayUrl)window.open(buyPayUrl,'_blank','noopener');});
 $('#buyManual').addEventListener('click',e=>{e.preventDefault();buyClose();$('#sysLicActivate').style.display='';sysOpen(true);$('#sysLicKey').focus();});
 $('#buyCopy').onclick=()=>{const k=$('#buyKeyTxt').textContent;if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(k).then(()=>toast(t('toast.copied')));}else{const ta=document.createElement('textarea');ta.value=k;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();toast(t('toast.copied'));}};

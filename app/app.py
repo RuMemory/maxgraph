@@ -6111,6 +6111,7 @@ async def api_plans(request: Request):
 @mcp.custom_route("/api/plans", methods=["OPTIONS"])
 @mcp.custom_route("/api/billing/pay", methods=["OPTIONS"])
 @mcp.custom_route("/api/billing/status", methods=["OPTIONS"])
+@mcp.custom_route("/api/billing/lava/invoice", methods=["OPTIONS"])
 async def billing_cors_preflight(request: Request):
     """Preflight для кросс-ориджин покупки из дашборда."""
     return Response(status_code=204, headers=_CORS)
@@ -7339,16 +7340,24 @@ async def billing_create(request: Request):
 # --- lava.top: EN-витрина (USD, иностранные карты) ---
 
 _LAVA_PLANS = {"1": "pro1", "3": "pro3", "6": "pro6", "12": "pro12"}
-# сумма USD → план (fallback в вебхуке, когда запись платежа вытеснена тримом 500)
-_LAVA_PLAN_BY_AMOUNT = {float(PLANS[p]["USD"]): p for p in _LAVA_PLANS.values()}
+# сумма USD → план (fallback в вебхуке, когда запись платежа вытеснена тримом 500).
+# pro1 ($5) ИСКЛЮЧЁН: $5 доната == $5 pro1 — коллизия неразрешима, fail closed
+# (lava_unknown_amount + ручная выдача), иначе донат дал бы ключ (security MED-1).
+_LAVA_PLAN_BY_AMOUNT = {float(PLANS[p]["USD"]): p for p in ("pro3", "pro6", "pro12")}
+# EN-донаты (поддержка, без ключа): белый список сумм USD, решение 2026-10-19.
+# В fallback по сумме НЕ входят: угадывать донат по сумме нельзя (вытесненная
+# запись → lava_unknown_amount, ключ не выдаётся).
+_LAVA_DONATE = {"d5": 5, "d10": 10, "d25": 25}
 
 
 @mcp.custom_route("/api/billing/lava/invoice", methods=["POST"])
 async def api_billing_lava_invoice(request: Request):
-    """EN-флоу лендинга: {plan: 1|3|6|12, email} → {paymentUrl} (lava.top, USD).
+    """EN-флоу лендинга и дашборда: {plan: 1|3|6|12|d5|d10|d25, email} → {paymentUrl} (lava.top, USD).
 
-    Цена всегда серверная (PLANS[plan]["USD"]) — amount от клиента не принимаем.
+    Цена всегда серверная (PLANS[plan]["USD"] / _LAVA_DONATE) — amount от клиента
+    не принимаем. d5/d10/d25 — донаты (tier=donation, без ключа в вебхуке).
     Платёж ждёт вебхук /api/webhooks/lava (матч по lava_id = contractId инвойса).
+    CORS: дашборд покупателя (localhost) шлёт cross-origin POST — как /api/billing/pay.
     """
     import asyncio
     import secrets
@@ -7357,44 +7366,58 @@ async def api_billing_lava_invoice(request: Request):
         return g
     ip = _client_ip(request)
     if _rate_limited(ip, "lava_invoice", 10, 60):
-        return JSONResponse({"error": "too_many_attempts"}, status_code=429)
+        return JSONResponse({"error": "too_many_attempts"}, status_code=429, headers=_CORS)
     if not (LAVA_API_KEY and LAVA_OFFER_ID and lava):
-        return JSONResponse({"error": "payments not configured"}, status_code=503)
+        return JSONResponse({"error": "payments not configured"}, status_code=503, headers=_CORS)
     raw, err = await _read_capped(request, 16384)
     if err is not None:
-        return JSONResponse({"error": "bad request"}, status_code=400)
+        return JSONResponse({"error": "bad request"}, status_code=400, headers=_CORS)
     try:
         body = json.loads(raw)
     except Exception:
-        return JSONResponse({"error": "bad json"}, status_code=400)
+        return JSONResponse({"error": "bad json"}, status_code=400, headers=_CORS)
     if not isinstance(body, dict):  # [1,2] и т.п. не ломают .get
-        return JSONResponse({"error": "bad json"}, status_code=400)
-    plan_id = _LAVA_PLANS.get(str(body.get("plan") or "")[:4])
-    if not plan_id:
-        return JSONResponse({"error": "plan must be 1|3|6|12"}, status_code=400)
+        return JSONResponse({"error": "bad json"}, status_code=400, headers=_CORS)
+    plan_key = str(body.get("plan") or "")[:4]
+    plan_id = _LAVA_PLANS.get(plan_key)
+    donation = plan_key in _LAVA_DONATE
+    if not plan_id and not donation:
+        return JSONResponse({"error": "plan must be 1|3|6|12|d5|d10|d25"}, status_code=400, headers=_CORS)
     email = _valid_email(body.get("email"))
     if not email:
-        return JSONResponse({"error": "valid email required"}, status_code=400)
+        return JSONResponse({"error": "valid email required"}, status_code=400, headers=_CORS)
     ref = "r-" + secrets.token_hex(8)
-    amount = PLANS[plan_id]["USD"]
+    amount = _LAVA_DONATE[plan_key] if donation else PLANS[plan_id]["USD"]
     try:
         pay = await asyncio.to_thread(
             lava.create_invoice, LAVA_API_KEY, LAVA_OFFER_ID, amount, email,
             f"{PUBLIC_BASE_URL}/billing/success?pid={ref}",
-            f"{PUBLIC_BASE_URL}/en/#pricing", LAVA_API)
+            f"{PUBLIC_BASE_URL}/en/#{'donate' if donation else 'pricing'}", LAVA_API)
     except Exception as e:  # BillingError: детали (сырой ответ lava) в лог, наружу generic
         log.error("lava invoice failed: %s", e)
-        return JSONResponse({"error": "payment creation failed"}, status_code=502)
+        return JSONResponse({"error": "payment creation failed"}, status_code=502, headers=_CORS)
+    # defense-in-depth (LOW-2): отдаём клиенту редирект только на lava.top
+    from urllib.parse import urlparse
+    _host = (urlparse(pay["payment_url"]).hostname or "")
+    if not (pay["payment_url"].startswith("https://")
+            and (_host == "lava.top" or _host.endswith(".lava.top"))):
+        log.error("lava invoice: неожиданный payment_url host %r — не отдаём клиенту", _host)
+        return JSONResponse({"error": "payment creation failed"}, status_code=502, headers=_CORS)
+    rec = {"id": ref, "ref": ref, "lava_id": pay["payment_id"],
+           "plan": plan_key if donation else plan_id,
+           "tier": "donation" if donation else "pro", "email": email,
+           "status": "created", "at": now_iso(),
+           "payUrl": pay["payment_url"],
+           "amount": amount, "currency": "USD"}
+    if donation:
+        rec["donation"] = True
     with _codes_lock:
         data = _load_codes()
-        data["payments"].append({"id": ref, "ref": ref, "lava_id": pay["payment_id"],
-                                 "plan": plan_id, "tier": "pro", "email": email,
-                                 "status": "created", "at": now_iso(),
-                                 "payUrl": pay["payment_url"],
-                                 "amount": amount, "currency": "USD"})
+        data["payments"].append(rec)
         _save_codes(data)
-    _event("payment_created", ref, f"lava · {plan_id} · ${amount} · {email}")
-    return JSONResponse({"ok": True, "paymentUrl": pay["payment_url"]}, headers=_NOCACHE)
+    _event("payment_created", ref, f"lava · {rec['plan']} · ${amount} · {email}")
+    return JSONResponse({"ok": True, "paymentUrl": pay["payment_url"]},
+                        headers={**_NOCACHE, **_CORS})
 
 
 def _success_page(pid: str) -> str:
@@ -7725,6 +7748,7 @@ async def webhook_lava(request: Request):
     ev = lava.parse_webhook(body)
     etype = ev["event_type"]
     delivery = None  # (code, lic_key, tier, email, ref) — доставим после снятия лока
+    donation_delivery = None  # (email, label) — thank-you письмо донатеру
     with _codes_lock:
         data = _load_codes()
         seen = data.setdefault("lava_events", [])
@@ -7739,6 +7763,21 @@ async def webhook_lava(request: Request):
             if ev["product_id"] and ev["product_id"] != lava.PRODUCT_ID:
                 log.warning("lava payment.success: чужой продукт %s — пропуск", ev["product_id"])
                 _event("lava_foreign_product", ev["contract_id"], ev["product_id"])
+            elif payment is not None and payment.get("donation"):
+                # донат — чистая поддержка: без кода/ключа/лицензии (зеркало Platega-ветки).
+                # code="DONATION" — маркер обработанности для дедупа повторных webhook.
+                payment["status"] = "success"
+                payment["code"] = "DONATION"
+                payment["amount"] = ev["amount"] or payment.get("amount")
+                payment["currency"] = ev["currency"] or "USD"
+                email = payment.get("email") or _valid_email(ev["email"]) or None
+                if email:
+                    payment["email"] = email
+                label = f"MaxGraph — поддержка проекта (${payment.get('amount') or ''})"
+                donation_delivery = (email, label)
+                _event("donation", ev["contract_id"],
+                       f"lava · {payment.get('plan')} · {payment['amount']}{payment['currency']} · {email or 'без почты'}")
+                result["donation"] = True
             else:
                 plan_id = str((payment or {}).get("plan") or "")
                 if plan_id not in PLANS:
@@ -7797,23 +7836,40 @@ async def webhook_lava(request: Request):
                 _event("lava_foreign_product", ev["event_id"], f"{etype} · {ev['product_id']}")
             else:
                 hit = None
-                for p in reversed(data["payments"]):
-                    if not p.get("lava_id") or not p.get("licenseKey"):
-                        continue
-                    if p.get("status") == "refunded":
-                        continue
-                    if ev["email"] and p.get("email") and p["email"] != ev["email"]:
-                        continue
-                    if ev["amount"] and p.get("amount") and abs(float(p["amount"]) - ev["amount"]) > 0.01:
-                        continue
-                    hit = p
-                    break
+                if ev["contract_id"]:
+                    # точный матч по contractId инвойса (security MED-2: эвристика
+                    # email+amount при коллизии $5 доната == pro1 могла отозвать
+                    # чужой ключ). contractId есть — эвристику не применяем.
+                    hit = next((p for p in reversed(data["payments"])
+                                if p.get("lava_id") == ev["contract_id"]
+                                and p.get("status") != "refunded"), None)
+                    if hit and hit.get("donation") and hit.get("status") != "success":
+                        hit = None  # неоплаченный донат — журналировать нечего (LOW-1)
+                else:
+                    for p in reversed(data["payments"]):
+                        # донаты матчим тоже (без licenseKey) — журнал возврата, revoke не нужен
+                        if not p.get("lava_id") or not (p.get("licenseKey") or p.get("donation")):
+                            continue
+                        if p.get("status") == "refunded":
+                            continue
+                        if p.get("donation") and p.get("status") != "success":
+                            continue  # неоплаченный донат (LOW-1)
+                        if ev["email"] and p.get("email") and p["email"] != ev["email"]:
+                            continue
+                        if ev["amount"] and p.get("amount") and abs(float(p["amount"]) - ev["amount"]) > 0.01:
+                            continue
+                        hit = p
+                        break
                 if hit:
                     hit["status"] = "refunded"
                     hit["refunded_at"] = now_iso()
-                    _add_revoked(data, hit["licenseKey"], f"lava {etype}")
+                    if hit.get("licenseKey"):
+                        _add_revoked(data, hit["licenseKey"], f"lava {etype}")
+                        note = "ключ отозван"
+                    else:  # донат: ключа нет — только журнал
+                        note = "донат, ключа не было"
                     _event("payment_refunded", hit.get("lava_id") or hit.get("id"),
-                           f"{ev['amount']}{ev['currency']} · {hit.get('email', '')} · ключ отозван")
+                           f"{ev['amount']}{ev['currency']} · {hit.get('email', '')} · {note}")
                     result["refunded"] = True
                 else:
                     log.warning("lava %s: платёж не найден (email=%s amount=%s %s)",
@@ -7837,6 +7893,14 @@ async def webhook_lava(request: Request):
             log.info("lava deliver_code %s: %s", code, res)
         except Exception as e:  # deliver_code сам не бросает; страховка
             log.error("deliver_code упал целиком (%s): код %s уже в codes.json и на success-странице", e, code)
+    if donation_delivery:  # thank-you донатеру — сеть строго вне лока, best-effort
+        import asyncio
+        d_email, d_label = donation_delivery
+        try:
+            res = await asyncio.to_thread(billing.deliver_donation, label=d_label, email=d_email)
+            log.info("lava deliver_donation: %s", res)
+        except Exception as e:  # deliver_donation сам не бросает; страховка
+            log.error("deliver_donation упал целиком (%s)", e)
     return JSONResponse(result, headers=_NOCACHE)
 
 
