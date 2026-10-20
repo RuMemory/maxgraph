@@ -2728,11 +2728,11 @@ def session_close(summary: str = "", done: list[str] | None = None,
 
 # --------------------------------------------------------- REST + dashboard -
 
-_DASH_LOCAL = _RESOURCE_BASE / "dashboard.html"
-_DASH_DATA = DATA_DIR / "dashboard.html"  # hot-override без пересборки образа
-_PAGES = {"dashboard.html": _DASH_DATA, "landing.html": DATA_DIR / "landing.html",
+_PAGES = {"landing.html": DATA_DIR / "landing.html",
           "billing.html": DATA_DIR / "billing.html",
           "privacy.html": DATA_DIR / "privacy.html", "offer.html": DATA_DIR / "offer.html"}
+# dashboard.html в _PAGES нет (решение владельца 2026-10-20): дашборд всегда из
+# образа/бандла — DATA_DIR/dashboard.html больше не шэдоуит бандлённый.
 # admin.html нет в _PAGES: страница версионируется в репо.
 # DATA_DIR/admin.html на сервере
 # НЕ должен шэдоуить репозиторную — иначе деплой отдаёт старый JS под новый API.

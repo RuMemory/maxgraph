@@ -418,6 +418,27 @@ def _reconfigure_stdout(src_stdin=None) -> None:
             pass  # StringIO в тестах / экзотический stdio — работаем как есть
 
 
+def _read_stdin(src) -> str:
+    """Payload хоста → str. Детерминированно: сырые байты .buffer → UTF-8
+    (errors="replace") — не зависит от локали Windows и от того, успел ли
+    reconfigure. Текстовый поток без .buffer (StringIO в тестах) — как есть;
+    stdin=None (pythonw) → "" (flush spool'а всё равно отработает)."""
+    if src is None:
+        return ""
+    buf = getattr(src, "buffer", None)
+    if buf is not None:
+        try:
+            data = buf.read()
+            if isinstance(data, bytes):
+                return data.decode("utf-8", errors="replace")
+        except Exception:
+            pass  # экзотический buffer — ниже текстовый путь
+    try:
+        return src.read() or ""
+    except Exception:
+        return ""
+
+
 def _print_hook_output(event_name: str, **fields) -> None:
     """Единственная точка stdout-печати: JSON для хоста, ensure_ascii=False.
     Ошибка печати (закрытый pipe и т.п.) не должна ронять хук."""
@@ -595,7 +616,7 @@ def main(stdin=None, argv=None) -> int:
                 os.environ["MG_HOST"] = args[i + 1]
         src = stdin if stdin is not None else sys.stdin
         _reconfigure_stdout(src)  # до чтения: переключаем именно тот поток
-        raw = src.read()
+        raw = _read_stdin(src)
         payload = json.loads(raw) if raw.strip() else {}
         ev = normalize(payload)
         if ev is not None:
