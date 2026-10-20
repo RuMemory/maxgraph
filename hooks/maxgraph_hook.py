@@ -164,11 +164,26 @@ def slugify(text) -> str:
 
 
 
+
+
     s = unicodedata.normalize("NFC", str(text or "").strip().lower())
+    s = "".join(_RU2LAT.get(ch, ch) for ch in s)
     s = _SLUG_BAD.sub("-", s).strip("-")[:64].strip("-")
     while len(s.encode("utf-8")) > 200:
         s = s[:-1].rstrip("-")
     return s
+
+
+
+
+
+_RU2LAT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
 
 
 def _slugify_ascii(text) -> str:

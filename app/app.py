@@ -527,8 +527,28 @@ def _actr_boost_fn():
 
 
 
-
 _PROJECT_RE = re.compile(r"[^\W_]+(-[^\W_]+)*")
+
+
+
+
+
+
+_RU2LAT = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
+    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+}
+
+
+def _canon_slug(s) -> str:
+
+
+
+    s = unicodedata.normalize("NFC", str(s or "").strip().lower())
+    return "".join(_RU2LAT.get(ch, ch) for ch in s)
 
 
 def _check_project(value) -> tuple[str, str]:
@@ -538,8 +558,19 @@ def _check_project(value) -> tuple[str, str]:
 
 
 
-    slug = unicodedata.normalize("NFC", str(value or "").strip().lower())
+
+
+    slug = _canon_slug(value)
+
+
+
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
     if not slug:
+
+
+        if str(value or "").strip():
+            return "", (f"invalid project slug {value!r}: пусто после "
+                        f"нормализации (транслит/NFC)")
         return "", ""
     if len(slug) > 64 or len(slug.encode("utf-8")) > 200 \
             or not _PROJECT_RE.fullmatch(slug) or slug in _RESERVED_SLUGS:
@@ -566,11 +597,14 @@ def _in_project(entity: dict, slug: str) -> bool:
 
 
 
-    fam = _project_family(slug)
-    p = entity.get("project") or ""
+
+
+    fam = {_canon_slug(s) for s in _project_family(slug)}
+    p = _canon_slug(entity.get("project") or "")
     if p in fam:
         return True
-    return any(entity["name"] == _project_entity_name(s) for s in fam if s)
+    name = entity["name"]
+    return name.startswith("project:") and _canon_slug(name[8:]) in fam - {""}
 
 
 def _filter_graph(ents: dict, rels: list, slug: str, all_projects: bool):
@@ -665,6 +699,26 @@ def _project_family(slug: str) -> frozenset:
         if v == canon:
             fam.add(k)
     return frozenset(fam)
+
+
+def _slug_in_family(p: str, fam) -> bool:
+
+
+
+    return _canon_slug(p) in {_canon_slug(s) for s in fam}
+
+
+def _canon_collisions(ents: dict) -> dict:
+
+
+
+
+    by_canon = {}
+    for e in ents.values():
+        raw = e.get("project") or ""
+        if raw:
+            by_canon.setdefault(_canon_slug(raw), set()).add(raw)
+    return {c: sorted(raws) for c, raws in by_canon.items() if len(raws) > 1}
 
 
 
@@ -827,13 +881,28 @@ def _create_entities_graph(ents, rels, items, project: str = "", source: str = "
             project_created = True
             _event("create_entity", pname, project, project=project, source=source)
     for e in items:
+        if not str(e.get("name") or "").strip():
+
+
+            warnings.append("пустое name — сущность пропущена")
+            continue
         if e["name"] in ents:
             ex = ents[e["name"]]
             ex_project = ex.get("project") or ""
-            if project and ex_project and ex_project != project:
+            if project and ex_project \
+                    and _canon_slug(ex_project) != _canon_slug(project):
                 warnings.append(
                     f"'{e['name']}' уже существует в проекте '{ex_project}' — merge "
                     f"в проект '{project}' отклонён (имена сущностей глобально уникальны)")
+                continue
+
+
+
+            if project and e["name"].startswith("project:") \
+                    and not _slug_in_family(e["name"][8:], _project_family(project)):
+                warnings.append(
+                    f"'{e['name']}': структурная сущность чужого проекта — "
+                    f"merge из проекта '{project}' отклонён")
                 continue
             have = {_norm_obs(o) for o in ex["observations"]}
             added = []
@@ -881,6 +950,22 @@ def _create_entities_graph(ents, rels, items, project: str = "", source: str = "
             obs_norm.add(k)
             obs_list.append(c)
         etype = _canonical_type(e.get("entityType"))
+
+
+
+
+
+
+        if etype == "project":
+            n = e["name"]
+            own_marker = bool(project) and n.startswith("project:") \
+                and _slug_in_family(n[8:], _project_family(project))
+            if not own_marker and n != project:
+                warnings.append(
+                    f"'{n}': entityType=project зарезервирован для "
+                    f"проектов-рабочих-папок — используйте свободный тип "
+                    f"(product/service/topic/…); сущность не создана")
+                continue
         d = {
             "name": e["name"],
             "title": e.get("title") or e["name"],
@@ -951,7 +1036,8 @@ def op_create_entities(items, project: str = "", source: str = ""):
         if changed:
             _save(ents, rels)
         scope = {n for n, e in ents.items()
-                 if not project or (e.get("project") or "") == project}
+                 if not project
+                 or _canon_slug(e.get("project") or "") == _canon_slug(project)}
         _reprime_tick(project, out)
     nd = _neardup_warnings(out.get("created") or [], scope)
     if nd:
@@ -1159,6 +1245,15 @@ def op_update_entity(item, project: str = "", source: str = ""):
             e["title"] = item["title"]
         if item.get("entityType"):
             new_type = _canonical_type(item["entityType"])
+
+
+
+            if new_type == "project" and not name.startswith("project:") \
+                    and name != project:
+                warnings.append(
+                    f"'{name}': entityType=project зарезервирован для "
+                    f"проектов-рабочих-папок — тип не изменён")
+                new_type = e["entityType"]
             if new_type != e["entityType"]:
                 e["entityType"] = new_type
                 if new_type in _STATUS_BY_TYPE:
@@ -1363,21 +1458,25 @@ def op_delete_project(project: str) -> dict:
     if not project:
         return {"error": "project is required"}
     pname = _project_entity_name(project)
+    pc = _canon_slug(project)
     with _lock:
         ents, rels = _load()
+        coll = _canon_collisions(ents).get(pc)
 
 
 
         doomed = {n for n, e in ents.items()
-                  if (e.get("project") or "") == project or n == pname
-                  or (n == project and e.get("entityType") == "project")}
+                  if _canon_slug(e.get("project") or "") == pc or n == pname
+                  or (n.startswith("project:") and _canon_slug(n[8:]) == pc)
+                  or (_canon_slug(n) == pc and e.get("entityType") == "project")}
 
 
 
 
 
         aliases = {k: v for k, v in _aliases_load().items()
-                   if k != project and v != project}
+                   if _canon_slug(k) != pc and _canon_slug(v) != pc}
+
         aliases_changed = len(aliases) != len(_aliases_load())
         if not doomed and not aliases_changed:
             return {"deleted": 0, "relations_removed": 0}
@@ -1391,6 +1490,12 @@ def op_delete_project(project: str) -> dict:
         if aliases_changed:
             _aliases_save(aliases)
         out = {"deleted": len(doomed), "relations_removed": before - len(rels)}
+        if coll:
+
+
+            log.warning("delete_project %s: удалён canon-класс с написаниями %s",
+                        project, coll)
+            out["canon_raw_slugs"] = coll
     _event("delete_project", project, f"{out['deleted']} entities",
            project=project)
     return out
@@ -1664,7 +1769,14 @@ def op_open(names, project: str = "", with_ids: bool = False):
     return {"entities": found, "relations": frels}
 
 
-def op_timeline(limit=100, project: str = "", all_projects: bool = False):
+
+
+
+_TIMELINE_TECH = frozenset({"hook_PostToolUse", "hook_Stop"})
+
+
+def op_timeline(limit=100, project: str = "", all_projects: bool = False,
+                tools: bool = False):
     project = _resolve_project(project)
     with _lock:
         if not EVENTS_FILE.exists():
@@ -1680,19 +1792,26 @@ def op_timeline(limit=100, project: str = "", all_projects: bool = False):
                 ev = json.loads(line)
             except Exception:
                 continue
+            if not tools and ev.get("action") in _TIMELINE_TECH:
+                continue
             ep = ev.get("project")
             if not isinstance(ep, str):
                 continue
-            if ep in fam:
+            if _slug_in_family(ep, fam):
                 events.append(ev)
                 if len(events) >= limit:
                     break
         return {"events": events}
-    for line in reversed(lines[-limit:]):
+    for line in reversed(lines):
         try:
-            events.append(json.loads(line))
+            ev = json.loads(line)
         except Exception:
-            pass
+            continue
+        if not tools and ev.get("action") in _TIMELINE_TECH:
+            continue
+        events.append(ev)
+        if len(events) >= limit:
+            break
     return {"events": events}
 
 
@@ -1706,19 +1825,13 @@ _TASK_TITLE_MAX = 200
 _TASK_OPEN_TASKS_MAX = 20
 
 
-_TASK_TRANSLIT = {
-    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "yo",
-    "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
-    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
-    "ф": "f", "х": "h", "ц": "ts", "ч": "ch", "ш": "sh", "щ": "sch",
-    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
-}
+
 _TASK_SLUG_BAD = re.compile(r"[^a-z0-9]+")
 
 
 def _task_slug(title) -> str:
 
-    s = "".join(_TASK_TRANSLIT.get(ch, ch) for ch in str(title or "").strip().lower())
+    s = "".join(_RU2LAT.get(ch, ch) for ch in str(title or "").strip().lower())
     return _TASK_SLUG_BAD.sub("-", s).strip("-")
 
 
@@ -1924,7 +2037,7 @@ def _today_session(ents: dict, project: str, today: str):
     for e in ents.values():
         if e.get("entityType") != "session":
             continue
-        if (e.get("project") or "") != project:
+        if _canon_slug(e.get("project") or "") != _canon_slug(project):
             continue
         if str(e.get("createdAt", ""))[:10] != today:
             continue
@@ -1953,7 +2066,7 @@ def _touched_today(project: str, today: str, exclude: str = "", lines=None) -> l
         ep = ev.get("project") or ""
         if not isinstance(ep, str):
             continue
-        if ep not in fam:
+        if not _slug_in_family(ep, fam):
             continue
         if str(ev.get("ts", ""))[:10] != today:
             continue
@@ -2276,17 +2389,20 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET,
         with _lock:
             ents0, rels0 = _load()
             if pname0 not in ents0:
-                _out, ch = _create_entities_graph(ents0, rels0, [{
-                    "name": pname0, "title": project, "entityType": "project",
-                    "observations": [],
-                }], project="", source="agent")
-                if ch:
-                    _save(ents0, rels0)
+
+
+
+
+                ents0[pname0] = {"name": pname0, "title": project,
+                                 "entityType": "project", "tags": [],
+                                 "observations": [], "createdAt": now_iso(),
+                                 "updatedAt": now_iso()}
+                _event("create_entity", pname0, project, source="agent")
+                _save(ents0, rels0)
     try:
         budget = max(0, int(budget_chars))
     except (TypeError, ValueError):
         budget = SESSION_START_BUDGET
-    pname = _project_entity_name(project)
     mult_fn = _actr_boost_fn()
     with _lock:
         ents, _rels = _load()
@@ -2295,13 +2411,15 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET,
         _reprime_writes[project] = 0
 
     fam = _project_family(project)
+    fam_canon = {_canon_slug(s) for s in fam} - {""}
     proj_ent = None
-    for s in [project] + sorted(fam - {project}):
-        if _project_entity_name(s) in ents:
-            proj_ent = ents[_project_entity_name(s)]
+    for e in ents.values():
+        if e["name"].startswith("project:") \
+                and _canon_slug(e["name"][8:]) in fam_canon:
+            proj_ent = e
             break
     proj_ents = [e for e in ents.values()
-                 if (e.get("project") or "") in fam]
+                 if _slug_in_family(e.get("project") or "", fam)]
 
     proj_facts = _valid_obs(proj_ent) if proj_ent else []
 
@@ -2318,7 +2436,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET,
         except Exception:
             continue
         ep = ev.get("project")
-        if isinstance(ep, str) and ep in fam:
+        if isinstance(ep, str) and _slug_in_family(ep, fam):
             total_events += 1
             recent_buf.append(ev)
             if (str(ev.get("ts", ""))[:10] == today
@@ -2622,7 +2740,7 @@ def memory_session_end() -> str:
 
 @mcp.tool()
 def create_entities(entities: list[EntityIn], project: str = "") -> dict:
-    """Create multiple new entities in the knowledge graph. name = kebab-case id навсегда (не меняется), title = человеческое имя. Сначала search_nodes — не дублируй существующие. entityType: канонические project/session/bug/decision/request/event/task (синонимы RU/EN канонизируются: bugfix→bug, решение→decision, просьба→request, задача→task; свободный тип сохраняется как есть); bug получает status open/fixed, task — open/done (default open). project: kebab-slug проекта — сущность project:<slug> создаётся автоматически, существующее имя в чужом проекте → warning без merge."""
+    """Create multiple new entities in the knowledge graph. name = kebab-case id навсегда (не меняется), title = человеческое имя. Сначала search_nodes — не дублируй существующие. entityType: канонические project/session/bug/decision/request/event/task (синонимы RU/EN канонизируются: bugfix→bug, решение→decision, просьба→request, задача→task; свободный тип сохраняется как есть); type=project зарезервирован для проектов-рабочих-папок (система создаёт сама) — для продукта/сервиса/темы внутри проекта используй свободный тип (product/service/topic/…), иначе сущность будет отклонена; bug получает status open/fixed, task — open/done (default open). project: kebab-slug проекта (кириллица нормализуется в транслит) — сущность project:<slug> создаётся автоматически, существующее имя в чужом проекте → warning без merge."""
     ro = _readonly_guard()
     if ro:
         return ro
@@ -2927,7 +3045,7 @@ async def api_export(request: Request):
         lines = []
         for line in events_raw.splitlines():
             try:
-                if json.loads(line).get("project") == slug:
+                if _canon_slug(json.loads(line).get("project") or "") == _canon_slug(slug):
                     lines.append(line)
             except Exception:
                 continue
@@ -2950,7 +3068,7 @@ def _project_memory_counts() -> dict:
     ents, _ = _load()
     counts = {}
     for e in ents.values():
-        slug = e.get("project") or ""
+        slug = _canon_slug(e.get("project") or "")
         if not slug or e["name"].startswith("project:"):
             continue
         if e.get("entityType") == "session":
@@ -3001,10 +3119,13 @@ async def api_search(request: Request):
 
 
                 if not name.startswith("project:"):
-                    ep = e.get("project") or ""
-                    if ep and ep != s:
+                    ep = _canon_slug(e.get("project") or "")
+                    if ep and ep != _canon_slug(s):
                         continue
-                canon = _resolve_project(s)
+
+                canon = _canon_slug(_resolve_project(s))
+
+
                 if canon in seen:
                     continue
                 seen.add(canon)
@@ -3162,7 +3283,8 @@ async def api_timeline(request: Request):
         return JSONResponse({"error": err}, status_code=400)
     limit = int(request.query_params.get("limit", "100"))
     return JSONResponse(op_timeline(min(limit, 500), slug,
-                                    _truthy(request.query_params.get("all_projects"))))
+                                    _truthy(request.query_params.get("all_projects")),
+                                    tools=_truthy(request.query_params.get("tools"))))
 
 
 def _embed_detail():
@@ -3713,7 +3835,7 @@ async def api_ingest(request: Request):
 
 
 
-                    if any((e.get("project") or "") == cur for e in ents.values()):
+                    if any(_canon_slug(e.get("project") or "") == _canon_slug(cur) for e in ents.values()):
                         continue
                     log.warning("project-aliases: перезапись %s: %s → %s (пустой canon)",
                                 legacy, cur, canon_tag)
@@ -3734,9 +3856,9 @@ async def api_ingest(request: Request):
 
                     if not canon_tag.startswith(f"repo-{legacy}-"):
                         continue
-                if any((e.get("project") or "") == canon_tag for e in ents.values()):
+                if any(_canon_slug(e.get("project") or "") == _canon_slug(canon_tag) for e in ents.values()):
                     continue
-                if not any((e.get("project") or "") == legacy for e in ents.values()):
+                if not any(_canon_slug(e.get("project") or "") == _canon_slug(legacy) for e in ents.values()):
                     continue
                 aliases[legacy] = canon_tag
                 aliases_created[legacy] = canon_tag
@@ -3745,6 +3867,13 @@ async def api_ingest(request: Request):
                 log.info("project-aliases: созданы/перезаписаны %s", aliases_created)
 
     for ev in fresh:
+
+
+
+
+
+        if ev["hook"] == "PostToolUse":
+            continue
         _event(f"hook_{ev['hook']}", detail=_hook_digest(ev["hook"], ev["data"]),
                project=ev["project"], source="hook", host=ev.get("host") or "")
 
@@ -3838,7 +3967,7 @@ async def api_ingest(request: Request):
                 if want:
                     have = {str(e.get("title") or "").strip().lower()
                             for e in ents.values()
-                            if (e.get("project") or "") == slug
+                            if _canon_slug(e.get("project") or "") == _canon_slug(slug)
                             and e.get("entityType") == "task" and _task_is_open(e)}
                     items, taken = [], set()
                     for title in dict.fromkeys(want):
@@ -8657,6 +8786,12 @@ def main():
              "on" if actr_cfg["max_boost"] > 0 else "off (ACTR_MAX_BOOST=0)",
              actr_cfg["max_boost"], actr_cfg["half_life_days"], actr_cfg["flush_sec"],
              "" if not READONLY else ", flush off (READONLY mirror)")
+
+
+    _coll = _canon_collisions(_load()[0])
+    if _coll:
+        log.warning("project-slug: коллизии транслита (разные написания слились "
+                    "в один проект): %s", _coll)
     log.info("maxgraph %s listening on %s:%s (store: %s, store_mode=%s, trust_proxy=%s, readonly=%s)",
              VERSION, HOST, PORT, MEMORY_FILE, STORE_MODE, TRUST_PROXY, READONLY)
     import uvicorn

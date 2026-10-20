@@ -1151,10 +1151,11 @@ function renderTypeTabs(){
   const tabs=[''].concat(CANON_FILTERS);
   $('#typeTabs').innerHTML=tabs.map(f=>'<button class="tchip'+(typeFilter===f?' on':'')+'" data-tf="'+esc(f)+'">'+esc(f?typeLabel(f):t('cat.all'))+'</button>').join('');
 }
- 
+
+
 function renderRecent(){
-  const list=[...graph.entities].filter(e=>{const ty=canonType(e.entityType);return ty!=='project'&&ty!=='session';})
-    .sort((a,b)=>(b.updatedAt||'').localeCompare(a.updatedAt||'')).slice(0,4);
+  const list=[...graph.entities].filter(e=>!e.name.startsWith('project:')&&canonType(e.entityType)!=='session')
+    .sort((a,b)=>(b.updatedAt||'').localeCompare(a.updatedAt||'')).slice(0,8);
   $('#recentGrid').innerHTML=list.map(e=>{const c=typeColor(canonType(e.entityType));
     return '<div class="rc-card" data-open="'+esc(e.name)+'">'+
       '<span class="rc-type" style="color:'+c+'"><span class="dot" style="background:'+c+'"></span>'+esc(typeLabel(canonType(e.entityType)))+'</span>'+
@@ -1188,7 +1189,7 @@ $('#hostSel').addEventListener('change',e=>{
 async function loadTimeline(){try{
   const sess=graph.entities.filter(e=>canonType(e.entityType)==='session').sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   $('#sessList').innerHTML=sess.map(e=>'<div class="sess-card" data-open="'+esc(e.name)+'"><div class="st">'+esc(e.title||e.name)+'</div><div class="sm">'+e.observations.length+' '+esc(factsN(e.observations.length))+' · '+esc(fmtTs(e.createdAt))+'</div></div>').join('')||'<div class="empty" style="padding:10px">'+esc(t('tl.nosess'))+'</div>';
-  const r=await api(scoped('/api/timeline?limit=150'));tlEvents=r.events||[];renderHostSel();renderJournal();renderTimeline();
+  const r=await api(scoped('/api/timeline?limit=150'+(pulseFilter==='tools'?'&tools=1':'')));tlEvents=r.events||[];renderHostSel();renderJournal();renderTimeline();
 }catch(e){}}
 function renderJournal(){
   
@@ -1217,7 +1218,8 @@ function renderTimeline(){
 $('#pulseTabs').addEventListener('click',e=>{
   const b=e.target.closest('.tchip');if(!b)return;
   pulseFilter=b.dataset.pf;try{localStorage.setItem('mg_pulse_filter',pulseFilter);}catch(x){}
-  $$('#pulseTabs .tchip').forEach(x=>x.classList.toggle('on',x===b));renderTimeline();
+  $$('#pulseTabs .tchip').forEach(x=>x.classList.toggle('on',x===b));
+  loadTimeline();  
 });
 
  
