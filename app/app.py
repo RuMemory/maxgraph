@@ -56,6 +56,7 @@ import secrets
 import sys
 import threading
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 import uuid
@@ -462,7 +463,8 @@ def _test_purge_graph_files():
 
 
 def _event(action: str, entity: str = "", detail: str = "", project: str = "",
-           source: str = ""):
+           source: str = "", host: str = ""):
+
 
 
 
@@ -473,6 +475,8 @@ def _event(action: str, entity: str = "", detail: str = "", project: str = "",
             ev["project"] = project
         if source:
             ev["source"] = source
+        if host:
+            ev["host"] = host
         with open(EVENTS_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
 
@@ -519,7 +523,12 @@ def _actr_boost_fn():
 
 
 
-_PROJECT_RE = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
+
+
+
+
+
+_PROJECT_RE = re.compile(r"[^\W_]+(-[^\W_]+)*")
 
 
 def _check_project(value) -> tuple[str, str]:
@@ -528,11 +537,14 @@ def _check_project(value) -> tuple[str, str]:
 
 
 
-    slug = str(value or "").strip().lower()
+
+    slug = unicodedata.normalize("NFC", str(value or "").strip().lower())
     if not slug:
         return "", ""
-    if len(slug) > 64 or not _PROJECT_RE.fullmatch(slug) or slug in _RESERVED_SLUGS:
-        return "", f"invalid project slug {value!r}: kebab-case [a-z0-9-], ≤64 chars"
+    if len(slug) > 64 or len(slug.encode("utf-8")) > 200 \
+            or not _PROJECT_RE.fullmatch(slug) or slug in _RESERVED_SLUGS:
+        return "", (f"invalid project slug {value!r}: kebab из букв/цифр любого "
+                    f"алфавита + дефисы, ≤64 chars")
     return slug, ""
 
 
@@ -573,7 +585,10 @@ def _filter_graph(ents: dict, rels: list, slug: str, all_projects: bool):
 
 
 
-_REPO_TAG_RE = re.compile(r"^repo-[a-z0-9-]+-[0-9a-f]{12}$")
+
+
+
+_REPO_TAG_RE = re.compile(r"^repo-[^\W_]+(-[^\W_]+)*-[0-9a-f]{12}$")
 _ALIASES_CAP = 10_000
 _aliases_cache = None
 
@@ -745,7 +760,11 @@ def _obs_with_ids(obs_list) -> list:
 
 
 
-def _create_entities_graph(ents, rels, items, project: str = "", source: str = ""):
+def _create_entities_graph(ents, rels, items, project: str = "", source: str = "",
+                           mk_project: bool = True):
+
+
+
 
 
 
@@ -763,6 +782,11 @@ def _create_entities_graph(ents, rels, items, project: str = "", source: str = "
     def link_part_of(name: str):
         nonlocal rels_added
         key = (name, _project_entity_name(project), "part of")
+        if key[1] not in ents:
+
+
+
+            return
         if key in rel_keys:
             return
         rels.append({"from": name, "to": key[1], "relationType": "part of", "createdAt": ts})
@@ -772,7 +796,7 @@ def _create_entities_graph(ents, rels, items, project: str = "", source: str = "
                source=source)
 
     project_created = False
-    if project:
+    if project and mk_project:
         pname = _project_entity_name(project)
         if pname not in ents:
             ents[pname] = {"name": pname, "title": project, "entityType": "project",
@@ -1306,6 +1330,43 @@ def op_delete_entities(names, project: str = ""):
         out = {"deleted": deleted}
         _reprime_tick(project, out)
         return out
+
+
+def op_delete_project(project: str) -> dict:
+
+
+
+    project = _resolve_project(project)
+    if not project:
+        return {"error": "project is required"}
+    pname = _project_entity_name(project)
+    with _lock:
+        ents, rels = _load()
+        doomed = {n for n, e in ents.items()
+                  if (e.get("project") or "") == project or n == pname}
+
+
+
+
+
+        aliases = {k: v for k, v in _aliases_load().items()
+                   if k != project and v != project}
+        aliases_changed = len(aliases) != len(_aliases_load())
+        if not doomed and not aliases_changed:
+            return {"deleted": 0, "relations_removed": 0}
+        before = len(rels)
+        rels = [r for r in rels
+                if r.get("from") not in doomed and r.get("to") not in doomed]
+        for n in doomed:
+            del ents[n]
+        if doomed:
+            _save(ents, rels)
+        if aliases_changed:
+            _aliases_save(aliases)
+        out = {"deleted": len(doomed), "relations_removed": before - len(rels)}
+    _event("delete_project", project, f"{out['deleted']} entities",
+           project=project)
+    return out
 
 
 def op_delete_observations(items, project: str = ""):
@@ -2132,7 +2193,14 @@ def _fit_budget(sections: list, budget: int):
     return text, shown, True
 
 
-def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
+def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET,
+                     birth: bool = True):
+
+
+
+
+
+
 
 
 
@@ -2167,6 +2235,17 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
     canon = _resolve_project(project)
     aliased_to = canon if canon != project else ""
     project = canon
+    if birth and project:
+        pname0 = _project_entity_name(project)
+        with _lock:
+            ents0, rels0 = _load()
+            if pname0 not in ents0:
+                _out, ch = _create_entities_graph(ents0, rels0, [{
+                    "name": pname0, "title": project, "entityType": "project",
+                    "observations": [],
+                }], project="", source="agent")
+                if ch:
+                    _save(ents0, rels0)
     try:
         budget = max(0, int(budget_chars))
     except (TypeError, ValueError):
@@ -2817,8 +2896,25 @@ async def api_export(request: Request):
     }, headers={**_NOCACHE, "Content-Disposition": f'attachment; filename="maxgraph-export-{now_iso()[:10]}.json"'})
 
 
+def _project_memory_counts() -> dict:
+
+
+
+    ents, _ = _load()
+    counts = {}
+    for e in ents.values():
+        slug = e.get("project") or ""
+        if not slug or e["name"].startswith("project:"):
+            continue
+        if e.get("entityType") == "session":
+            continue
+        counts[slug] = counts.get(slug, 0) + 1
+    return counts
+
+
 @mcp.custom_route("/api/search", methods=["GET"])
 async def api_search(request: Request):
+
 
 
     slug, err = _query_project(request)
@@ -2833,10 +2929,15 @@ async def api_search(request: Request):
 
 
 
-    return JSONResponse(await asyncio.to_thread(
+    resp = await asyncio.to_thread(
         op_search, request.query_params.get("q", ""), slug,
         _truthy(request.query_params.get("all_projects")),
-        request.query_params.get("type", ""), limit))
+        request.query_params.get("type", ""), limit)
+    if (not request.query_params.get("q")
+            and request.query_params.get("type") == "project"):
+        resp = dict(resp)
+        resp["memory_counts"] = await asyncio.to_thread(_project_memory_counts)
+    return JSONResponse(resp)
 
 
 
@@ -2882,7 +2983,8 @@ async def api_session_context(request: Request):
 
 
 
-    return JSONResponse(await asyncio.to_thread(op_session_start, slug, budget),
+    return JSONResponse(await asyncio.to_thread(op_session_start, slug, budget,
+                                                False),
                         headers=_NOCACHE)
 
 
@@ -3207,6 +3309,31 @@ async def api_del_entities(request: Request):
     return JSONResponse(op_delete_entities(body.get("entityNames", []), slug))
 
 
+@mcp.custom_route("/api/project/delete", methods=["POST"])
+async def api_project_delete(request: Request):
+
+
+    ro = _readonly_guard()
+    if ro:
+        return JSONResponse(ro, status_code=403)
+    blocked = _write_block()
+    if blocked:
+        return JSONResponse(blocked, status_code=402)
+    body_raw, rerr = await _read_capped(request, 65536)
+    if rerr is not None:
+        return JSONResponse({"error": "payload too large (≤64KB)"}, status_code=413)
+    try:
+        body = json.loads(body_raw)
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    slug, err = _check_project((body or {}).get("project"))
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    if not slug:
+        return JSONResponse({"error": "project is required"}, status_code=400)
+    return JSONResponse(op_delete_project(slug))
+
+
 @mcp.custom_route("/api/delete/observations", methods=["POST"])
 async def api_del_observations(request: Request):
     ro = _readonly_guard()
@@ -3443,14 +3570,24 @@ async def api_ingest(request: Request):
 
 
 
-        legacy = ""
+
+
+        legacy = []
         lp = ev.get("legacy_project")
-        if lp is not None:
-            lslug, lerr = _check_project(lp)
-            if not lerr and lslug and lslug != slug:
-                legacy = lslug
+        if isinstance(lp, str):
+            lp = [lp]
+        if isinstance(lp, list):
+            for item in lp[:4]:
+                lslug, lerr = _check_project(item)
+                if not lerr and lslug and lslug != slug and lslug not in legacy:
+                    legacy.append(lslug)
+
+
+        host = str(ev.get("host") or "").strip().lower()[:32]
+        if host and not re.fullmatch(r"[a-z0-9-]+", host):
+            host = ""
         norm.append({"hook": hook, "project": slug, "ts": ts, "data": data,
-                     "legacy_project": legacy})
+                     "legacy_project": legacy, "host": host})
 
     with _lock:
         hashes = _ingest_hashes_load()
@@ -3473,17 +3610,26 @@ async def api_ingest(request: Request):
 
 
 
+
+
+
+
+
     legacy_hints = {}
     for ev in norm:
-        lp = ev.get("legacy_project") or ""
-        if lp and _REPO_TAG_RE.match(ev["project"]):
-            legacy_hints.setdefault(lp, ev["project"])
+        for lp in ev.get("legacy_project") or []:
+            if lp:
+                legacy_hints.setdefault(lp, ev["project"])
     aliases_created = {}
     if legacy_hints:
         with _lock:
             ents, _rels = _load()
             aliases = dict(_aliases_load())
             for legacy, canon_tag in sorted(legacy_hints.items()):
+                if not canon_tag:
+                    continue
+
+
                 cur = aliases.get(legacy)
                 if cur == canon_tag:
                     continue
@@ -3502,11 +3648,12 @@ async def api_ingest(request: Request):
 
                 if _REPO_TAG_RE.match(legacy):
                     continue
+                if _REPO_TAG_RE.match(canon_tag):
 
 
 
-                if not canon_tag.startswith(f"repo-{legacy}-"):
-                    continue
+                    if not canon_tag.startswith(f"repo-{legacy}-"):
+                        continue
                 if any((e.get("project") or "") == canon_tag for e in ents.values()):
                     continue
                 if not any((e.get("project") or "") == legacy for e in ents.values()):
@@ -3519,7 +3666,15 @@ async def api_ingest(request: Request):
 
     for ev in fresh:
         _event(f"hook_{ev['hook']}", detail=_hook_digest(ev["hook"], ev["data"]),
-               project=ev["project"], source="hook")
+               project=ev["project"], source="hook", host=ev.get("host") or "")
+
+
+
+    path_targets = sorted({ev["project"] for ev in fresh
+                           if ev["project"] and ev["data"].get("cwd")})
+
+
+
 
 
 
@@ -3528,24 +3683,38 @@ async def api_ingest(request: Request):
 
 
     ended = sorted({ev["project"] for ev in fresh if ev["hook"] == "SessionEnd"})
-
-
-
-    seen_slugs = sorted({ev["project"] for ev in fresh if ev["project"]})
-    all_slugs = sorted(set(ended) | set(seen_slugs))
+    all_slugs = sorted(set(ended) | set(path_targets))
     if all_slugs:
         today = now_iso()[:10]
         with _lock:
             ents, rels = _load()
             changed = False
             for slug in all_slugs:
-                pname = f"project:{slug}"
-                if slug and pname not in ents:
-                    _out, ch = _create_entities_graph(ents, rels, [{
-                        "name": pname, "title": slug, "entityType": "project",
-                        "observations": [],
-                    }], project="", source="hook")
-                    changed = changed or ch
+                if slug in path_targets:
+                    pent = ents.get(_project_entity_name(slug))
+                    if pent is not None:
+                        have = {str(o) for o in pent.get("observations", [])}
+                        n_paths = sum(1 for o in have if o.startswith("путь: "))
+                        slug_changed = False
+                        for ev in fresh:
+                            cwd_raw = ev["data"].get("cwd")
+
+
+                            if not isinstance(cwd_raw, str):
+                                continue
+                            cwd = cwd_raw.strip()[:300]
+                            if (ev["project"] != slug or not cwd
+                                    or n_paths >= 20):
+                                continue
+                            fact = f"путь: {cwd}"
+                            if fact not in have:
+                                have.add(fact)
+                                pent.setdefault("observations", []).append(fact)
+                                n_paths += 1
+                                changed = True
+                                slug_changed = True
+                        if slug_changed:
+                            pent["updatedAt"] = now_iso()
                 if slug not in ended:
                     continue
                 name = f"session-{today}-{slug or 'flat'}"
@@ -3556,7 +3725,7 @@ async def api_ingest(request: Request):
                         "title": f"Сессия {today} ({slug or 'flat'})",
                         "entityType": "session",
                         "observations": [f"завершена, {n} событий"],
-                    }], project=slug, source="hook")
+                    }], project=slug, source="hook", mk_project=False)
                     changed = changed or ch
 
 
@@ -3603,7 +3772,8 @@ async def api_ingest(request: Request):
                                       "entityType": "task"})
                     if items:
                         _out, ch = _create_entities_graph(ents, rels, items,
-                                                          project=slug, source="hook")
+                                                          project=slug, source="hook",
+                                                          mk_project=False)
                         changed = changed or ch
             if changed:
                 _save(ents, rels)

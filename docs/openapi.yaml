@@ -758,7 +758,7 @@ paths:
                         enum: [SessionStart, UserPromptSubmit, PostToolUse, Stop, SessionEnd]
                       project:
                         type: string
-                        description: kebab-slug проекта (каскад git remote → git root → cwd); пусто — плоский граф
+                        description: юникод-slug проекта (буквы/цифры любого алфавита + дефисы, нижний регистр, ≤64; вычисляет хук из открытой папки, корень репо с remote → repo-<имя>-<sha12>); пусто — плоский граф
                         example: maxgraph
                       ts: { type: string, description: ISO-время события от клиента (идёт только в content-hash) }
                       data:

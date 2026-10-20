@@ -57,12 +57,19 @@
 
 
 
+
+
+
+
+
 import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import unicodedata
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,7 +107,8 @@ FIELD_MAX = 2000
 
 _MACHINE_PROMPT_RE = re.compile(
     r"^(?:Agent [0-9a-f-]{36} sent a message:|Background subagent [0-9a-f-]{36} |"
-    r"background job \S+ |# MaxGraph: память проекта|Current runtime context\.|"
+    r"background job \S+ |# MaxGraph: память проекта|Проект этой папки: |"
+    r"Current runtime context\.|"
     r"This is an automatically generated checkpoint|Time sampled while preparing|"
     r"<system-reminder>)")
 
@@ -142,12 +150,69 @@ def _now() -> str:
 
 
 
-_SLUG_BAD = re.compile(r"[^a-z0-9]+")
+
+
+
+_SLUG_BAD = re.compile(r"(?:[^\w]|_)+", re.UNICODE)
+
+
+_SLUG_BAD_ASCII = re.compile(r"[^a-z0-9]+")
 
 
 def slugify(text) -> str:
 
-    return _SLUG_BAD.sub("-", str(text or "").strip().lower()).strip("-")[:64].strip("-")
+
+
+
+    s = unicodedata.normalize("NFC", str(text or "").strip().lower())
+    s = _SLUG_BAD.sub("-", s).strip("-")[:64].strip("-")
+    while len(s.encode("utf-8")) > 200:
+        s = s[:-1].rstrip("-")
+    return s
+
+
+def _slugify_ascii(text) -> str:
+
+    return _SLUG_BAD_ASCII.sub("-", str(text or "").strip().lower())[:64].strip("-")
+
+
+
+
+_TRANSLIT_RU = {
+    "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+    "ж": "zh", "з": "z", "и": "i", "й": "j", "к": "k", "л": "l", "м": "m",
+    "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+    "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch",
+    "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
+    "і": "i", "ї": "yi", "є": "ye", "ґ": "g",
+}
+
+
+def _translit_ru(text) -> str:
+    s = unicodedata.normalize("NFC", str(text or "").strip().lower())
+    return "".join(_TRANSLIT_RU.get(ch, ch) for ch in s)
+
+
+def _slug_or_hash(name) -> str:
+
+
+    s = slugify(name)
+    if s:
+        return s
+    h = hashlib.sha256(
+        unicodedata.normalize("NFC", str(name)).encode("utf-8")).hexdigest()[:8]
+    return f"p-{h}"
+
+
+def _legacy_slugs(folder_name: str, canon: str) -> list:
+
+
+
+    out = []
+    for cand in (_slugify_ascii(folder_name), slugify(_translit_ru(folder_name))):
+        if cand and cand != canon and cand not in out:
+            out.append(cand)
+    return out[:4]
 
 
 def _git_repo_name(url: str) -> str:
@@ -163,26 +228,20 @@ def _run_git(cmd: list) -> str:
     return (r.stdout or "").strip()
 
 
+def _same_path(a: str, b: str) -> bool:
+
+
+    try:
+        return os.path.normcase(os.path.normpath(a)) == \
+            os.path.normcase(os.path.normpath(b))
+    except Exception:
+        return False
+
+
 def detect_project(cwd: str = "", runner=None) -> str:
 
 
-    if not cwd:
-        return ""
-    run = runner or _run_git
-    try:
-        name = _git_repo_name(run(["git", "-C", cwd, "remote", "get-url", "origin"]))
-        if name:
-            return name
-    except Exception:
-        pass
-    try:
-        root = run(["git", "-C", cwd, "rev-parse", "--show-toplevel"])
-        name = slugify(Path(root).name)
-        if name:
-            return name
-    except Exception:
-        pass
-    return slugify(Path(cwd).name)
+    return repo_tag(cwd, runner=runner)[0]
 
 
 _REMOTE_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
@@ -217,23 +276,31 @@ def repo_tag(cwd: str = "", runner=None) -> tuple:
 
 
     if not cwd:
-        return ("", "")
+        return ("", [])
     run = runner or _run_git
     try:
-        norm = _normalize_remote_url(
-            run(["git", "-C", cwd, "remote", "get-url", "origin"]))
-        name = slugify(norm.rsplit("/", 1)[-1]) if norm else ""
-        if name:
-            h = hashlib.sha256(norm.encode("utf-8")).hexdigest()[:12]
-
-
-
-
-
-            return (f"repo-{name[:46].rstrip('-')}-{h}", name)
+        root = run(["git", "-C", cwd, "rev-parse", "--show-toplevel"])
     except Exception:
-        pass
-    return (detect_project(cwd, runner=runner), "")
+        root = ""
+    if root and _same_path(root, cwd):
+        try:
+            norm = _normalize_remote_url(
+                run(["git", "-C", cwd, "remote", "get-url", "origin"]))
+            tail = norm.rsplit("/", 1)[-1] if norm else ""
+            name = slugify(tail)
+            if name:
+                h = hashlib.sha256(norm.encode("utf-8")).hexdigest()[:12]
+
+
+                tag = f"repo-{name[:46].rstrip('-')}-{h}"
+                return (tag, _legacy_slugs(tail, tag))
+        except Exception:
+            pass
+        folder = Path(root).name
+    else:
+        folder = Path(cwd).name
+    canon = _slug_or_hash(folder)
+    return (canon, _legacy_slugs(folder, canon))
 
 
 
@@ -260,31 +327,37 @@ def normalize(payload: dict) -> dict:
 
 
 
+
+
     if not isinstance(payload, dict):
         return None
     hook = _canon_event(payload.get("hook_event_name") or payload.get("hook") or "")
     if hook not in HOOKS:
         return None
-    data = {}
+    cwd = payload.get("cwd") or ""
+    data = {"cwd": _cut(cwd, 300)} if cwd else {}
     if hook == "PostToolUse":
-        data = {"tool": _cut(payload.get("tool_name"), 100),
-                "input": _cut(payload.get("tool_input"), FIELD_MAX),
-                "response": _cut(payload.get("tool_response"), FIELD_MAX)}
+        data.update({"tool": _cut(payload.get("tool_name"), 100),
+                     "input": _cut(payload.get("tool_input"), FIELD_MAX),
+                     "response": _cut(payload.get("tool_response"), FIELD_MAX)})
     elif hook == "UserPromptSubmit":
-        data = {"prompt": _cut(payload.get("prompt"), FIELD_MAX)}
+        data["prompt"] = _cut(payload.get("prompt"), FIELD_MAX)
     elif hook == "SessionStart":
-        data = {"source": _cut(payload.get("source"), 100)}
+        data["source"] = _cut(payload.get("source"), 100)
     elif hook == "SessionEnd":
-        data = {"reason": _cut(payload.get("reason"), 100)}
+        data["reason"] = _cut(payload.get("reason"), 100)
 
 
         ot = payload.get("open_tasks")
         if isinstance(ot, list):
             data["open_tasks"] = [_cut(t, 200) for t in ot[:20] if isinstance(t, str)]
 
-    project, legacy = repo_tag(payload.get("cwd") or "")
+    project, legacy = repo_tag(cwd)
     ev = {"hook": hook, "project": project, "ts": _now(), "data": data}
-    if legacy and legacy != project:
+    host = _env("MG_HOST").strip().lower()
+    if host:
+        ev["host"] = host[:32]
+    if legacy:
         ev["legacy_project"] = legacy
     return ev
 
@@ -493,22 +566,31 @@ def _session_context_inject(event: dict) -> None:
 
 
 
+
+
+
     if _env("MG_SESSION_INJECT") == "0":
         return
     project = event.get("project") or ""
+    if not project:
+        return
+    head = (f"Проект этой папки: {project} — используй project=\"{project}\" "
+            f"во ВСЕХ вызовах maxgraph (session_start, search_nodes, "
+            f"create_entities, add_observations, session_close и т.д.). Slug уже "
+            f"вычислен хуком из папки — не транслитерируй и не выдумывай его сам.")
+    block = ""
     server = _env("MG_SERVER").rstrip("/")
     token = _env("MG_TOKEN")
-    if not project or not server or not token:
-        return
-    try:
-        url = f"{server}/api/session-context?project={project}&budget_chars=4000"
-        data = _http_get_json(url, token, TIMEOUT)
-        block = ((data or {}).get("context_block") or "").strip()
-        if not block:
-            return
-        _print_hook_output("SessionStart", additionalContext=_INJECT_HEADER + block)
-    except Exception:
-        pass
+    if server and token:
+        try:
+            url = (f"{server}/api/session-context"
+                   f"?project={urllib.parse.quote(project)}&budget_chars=4000")
+            data = _http_get_json(url, token, TIMEOUT)
+            block = ((data or {}).get("context_block") or "").strip()
+        except Exception:
+            block = ""
+    text = head if not block else f"{head}\n\n{_INJECT_HEADER}{block}"
+    _print_hook_output("SessionStart", additionalContext=text)
 
 
 def _recalled_path() -> Path:

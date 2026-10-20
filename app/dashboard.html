@@ -284,6 +284,9 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
 .grace b{font-family:var(--mono);font-weight:600}
 .icon-btn{position:relative;color:var(--ink-3);padding:6px;border-radius:8px;display:flex;transition:background var(--t-fast)}
 .icon-btn:hover{background:var(--border);color:var(--ink)}
+#projDel{width:36px;height:36px;padding:0;align-items:center;justify-content:center}
+#projDel:hover{background:rgba(225,90,79,.12);color:var(--bad)}
+.htag{font-family:var(--mono);font-size:9px;color:var(--ink-4);border:1px solid var(--border);border-radius:5px;padding:0 5px;opacity:.9}
  
 .theme-sw{position:relative;width:46px;height:26px;border-radius:99px;background:var(--bg);border:1px solid var(--border);box-shadow:inset 0 2px 4px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:space-between;padding:0 6px;color:var(--ink-4);transition:all var(--t-fast)}
 .theme-sw::before{content:"";position:absolute;inset:-9px -7px}
@@ -293,6 +296,33 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
 .theme-sw[aria-checked="true"] .knob{transform:translateX(20px)}
 .theme-sw[aria-checked="false"] .i-moon{color:var(--accent-ink)}
 .theme-sw[aria-checked="true"] .i-sun{color:var(--accent-ink)}
+ 
+@media (max-width:1024px){
+  .topright .f-label{display:none}
+  #projSel{max-width:160px;text-overflow:ellipsis}
+}
+@media (max-width:768px){
+  .topbar{gap:10px;padding:0 12px}
+  .kbd-hint{display:none}
+  .search-wrap{min-width:0}
+  .search-wrap .inp{padding-right:12px}
+  .brand .ver{display:none}
+  #projSel{max-width:120px}
+  .topright{gap:6px;flex-shrink:1;min-width:0;overflow-x:auto;scrollbar-width:none}
+  .topright::-webkit-scrollbar{display:none}
+  .topright>*{flex-shrink:0}
+  .ov-grid,.tl-grid,.cat-grid,.tasks-cols{grid-template-columns:1fr}
+}
+@media (max-width:480px){
+  .theme-sw{display:none}
+  #projSel{max-width:100px}
+   
+  .gsearch{position:static;margin:52px 16px 0}
+  .gsearch input{width:100%}
+  .kpis{flex-wrap:wrap;right:64px}
+  .kpi{min-width:80px;padding:8px 10px;flex:1 1 80px}
+  .link-hint{display:none}  
+}
 .buy-veil{position:fixed;inset:0;background:rgba(10,8,6,.6);z-index:90;display:none;align-items:center;justify-content:center;padding:16px;overflow-y:auto}
 .buy-veil.on{display:flex}
 
@@ -440,6 +470,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
       <div class="topright">
         <span class="f-label" style="margin:0" data-i18n="hdr.project">Проект</span>
         <select class="inp" id="projSel"></select>
+        <button class="icon-btn" id="projDel" type="button" style="display:none" title="Удалить проект" data-i18n-al="proj.del" aria-label="Удалить проект"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path stroke-linecap="round" stroke-linejoin="round" d="M3 6h18M8 6V4a1 1 0 011-1h6a1 1 0 011 1v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14zM10 11v6M14 11v6"/></svg></button>
         <button class="lic-chip" id="licChip">—</button>
         <button class="theme-sw" id="themeSw" type="button" role="switch" aria-checked="false" title="Тема оформления" data-i18n-al="hdr.theme" aria-label="Тема оформления"><svg class="i-sun" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4.2"/><path stroke-linecap="round" d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M5 5l1.7 1.7M17.3 17.3L19 19M19 5l-1.7 1.7M6.7 17.3L5 19"/></svg><svg class="i-moon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M20.4 14.2A8.4 8.4 0 019.8 3.6a8.4 8.4 0 1010.6 10.6z"/></svg><span class="knob"></span></button>
         <div class="langseg"><button id="langRu" class="on">RU</button><button id="langEn">EN</button></div>
@@ -525,6 +556,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
                 <button class="tchip on" data-pf="all" data-i18n="tl.all">Все</button>
                 <button class="tchip" data-pf="memory" data-i18n="tl.memory">Память</button>
                 <button class="tchip" data-pf="billing" data-i18n="tl.billing">Биллинг</button>
+                <span class="f-label" style="margin:0;align-self:center" data-i18n="tl.agent">Агент</span><select class="inp" id="hostSel" data-i18n-al="tl.agent" aria-label="Агент"></select>
               </div>
               <div id="tlList"></div>
             </div>
@@ -699,7 +731,9 @@ let TOKEN=localStorage.getItem('rm_token')||'';
 let LANG=localStorage.getItem('mg_lang')||'ru';
 let THEME=(t=>t==='light'||t==='dark'?t:'dark')(localStorage.getItem('mg_theme'));
 let curProject=localStorage.getItem('mg_project')||'';
-const SLUG_RE=/^[a-z0-9-]{1,64}$/;
+ 
+const SLUG_RE=/^[\p{L}\p{N}]+(-[\p{L}\p{N}]+)*$/u;
+const SLUG_OK=p=>p.length<=64&&SLUG_RE.test(p);
 const scoped=p=>curProject?p+(p.includes('?')?'&':'?')+'project='+encodeURIComponent(curProject):p;
 const withProject=o=>curProject?{...o,project:curProject}:o;
 function plural(n,a,b,c){const m=Math.abs(n)%100,d=m%10;if(m>10&&m<20)return c;if(d>1&&d<5)return b;if(d===1)return a;return c;}
@@ -728,6 +762,7 @@ ru:{
  'anchor.pre':'Установка не привязана к этому компьютеру — учёт машины и триала будет неточным.','anchor.link':'Как привязать',
  'nav.overview':'Обзор','nav.catalog':'Каталог','nav.timeline':'Хроника','nav.tasks':'Дела',
  'hdr.search':'Поиск по памяти, воспоминаниям и связям...','hdr.project':'Проект','hdr.all':'все','hdr.theme':'Тема оформления',
+  'proj.del':'Удалить проект','proj.delconfirm':'Удалить проект «%s» и все его воспоминания? Это действие необратимо.','proj.deleted':'проект «%s» удалён','proj.emptygone':'проект уже пуст или не найден','proj.delerr':'не удалось удалить проект','proj.nomem':'без воспоминаний',
  'gear.export':'Экспорт NDJSON',
  'gear.bug':'Сообщить о баге','gear.bugsubj':'MaxGraph: баг','gear.bugbody':'Версия: {v}\nОС: {os}\n\nОпиши проблему:\n',
  'bug.title':'Сообщить о баге','bug.sub':'Отчёт уйдёт разработчику напрямую — почта не нужна.','bug.ph':'Что случилось?',
@@ -740,7 +775,7 @@ ru:{
  'he.title':'Память пока пуста','he.sub':'Скажи своему агенту — и первая точка появится на карте сама:','he.prompt':'Запомни: я только что установил MaxGraph. проверь работоспособность, сохрани первый проект - название папки в которой открыт этот чат, — чтобы он появился на карте.','he.copy':'скопировать промпт',
  'cat.pick':'выбери воспоминание слева','cat.empty':'память пуста','cat.emptyproj':'в проекте пока нет воспоминаний','cat.all':'все',
  'search.ph':'Например: триал слетает…','search.hint':'введи запрос','search.none':'ничего не найдено','search.noneproj':'в проекте ничего не найдено',
- 'tl.sessions':'Сессии','tl.pulse':'Хроника','tl.all':'Все','tl.memory':'Память','tl.billing':'Биллинг',
+ 'tl.sessions':'Сессии','tl.pulse':'Хроника','tl.all':'Все','tl.memory':'Память','tl.billing':'Биллинг','tl.agent':'Агент','tl.agentall':'все',
  'tl.nosess':'сессий пока нет','tl.quiet':'пусто','tl.quietproj':'в проекте пока тихо','tl.today':'Сегодня','tl.yesterday':'Вчера',
  'task.ph':'Например: проверить бэкапы…','task.add':'Добавить дело','task.open':'Открыто','task.bugs':'Баги','task.done':'Сделано',
  'task.fix':'исправлен','task.empty':'дел нет — всё сделано',
@@ -780,6 +815,7 @@ en:{
  'anchor.pre':'This installation is not linked to this computer — machine and trial tracking will be inaccurate.','anchor.link':'How to link',
  'nav.overview':'Overview','nav.catalog':'Catalog','nav.timeline':'Timeline','nav.tasks':'Tasks',
  'hdr.search':'Search memories, entities and relations...','hdr.project':'Project','hdr.all':'all','hdr.theme':'Color theme',
+  'proj.del':'Delete project','proj.delconfirm':'Delete project "%s" and all its memories? This cannot be undone.','proj.deleted':'project "%s" deleted','proj.emptygone':'project already empty or not found','proj.delerr':'failed to delete project','proj.nomem':'no memories',
  'gear.export':'Export NDJSON',
  'gear.bug':'Report a bug','gear.bugsubj':'MaxGraph: bug','gear.bugbody':'Version: {v}\nOS: {os}\n\nDescribe the problem:\n',
  'bug.title':'Report a bug','bug.sub':'The report goes straight to the developer — no email needed.','bug.ph':'What happened?',
@@ -792,7 +828,7 @@ en:{
  'he.title':'Memory is empty for now','he.sub':'Tell your agent — and the first dot will appear on the map by itself:','he.prompt':'Remember this: I just installed MaxGraph. Check that everything works, save the first project — the name of the folder this chat is open in — so it appears on the map.','he.copy':'copy prompt',
  'cat.pick':'pick a memory on the left','cat.empty':'memory is empty','cat.emptyproj':'no memories in this project yet','cat.all':'all',
  'search.ph':'E.g.: trial resets…','search.hint':'type a query','search.none':'nothing found','search.noneproj':'nothing found in this project',
- 'tl.sessions':'Sessions','tl.pulse':'Timeline','tl.all':'All','tl.memory':'Memory','tl.billing':'Billing',
+ 'tl.sessions':'Sessions','tl.pulse':'Timeline','tl.all':'All','tl.memory':'Memory','tl.billing':'Billing','tl.agent':'Agent','tl.agentall':'all',
  'tl.nosess':'no sessions yet','tl.quiet':'quiet','tl.quietproj':'quiet in this project','tl.today':'Today','tl.yesterday':'Yesterday',
  'task.ph':'E.g.: check backups…','task.add':'Add task','task.open':'Open','task.bugs':'Bugs','task.done':'Done',
  'task.fix':'fixed','task.empty':'no tasks — all done',
@@ -844,6 +880,7 @@ const canonType=ty=>{const s=String(ty||'').trim();return TYPE_SYN[s.toLowerCase
 const CANON_FILTERS=['project','decision','task','bug','event','request','session'];
 const statusBadge=e=>{const ty=canonType(e.entityType);if(ty!=='bug'&&ty!=='task')return '';const st=String(e.status||'').toLowerCase();const done=ty==='bug'?st==='fixed':st==='done';if(!done&&st!=='open')return '';return ' <span class="st-chip '+(done?'st-done':'st-open')+'">'+esc(st)+'</span>';};
 const projTag=p=>p&&p!==curProject?' <span class="ptag">'+esc(p)+'</span>':'';
+const hostTag=h=>h?' <span class="htag">'+esc(h)+'</span>':'';
 function fmtTs(s){if(!s)return'—';const d=new Date(s);if(isNaN(d))return String(s);const loc=LANG==='ru'?'ru':'en';return d.toLocaleDateString(loc)+' '+d.toLocaleTimeString(loc,{hour:'2-digit',minute:'2-digit'});}
 function fmtTime(s){const d=new Date(s);if(isNaN(d))return'';return d.toLocaleTimeString(LANG==='ru'?'ru':'en',{hour:'2-digit',minute:'2-digit'});}
 function dayLabel(s){const d=new Date(s),n=new Date();const dd=(x)=>x.getFullYear()+'-'+x.getMonth()+'-'+x.getDate();if(dd(d)===dd(n))return t('tl.today');const y=new Date(n);y.setDate(n.getDate()-1);if(dd(d)===dd(y))return t('tl.yesterday');return d.toLocaleDateString(LANG==='ru'?'ru':'en');}
@@ -1046,15 +1083,24 @@ async function refresh(){
 async function loadProjects(){try{
   const r=await api('/api/search?q=&type=project&all_projects=true');
   if(!r||!Array.isArray(r.entities))return;
-  const slugs=[...new Set(r.entities.map(e=>e.name.indexOf('project:')===0?e.name.slice(8):e.name))].sort();
-  if(curProject&&slugs.indexOf(curProject)<0)slugs.push(curProject);
+  const counts=r.memory_counts&&typeof r.memory_counts==='object'?r.memory_counts:{};
+  const cnt=s=>Number(counts[s])||0;
+  const slugs=[...new Set(r.entities.map(e=>e.name.indexOf('project:')===0?e.name.slice(8):e.name))];
+  const byName=(a,b)=>a.localeCompare(b);
+  const withMem=slugs.filter(s=>cnt(s)>0).sort(byName);
+  const empty=slugs.filter(s=>!cnt(s)).sort(byName);
+  if(curProject&&withMem.indexOf(curProject)<0&&empty.indexOf(curProject)<0)withMem.push(curProject);
   const sel=$('#projSel');
-  const html='<option value="">'+esc(t('hdr.all'))+'</option>'+slugs.map(s=>'<option value="'+esc(s)+'"'+(s===curProject?' selected':'')+'>'+esc(s)+'</option>').join('');
+  const opt=s=>'<option value="'+esc(s)+'"'+(s===curProject?' selected':'')+'>'+esc(s)+'</option>';
+  let html='<option value="">'+esc(t('hdr.all'))+'</option>'+withMem.map(opt).join('');
+  if(empty.length)html+='<option disabled>— '+esc(t('proj.nomem'))+': '+empty.length+' —</option>'+empty.map(opt).join('');
   if(sel._optsHtml!==html){sel._optsHtml=html;sel.innerHTML=html;}
+  syncProjDel();
 }catch(e){}}
 async function setProject(p){
-  p=String(p||'');if(p&&!SLUG_RE.test(p))return;if(p===curProject)return;
+  p=String(p||'');if(p&&!SLUG_OK(p))return;if(p===curProject)return;
   curProject=p;try{localStorage.setItem('mg_project',p);}catch(e){}
+  syncProjDel();
   catSel=null;closePanel();renderCatDetail(null);
   tlEvents=[];
   graph={entities:[],relations:[]};knownNames=new Set();
@@ -1063,6 +1109,18 @@ async function setProject(p){
   loadTimeline();loadTasks();
 }
 $('#projSel').addEventListener('change',e=>setProject(e.target.value));
+const syncProjDel=()=>{const b=$('#projDel');if(b)b.style.display=curProject?'':'none';};
+syncProjDel();
+$('#projDel').onclick=async()=>{
+  const p=curProject;if(!p)return;
+  if(!confirm(t('proj.delconfirm').replace('%s',p)))return;
+  try{
+    const r=await api('/api/project/delete',{method:'POST',body:JSON.stringify({project:p})});
+    if(r&&r.deleted>0)toast(t('proj.deleted').replace('%s',p));
+    else{toast(t('proj.emptygone'));return;}
+  }catch(e){toast(t('proj.delerr'));return;}
+  await setProject('');loadProjects();
+};
 async function renderStats(){try{
   const s=await api(scoped('/api/stats'));
   $('#kpiE').textContent=s.entities??0;$('#kpiR').textContent=s.relations??0;$('#kpiO').textContent=s.observations??0;
@@ -1106,26 +1164,41 @@ const ACT_COLOR={create_entity:'#E8A54C',update_entity:'#7DA2E8',merge_entity:'#
 const BILLING_RE=/^(payment|digiseller|dg_|code|trial|cabinet|license)/;
 const evClass=a=>BILLING_RE.test(a||'')?'billing':'memory';
 let tlEvents=[],pulseFilter=localStorage.getItem('mg_pulse_filter')||'all';
+let hostFilter=localStorage.getItem('mg_host_filter')||'';
+const NO_HOST='—';
+const evHost=e=>e.host||NO_HOST;
+function renderHostSel(){
+  const sel=$('#hostSel');if(!sel)return;
+  const hosts=[...new Set(tlEvents.map(evHost))].sort((a,b)=>a.localeCompare(b));
+  if(hostFilter&&hosts.indexOf(hostFilter)<0){hostFilter='';try{localStorage.setItem('mg_host_filter','');}catch(x){}}
+  const html='<option value="">'+esc(t('tl.agentall'))+'</option>'+hosts.map(h=>'<option value="'+esc(h)+'"'+(h===hostFilter?' selected':'')+'>'+esc(h)+'</option>').join('');
+  if(sel._optsHtml!==html){sel._optsHtml=html;sel.innerHTML=html;}
+}
+const byHost=e=>!hostFilter||evHost(e)===hostFilter;
+$('#hostSel').addEventListener('change',e=>{
+  hostFilter=e.target.value;try{localStorage.setItem('mg_host_filter',hostFilter);}catch(x){}
+  renderJournal();renderTimeline();
+});
 async function loadTimeline(){try{
   const sess=graph.entities.filter(e=>canonType(e.entityType)==='session').sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   $('#sessList').innerHTML=sess.map(e=>'<div class="sess-card" data-open="'+esc(e.name)+'"><div class="st">'+esc(e.title||e.name)+'</div><div class="sm">'+e.observations.length+' '+esc(factsN(e.observations.length))+' · '+esc(fmtTs(e.createdAt))+'</div></div>').join('')||'<div class="empty" style="padding:10px">'+esc(t('tl.nosess'))+'</div>';
-  const r=await api(scoped('/api/timeline?limit=150'));tlEvents=r.events||[];renderJournal();renderTimeline();
+  const r=await api(scoped('/api/timeline?limit=150'));tlEvents=r.events||[];renderHostSel();renderJournal();renderTimeline();
 }catch(e){}}
 function renderJournal(){
   
-  const byP=tlEvents.filter(e=>e.action!=='hook_PostToolUse');
+  const byP=tlEvents.filter(e=>e.action!=='hook_PostToolUse'&&byHost(e));
   $('#journal').innerHTML=byP.slice(0,6).map(e=>{
     const dl=dayLabel(e.ts),today=dl===t('tl.today');
-    return '<div class="j-row"><span class="j-t">'+(today?'':(dl===t('tl.yesterday')?(LANG==='ru'?'вч ':'y. '):''))+esc(fmtTime(e.ts))+'</span><span class="j-ic" style="background:'+(ACT_COLOR[e.action]||'#8F8778')+'"></span><span class="j-body"><a href="#" data-open="'+esc(e.entity||'')+'">'+esc(e.entity||'')+'</a> '+esc(e.detail||'')+(e.project?projTag(e.project):'')+'</span></div>';
+    return '<div class="j-row"><span class="j-t">'+(today?'':(dl===t('tl.yesterday')?(LANG==='ru'?'вч ':'y. '):''))+esc(fmtTime(e.ts))+'</span><span class="j-ic" style="background:'+(ACT_COLOR[e.action]||'#8F8778')+'"></span><span class="j-body"><a href="#" data-open="'+esc(e.entity||'')+'">'+esc(e.entity||'')+'</a> '+esc(e.detail||'')+(e.project?projTag(e.project):'')+(e.host?hostTag(e.host):'')+'</span></div>';
   }).join('')||'<div class="empty">'+esc(curProject?t('tl.quietproj'):t('tl.quiet'))+'</div>';
 }
 function renderTimeline(){
-  const list=pulseFilter==='all'?tlEvents:tlEvents.filter(e=>evClass(e.action)===pulseFilter);
+  const list=(pulseFilter==='all'?tlEvents:tlEvents.filter(e=>evClass(e.action)===pulseFilter)).filter(byHost);
   let html='',lastDay='';
   for(const e of list){
     const dl=dayLabel(e.ts);
     if(dl!==lastDay){html+='<div class="tl-day">'+esc(dl)+'</div>';lastDay=dl;}
-    html+='<div class="tl-row"><span class="ts">'+esc(fmtTime(e.ts))+'</span><span class="ic" style="color:'+(ACT_COLOR[e.action]||'#8F8778')+'">'+esc(ACT_ICON[e.action]||'•')+'</span><span class="en"><a href="#" data-open="'+esc(e.entity||'')+'">'+esc(e.entity||'')+'</a></span><span class="dt">'+esc(e.detail||'')+(e.project?projTag(e.project):'')+'</span></div>';
+    html+='<div class="tl-row"><span class="ts">'+esc(fmtTime(e.ts))+'</span><span class="ic" style="color:'+(ACT_COLOR[e.action]||'#8F8778')+'">'+esc(ACT_ICON[e.action]||'•')+'</span><span class="en"><a href="#" data-open="'+esc(e.entity||'')+'">'+esc(e.entity||'')+'</a></span><span class="dt">'+esc(e.detail||'')+(e.project?projTag(e.project):'')+(e.host?hostTag(e.host):'')+'</span></div>';
   }
   $('#tlList').innerHTML=html||'<div class="empty">'+esc(curProject?t('tl.quietproj'):t('tl.quiet'))+'</div>';
 }
