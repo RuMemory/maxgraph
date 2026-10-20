@@ -1365,8 +1365,12 @@ def op_delete_project(project: str) -> dict:
     pname = _project_entity_name(project)
     with _lock:
         ents, rels = _load()
+
+
+
         doomed = {n for n, e in ents.items()
-                  if (e.get("project") or "") == project or n == pname}
+                  if (e.get("project") or "") == project or n == pname
+                  or (n == project and e.get("entityType") == "project")}
 
 
 
