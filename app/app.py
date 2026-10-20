@@ -3635,6 +3635,19 @@ def _ingest_hashes_save(hashes: list):
         log.warning("ingest-hashes: сбой записи: %s", ex)
 
 
+
+
+
+
+
+_MACHINE_PROMPT_RE = re.compile(
+    r"^(?:Agent [0-9a-f-]{36} sent a message:|Background subagent [0-9a-f-]{36} |"
+    r"background job \S+ |# MaxGraph: память проекта|Проект этой папки: |"
+    r"Current runtime context\.|"
+    r"This is an automatically generated checkpoint|Time sampled while preparing|"
+    r"<system-reminder>)")
+
+
 def _hook_digest(hook: str, data: dict) -> str:
 
 
@@ -3873,6 +3886,11 @@ async def api_ingest(request: Request):
 
 
         if ev["hook"] == "PostToolUse":
+            continue
+
+
+        if ev["hook"] == "UserPromptSubmit" and _MACHINE_PROMPT_RE.search(
+                str(ev["data"].get("prompt") or "").strip()):
             continue
         _event(f"hook_{ev['hook']}", detail=_hook_digest(ev["hook"], ev["data"]),
                project=ev["project"], source="hook", host=ev.get("host") or "")
