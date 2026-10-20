@@ -2987,6 +2987,22 @@ async def api_search(request: Request):
             and request.query_params.get("type") == "project"):
         resp = dict(resp)
         resp["memory_counts"] = await asyncio.to_thread(_project_memory_counts)
+
+
+
+        if isinstance(resp.get("entities"), list):
+            seen, collapsed = set(), []
+            for e in resp["entities"]:
+                name = e.get("name") or ""
+                s = name[8:] if name.startswith("project:") else name
+                canon = _resolve_project(s)
+                if canon in seen:
+                    continue
+                seen.add(canon)
+                if canon != s:
+                    e = dict(e, name=f"project:{canon}", title=canon)
+                collapsed.append(e)
+            resp["entities"] = collapsed
     return JSONResponse(resp)
 
 
