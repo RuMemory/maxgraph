@@ -111,7 +111,10 @@ pnpm add --save-exact --config.auto-install-peers=false --ignore-scripts \
 `hooks plugin …` в выводе register_hook.py: «NOT installed / install failed»
 значит пакет не доехал, выполни ручную команду из статуса.
 
-На Windows команда — через pythonw с полным путём (см. шапку). Покрытие: все 5.
+На Windows команда — через консольный `python.exe` с полным путём и оператором
+вызова `&` (DSH исполняет hook-команды через PowerShell; pythonw/pythonw-подобный
+GUI-питон НЕЛЬЗЯ: PowerShell не дожидается GUI-процесса, и Job-раннер DSH убивает
+его до выполнения — захват молча пуст, аудит 2026-10-20). Покрытие: все 5.
 
 ## Cursor — `~/.cursor/hooks.json` (Windows: `%USERPROFILE%\.cursor\hooks.json`)
 

@@ -51,11 +51,30 @@ def _home(p: str) -> Path:
     return Path(p).expanduser()
 
 
+def _ps_str(s: str) -> str:
+    """Экранирование для двойных кавычек PowerShell: backtick и $ иначе
+    раскрываются как интерполяция (легальные символы в Windows-путях)."""
+    return s.replace("`", "``").replace("$", "`$").replace('"', '""')
+
+
 def _command(host: str) -> str:
-    """Команда вызова хука. Windows: pythonw (без окна консоли) + полный путь —
-    в JSON-конфигах ~ и %USERPROFILE% не везде разворачиваются."""
+    """Команда вызова хука. Windows: полный путь — в JSON-конфигах ~ и
+    %USERPROFILE% не везде разворачиваются.
+    DSH исполняет hook-команды через PowerShell: `"py" "hook"` — ParserError
+    (UnexpectedToken), хук умирал до запуска (аудит 2026-10-20). Для dsh —
+    оператор вызова `&`.
+    DSH+Windows: ТОЛЬКО консольный python.exe, НЕ pythonw — PowerShell не ждёт
+    GUI-процесс (pwsh выходит за ~180мс с exit 0, Job-раннер DSH убивает
+    pythonw до выполнения; события терялись, stdout с additionalContext не
+    доходил — аудит 2026-10-20). Остальные хосты (cmd/sh) pythonw переваривают."""
     hook = _home("~/.maxgraph/maxgraph_hook.py")
     if os.name == "nt":
+        if host == "dsh":
+            con = Path(sys.executable)
+            if con.name.lower() == "pythonw.exe":
+                cand = con.with_name("python.exe")
+                con = cand if cand.exists() else con  # python.exe рядом не всегда есть
+            return f'& "{_ps_str(str(con))}" "{_ps_str(str(hook))}" --host {host}'
         pyw = Path(sys.executable).with_name("pythonw.exe")
         py = str(pyw if pyw.exists() else Path(sys.executable))
         return f'"{py}" "{hook}" --host {host}'
@@ -817,7 +836,18 @@ def _apply_dsh(spec: dict, remove: bool, dry: bool) -> str:
         changed = False
         for ev in spec["events"]:
             lst = hooks.setdefault(ev, [])
-            if any(MARK in json.dumps(x, ensure_ascii=False) for x in lst):
+            ours = next((x for x in lst
+                         if MARK in json.dumps(x, ensure_ascii=False)), None)
+            if ours is not None:
+                # апгрейд устаревшей записи на месте (аудит 2026-10-20:
+                # cmd-форма падала в PowerShell — иначе фикс не доезжал бы
+                # до уже зарегистрированных DSH: «already registered»)
+                for h in (ours.get("hooks") or []):
+                    if isinstance(h, dict) and h.get("type") == "command":
+                        want = _command("dsh")
+                        if h.get("command") != want:
+                            h["command"] = want
+                            changed = True
                 continue
             lst.append({"matcher": ".*", "hooks": [
                 {"type": "command", "command": _command("dsh"), "timeout": TIMEOUT}]})

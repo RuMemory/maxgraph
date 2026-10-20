@@ -407,12 +407,15 @@ def flush(server: str = "", token: str = "", path=None, http_post=None):
 
 # ------------------------------------------- обратное направление (v0.49.0) --
 
-def _reconfigure_stdout() -> None:
-    """UTF-8 stdout для JSON-ответов хосту (Windows cp1251 убил бы кириллицу)."""
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass  # StringIO в тестах / экзотический stdout — печатаем как есть
+def _reconfigure_stdout(src_stdin=None) -> None:
+    """UTF-8 stdin/stdout: хост шлёт payload UTF-8, а локаль Windows (cp1251)
+    превращала бы кириллицу в мойбяке — recall молчал, события писались кашей
+    (аудит 2026-10-20: facts:[] на русских промптах, мойбяке в events.jsonl)."""
+    for stream in (src_stdin if src_stdin is not None else sys.stdin, sys.stdout):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass  # StringIO в тестах / экзотический stdio — работаем как есть
 
 
 def _print_hook_output(event_name: str, **fields) -> None:
@@ -585,18 +588,30 @@ def main(stdin=None, argv=None) -> int:
     v0.49.0: после spool — обратное направление (инжект/recall/auto-approve),
     каждое независимо fail-open."""
     try:
-        _reconfigure_stdout()
         args = list(sys.argv[1:] if argv is None else argv)
         if "--host" in args:
             i = args.index("--host")
             if i + 1 < len(args):
                 os.environ["MG_HOST"] = args[i + 1]
         src = stdin if stdin is not None else sys.stdin
+        _reconfigure_stdout(src)  # до чтения: переключаем именно тот поток
         raw = src.read()
         payload = json.loads(raw) if raw.strip() else {}
         ev = normalize(payload)
         if ev is not None:
-            append_spool(ev)
+            try:
+                append_spool(ev)
+            except Exception:
+                # Песочница хоста может запрещать записи в ФС (DSH, 2026-10-20):
+                # спул недоступен — шлём событие напрямую, без персистентности.
+                try:
+                    _srv = _env("MG_SERVER").rstrip("/")
+                    _tok = _env("MG_TOKEN")
+                    if _srv and _tok:
+                        _http_post(f"{_srv}/api/ingest", _tok,
+                                   {"events": [ev]}, TIMEOUT)
+                except Exception:
+                    pass
             try:  # обратное направление не должно ломать захват/flush
                 if ev["hook"] == "SessionStart":
                     _session_context_inject(ev)
