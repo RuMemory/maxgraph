@@ -1112,7 +1112,8 @@ async function loadTimeline(){try{
   const r=await api(scoped('/api/timeline?limit=150'));tlEvents=r.events||[];renderJournal();renderTimeline();
 }catch(e){}}
 function renderJournal(){
-  const byP=tlEvents;
+  // Лента — только память/сессии/промпты; вызовы инструментов живут в Хронике (иначе спам)
+  const byP=tlEvents.filter(e=>e.action!=='hook_PostToolUse');
   $('#journal').innerHTML=byP.slice(0,6).map(e=>{
     const dl=dayLabel(e.ts),today=dl===t('tl.today');
     return '<div class="j-row"><span class="j-t">'+(today?'':(dl===t('tl.yesterday')?(LANG==='ru'?'вч ':'y. '):''))+esc(fmtTime(e.ts))+'</span><span class="j-ic" style="background:'+(ACT_COLOR[e.action]||'#8F8778')+'"></span><span class="j-body"><a href="#" data-open="'+esc(e.entity||'')+'">'+esc(e.entity||'')+'</a> '+esc(e.detail||'')+(e.project?projTag(e.project):'')+'</span></div>';

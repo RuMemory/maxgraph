@@ -19,6 +19,10 @@
 СТАРТ СЕССИИ: первым вызови session_start(project=<slug>) — вернётся готовый
 блок контекста проекта. Нужна конкретная тема — search_nodes(query, project=<slug>).
 
+ПЕРЕД нетривиальной задачей (код, фича, документ, исследование) — сначала
+search_nodes по её теме: работа могла быть уже сделана в прошлых сессиях.
+Не начинай с нуля то, что лежит в памяти.
+
 ВО ВРЕМЯ РАБОТЫ — ПИШИ СРАЗУ, не откладывай на конец разговора:
 - новый проект/сервис/файл/инструмент → create_entities (с title, entityType, tags);
   name = kebab-case id навсегда, title = человеческое имя;
@@ -81,6 +85,8 @@ project, and the project registers in the graph automatically.
 
 Session start: call session_start(project=<slug>) FIRST — it returns a ready
 context block for the project. For a specific topic: search_nodes(query, project=<slug>).
+Before any non-trivial task (code, feature, document, research) — run
+search_nodes on its topic first: the work may already be done in past sessions.
 While working — WRITE IMMEDIATELY, never batch to the end:
 new topic → create_entities (name = kebab-case id, title = human name; search first, don't duplicate);
 new durable fact about an existing entity → add_observations (one observation = one atomic fact, dated when it matters);
