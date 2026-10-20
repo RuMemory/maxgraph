@@ -1,18 +1,18 @@
-"""learn-events: анонимные события «запрос → открытый заголовок».
 
-Клиентская половина трубы обучения: op_search запоминает
-выдачу, op_open в окне LEARN_WINDOW_SEC порождает событие (q, title, счётчик),
-daemon флашит буфер пакетом на магазин POST /api/telemetry/learn.
 
-Гарантии:
-- анонимность: без license key/install_id/fp/IP/project/name — только тексты
-  запроса и заголовок (≤LEARN_TEXT_MAX code points);
-- STORE_MODE / пустой base_url → полный no-op (телеметрия всегда включена, выключателя нет);
-- сеть ТОЛЬКО в daemon-потоке (flush); record_* — память под локом, ноль latency
-  в поиске;
-- fail-open: любое исключение внутри гасится, поиск/открытие не могут упасть
-  из-за learn-events.
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
 import logging
 import os
 import threading
@@ -20,19 +20,19 @@ import time
 
 log = logging.getLogger("maxgraph")
 
-LEARN_WINDOW_SEC = 120    # окно связки search→open; дальше — ложные пары
-LEARN_BUFFER_CAP = 200    # потолок буфера; новые пары дропаются (повторы считаются)
-LEARN_TEXT_MAX = 200      # truncation q/t в code points
-LEARN_FLUSH_SEC = 300     # период daemon-флаша
+LEARN_WINDOW_SEC = 120
+LEARN_BUFFER_CAP = 200
+LEARN_TEXT_MAX = 200
+LEARN_FLUSH_SEC = 300
 
 _lock = threading.Lock()
-_last_search = None       # (query:str, hits:{name:title}, ts:float) | None
-_buf = {}                 # (q, t) -> c
-_warned = set()           # warn_once-ключи (тишина ≠ зависание)
+_last_search = None
+_buf = {}
+_warned = set()
 
 
 def _reset():
-    """Тесты: полный сброс module-state."""
+
     global _last_search
     with _lock:
         _last_search = None
@@ -41,27 +41,27 @@ def _reset():
 
 
 def _gated(env):
-    """True = выключено. Гейт: STORE_MODE (магазин сам себе не шлёт).
-    TELEMETRY=0 не поддерживается — оптаута нет."""
+
+
     env = os.environ if env is None else env
     return (env.get("STORE_MODE") or "").strip() == "1"
 
 
 def _clean(text):
-    """Truncation по code points + отсек lone surrogates
-    (иначе utf-8 encode упадёт на каждом флаше)."""
+
+
     return str(text or "").encode("utf-8", "ignore").decode("utf-8")[:LEARN_TEXT_MAX]
 
 
 def record_search(query, hits, env=None, now=None):
-    """Запомнить выдачу как источник связки. hits = [(name, title), ...].
-    Пустой query/выдача → связка сбрасывается. Никакой сети."""
+
+
     try:
         if _gated(env):
             return
         query = str(query or "")
-        # title пуст → "" — фоллбэка на name НЕТ (name —
-        # внутренний слуг, в событие не уходит никогда; record_open пропустит).
+
+
         hits = {str(n): (str(t) if t else "") for n, t in (hits or [])}
         with _lock:
             global _last_search
@@ -70,12 +70,12 @@ def record_search(query, hits, env=None, now=None):
             else:
                 _last_search = (query, hits,
                                 time.time() if now is None else now)
-    except Exception:  # fail-open: learn-events не может уронить op_search
+    except Exception:
         pass
 
 
 def record_open(names, env=None, now=None):
-    """open по имени из свежей выдачи → событие (q, title) с дедуп-счётчиком."""
+
     try:
         if _gated(env):
             return
@@ -88,40 +88,40 @@ def record_open(names, env=None, now=None):
                 return
             for name in names or []:
                 title = hits.get(str(name))
-                if not title:  # нет в выдаче или без title → события нет
+                if not title:
                     continue
                 key = (_clean(query), _clean(title))
                 if key in _buf:
-                    # кап счётчика — c>1000 сервер отклонит,
-                    # иначе пара стала бы poison-pill с вечным ретраем
+
+
                     _buf[key] = min(_buf[key] + 1, 1000)
                 elif len(_buf) < LEARN_BUFFER_CAP:
                     _buf[key] = 1
-                # переполнение: новые пары молча дропаются
+
     except Exception:
         pass
 
 
 def snapshot():
-    """Текущий буфер как список событий контракта [{q,t,c}] (копия)."""
+
     with _lock:
         return [{"q": q, "t": t, "c": c} for (q, t), c in _buf.items()]
 
 
 def flush(post=None, base_url=None, env=None):
-    """Отправить буфер пакетом на магазин. True — буфер очищен (или пуст).
 
-    Сбой сети/не-ok → буфер СОХРАНЯЕТСЯ до следующего тика, один warning на
-    warn_once-ключ (тишина ≠ зависание); успех сбрасывает ключ."""
+
+
+
     global _warned
     try:
         if _gated(env) or not (base_url or "").strip():
             return False
         events = snapshot()
         if not events:
-            return False  # пустой буфер — сети нет вообще
+            return False
         if post is None:
-            from urllib import request as _ur  # локальный импорт: stdlib only
+            from urllib import request as _ur
             import json as _json
 
             def post(url, payload, timeout=5):
@@ -137,7 +137,7 @@ def flush(post=None, base_url=None, env=None):
                     {"events": events}, timeout=5)
         if isinstance(resp, dict) and resp.get("ok"):
             with _lock:
-                for ev in events:  # вычесть только отправленное (могли добавить)
+                for ev in events:
                     key = (ev["q"], ev["t"])
                     if key in _buf:
                         left = _buf[key] - ev["c"]
@@ -159,8 +159,8 @@ def flush(post=None, base_url=None, env=None):
 
 def start_learn_loop(post=None, base_url=None, env=None, interval=LEARN_FLUSH_SEC,
                      stop=None):
-    """Daemon-флаш по образцу embed_loop: тик сразу, потом каждые interval сек.
-    Гейты внутри flush; поток стартует всегда, но при гейтах — вечный сон."""
+
+
     stop = stop or threading.Event()
 
     def _loop():

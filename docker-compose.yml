@@ -1,29 +1,29 @@
 services:
   maxgraph:
-    image: ghcr.io/rumemory/maxgraph:${MG_VERSION:-latest}  # готовый образ быстрее сборки; нет сети до ghcr — соберётся из build
+    image: ghcr.io/rumemory/maxgraph:${MG_VERSION:-latest}
     build: .
     container_name: maxgraph
     restart: unless-stopped
     ports:
-      # Только localhost: снаружи ходит reverse-proxy (nginx) → 127.0.0.1:8787
+
       - "127.0.0.1:8787:8787"
     volumes:
       - ./data:/data
-      # Отпечаток хоста (только хеши; пишет установщик). Read-only.
-      # Файла нет (compose без установщика) → установка работает в режиме
-      # unanchored, лечение — bash install.sh --hostfp-only / install.ps1 -HostfpOnly.
+
+
+
       - ${HOSTFP_PATH:-./hostfp.json}:/app/hostfp.json:ro
     env_file:
       - path: store.env
-        required: false   # только прод-магазин; покупателю не нужен
+        required: false
     environment:
-      MEMORY_TOKEN: ${MEMORY_TOKEN:-}  # пусто → автогенерация mg_local_* в data/local_token.txt
-      HOST_FP: ${HOST_FP:-}  # sha256 железа хоста (ставит установщик; стабильный fingerprint машины)
-      INSTALL_FLAVOR: ${INSTALL_FLAVOR:-}  # docker|docker-desktop|python — ставит установщик
+      MEMORY_TOKEN: ${MEMORY_TOKEN:-}
+      HOST_FP: ${HOST_FP:-}
+      INSTALL_FLAVOR: ${INSTALL_FLAVOR:-}
       TRUST_PROXY: ${TRUST_PROXY:-}
       LICENSE_KEY: ${LICENSE_KEY:-}
       READONLY: ${READONLY:-}
-      # Опциональный семантический поиск (без URL/KEY — чистый FTS)
+
       EMBED_URL: ${EMBED_URL:-}
       EMBED_KEY: ${EMBED_KEY:-}
       EMBED_MODEL: ${EMBED_MODEL:-}
@@ -31,15 +31,15 @@ services:
       EMBED_REFRESH_SEC: ${EMBED_REFRESH_SEC:-}
       EMBED_DAILY_CAP: ${EMBED_DAILY_CAP:-}
       HYBRID_VECTOR_WEIGHT: ${HYBRID_VECTOR_WEIGHT:-}
-      # ACT-R: приоритет недавно и часто используемым записям (ACTR_MAX_BOOST=0 — выкл.)
+
       ACTR_FLUSH_SEC: ${ACTR_FLUSH_SEC:-}
       ACTR_MAX_BOOST: ${ACTR_MAX_BOOST:-}
       ACTR_HALF_LIFE_DAYS: ${ACTR_HALF_LIFE_DAYS:-}
 
-  # Sidecar автообновлений: раз в интервал сверяет версию с магазином; новый
-  # релиз — tarball + sha256 + ed25519-подпись, бэкап data/, пересборка образа,
-  # пересоздание контейнера, откат при провале healthcheck. ВЫКЛ: AUTO_UPDATE=0 в .env.
-  # NB: доступ к docker socket = контроль над Docker хоста.
+
+
+
+
   updater:
     build: ./services/updater
     container_name: maxgraph-updater
@@ -49,12 +49,12 @@ services:
     environment:
       AUTO_UPDATE: ${AUTO_UPDATE:-1}
       STORE_URL: ${STORE_URL:-}
-      CHECK_INTERVAL: ${CHECK_INTERVAL:-}  # дефолт 3600с; минимум 300с
+      CHECK_INTERVAL: ${CHECK_INTERVAL:-}
       TARGET_CONTAINER: ${TARGET_CONTAINER:-maxgraph}
       SELF_CONTAINER: ${SELF_CONTAINER:-maxgraph-updater}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - updater-state:/state  # состояние апдейтера и бэкапы data/ (ротация 5)
+      - updater-state:/state
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
 

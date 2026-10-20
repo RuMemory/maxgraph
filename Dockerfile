@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-# Связка GHCR-пакета с публичной витриной (пакет виден на странице RuMemory/maxgraph)
+
 LABEL org.opencontainers.image.source="https://github.com/RuMemory/maxgraph" \
       org.opencontainers.image.description="MaxGraph — persistent memory for AI agents (MCP server, self-hosted)" \
       org.opencontainers.image.licenses="BUSL-1.1" \

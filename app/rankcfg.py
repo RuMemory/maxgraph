@@ -1,52 +1,52 @@
-"""rankcfg: версионированный словарь синонимов из relay-конфига.
 
-Магазин агрегирует пары «стем запроса → стем заголовка» из анонимных
-learn-events и раздаёт словарь в /api/relay/config (поле "rank"). Клиент
-применяет его как расширение FTS-запроса (только FTS — векторный запрос и
-веса не трогаем).
 
-Гарантии:
-- валидация всего сетевого/дискового ввода; невалид → отклонить целиком,
-  остаться на last-good (data/rank_config.json);
-- атомарные записи (tmp+replace); битый файл → пустой словарь, не падение;
-- пустой словарь → expand_query identity (бит-в-бит прежнее поведение);
-- синоним синонима не разворачивается (один шаг).
 
-Словарь: ключи — СТЕМЫ токенов запроса (searchrank.tokenize; морфология-
-устойчивый lookup), значения — поверхностные формы (читаемо в /admin;
-re-tokenize при расширении возвращает тот же стем — стеммер идемпотентен
-на своих выходах).
-"""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 import json
 import os
 import threading
 
 import searchrank
 
-TOKEN_MAX = 32               # символов на токен/синоним
-PAIRS_CAP = 500              # пар в словаре максимум
-SYNONYMS_PER_TOKEN_CAP = 5   # синонимов на токен максимум (топ по count на сервере)
+TOKEN_MAX = 32
+PAIRS_CAP = 500
+SYNONYMS_PER_TOKEN_CAP = 5
 
 _lock = threading.Lock()
 _state = {"version": 0, "synonyms": {}}
 
 
 def _reset():
-    """Тесты: полный сброс module-state."""
+
     global _state
     with _lock:
         _state = {"version": 0, "synonyms": {}}
 
 
 def current():
-    """Текущий конфиг (копия)."""
+
     with _lock:
         return {"version": _state["version"], "synonyms": dict(_state["synonyms"])}
 
 
 def _valid_token(tok):
-    """Стем из сети/файла: непустой, ≤32, без whitespace/управляющих, кодируется
-    в utf-8 (lone surrogate ломал бы запись last-good)."""
+
+
     if not isinstance(tok, str) or not tok or len(tok) > TOKEN_MAX:
         return False
     try:
@@ -57,9 +57,9 @@ def _valid_token(tok):
 
 
 def _validate(cfg):
-    """dict сети/файла → нормализованный {version, synonyms} или None.
-    Отклонение ЦЕЛИКОМ (атомарность): частично валидный конфиг не применяется.
-    Список синонимов > капа — не повод для отказа, режем до капа."""
+
+
+
     if not isinstance(cfg, dict):
         return None
     version = cfg.get("version")
@@ -96,8 +96,8 @@ def _persist(path):
 
 
 def apply_rank_config(cfg, path=None):
-    """Применить конфиг из relay-ответа. True — применён (и персистнут при path).
-    False — отклонён: невалиден или version не новее текущей; состояние цело."""
+
+
     norm = _validate(cfg)
     if norm is None:
         return False
@@ -112,17 +112,17 @@ def apply_rank_config(cfg, path=None):
 
 
 def load(path):
-    """Last-good при старте: битый/отсутствующий файл → состояние не трогаем."""
+
     try:
         cfg = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return apply_rank_config(cfg, path=None)  # версия из файла может быть старше
+    return apply_rank_config(cfg, path=None)
 
 
 def expand_query(query):
-    """FTS-расширение: к запросу дописываются стемы-синонимы его стемов.
-    Один шаг (без multi-hop). Пустой словарь → запрос бит-в-бит прежний."""
+
+
     query = str(query or "")
     with _lock:
         syn = _state["synonyms"]

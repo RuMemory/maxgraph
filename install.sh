@@ -1,42 +1,42 @@
 #!/usr/bin/env bash
-# install-native.sh — MaxGraph NATIVE installer for macOS and Linux (no Docker).
-# The buyer's path: download the portable binary from the store, verify it, run it.
-# Run from the root of the cloned repo:
-#   bash install-native.sh [--yes] [--project-dir <user project root>] [--rules-lang ru|en]
-#
-# Steps: store manifest -> pick <os>-<arch> -> download the binary + .sha256
-# sidecar + .sig (atomic: .part -> verify -> rename) into the install dir
-# (Linux: ~/.local/share/maxgraph, macOS: ~/Applications/maxgraph) -> create the
-# app shortcut (Linux: ~/.local/share/applications/maxgraph.desktop; macOS:
-# ~/Applications/MaxGraph symlink) -> verify
-# sha256 from the manifest (sha256sum / shasum -a 256) -> verify the ed25519
-# signature via OpenSSL 3 against the embedded release pubkey -> chmod +x ->
-# stop an old maxgraph process on reinstall -> start via nohup -> wait for
-# http://localhost:8787/healthz (up to 30s) -> read the token from
-# data/local_token.txt -> inject the memory rules into <project-dir>/AGENTS.md
-# (idempotent, <!-- maxgraph:start/end -->) -> write/register capture hooks ->
-# print the next-steps package (MAXGRAPH_NEXT_STEPS={...}).
-#
-# Trust chain (owner's decision, no code-signing certificates):
-#   install time  = HTTPS + sha256 from the store manifest + ed25519 signature
-#   verified via OpenSSL 3 (trust anchor embedded below — NOT downloaded from
-#   the same host). Fail-closed: no OpenSSL 3 / bad signature -> exit 1.
-#   Windows (install-native.ps1) keeps sha256+HTTPS only: Windows has no
-#   OpenSSL out of the box (owner informed, security review 2026-10-18).
-#   The binary also verifies ed25519 itself on every auto-update.
-# curl does NOT set the macOS quarantine xattr -> Gatekeeper stays silent.
-#
-# MG_TEST_PUBKEY_FILE (tests only): path to an override ed25519 PEM pubkey
-# for verify_ed25519; production installs use the embedded key.
-#
-# Extra flags: --store-url <url> (default https://rezon-ai.ru; tests point it
-# at a mock), --no-start (everything except launching the binary — for tests),
-# --install-dir <dir> (overrides the default install dir).
-#
-# Exit codes: 0 — installed and running (or --no-start completed); 1 — error
-# (see install-native.log). Re-run = update to the latest version (idempotent).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 set -uo pipefail
-umask 077   # downloads and the token must not be world-readable
+umask 077
 cd "$(dirname "$0")"
 
 LOG=install-native.log
@@ -72,7 +72,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-if [ "${MG_INSTALL_LIB_ONLY:-0}" != "1" ]; then   # тесты source'ят функции даже на Windows
+if [ "${MG_INSTALL_LIB_ONLY:-0}" != "1" ]; then
 OS="$(uname -s)"
 case "$OS" in Darwin|Linux) ;; *)
   echo "[maxgraph-install] Unsupported OS: $OS (on Windows use install-native.ps1)"; exit 1 ;;
@@ -87,30 +87,30 @@ if [ -z "$INSTALL_DIR" ]; then
   else INSTALL_DIR="$HOME/.local/share/maxgraph"; fi
 fi
 STORE_URL="${STORE_URL%/}"
-TOKEN_FILE="$INSTALL_DIR/data/local_token.txt"   # the binary creates ./data next to itself
+TOKEN_FILE="$INSTALL_DIR/data/local_token.txt"
 fi
 
 log() { echo "[maxgraph-install] $*" | tee -a "$LOG"; }
 fail() { log "ERROR: $*"; exit 1; }
 
-# --- memory rules into the user's project (--project-dir) --------------------
-# Скопировано из install.sh без изменений: маркеры <!-- maxgraph:start/end -->,
-# идемпотентно, переносы строк файла наследуются, запись атомарная.
 
-rules_lang() {  # explicit flag wins; otherwise the OS locale decides
+
+
+
+rules_lang() {
   case "$RULES_LANG" in
     ru|en) printf '%s' "$RULES_LANG"; return ;;
   esac
   case "${LANG:-}${LC_ALL:-}" in ru*|*ru_RU*) printf 'ru' ;; *) printf 'en' ;; esac
 }
 
-json_escape() {  # минимальное JSON-экранирование строки (пути с " и \ ломали MAXGRAPH_NEXT_STEPS)
+json_escape() {
   local s="$1"
   s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; s="${s//$'\t'/\\t}"
   printf '%s' "$s"
 }
 
-extract_rules_block() {  # $1 = ru|en → block from maxgraph-agent.md (single source of truth)
+extract_rules_block() {
   local hdr
   case "$1" in ru) hdr='## Блок (RU' ;; *) hdr='## Блок (EN' ;; esac
   awk -v hdr="$hdr" '
@@ -135,10 +135,10 @@ inject_rules() {
   [ -n "$block" ] || { log "WARN: rules block not found in maxgraph-agent.md"; return 1; }
   f="$dir/AGENTS.md"
   [ -L "$f" ] && { log "WARN: $f — симлинк; запись сквозь него отклонена"; return 1; }
-  # Маркер — ТОЛЬКО строкой целиком (инлайн-упоминание маркеров внутри самого
-  # блока не должно срабатывать); grep-чек быстрый и мягкий, строгое равенство
-  # строк — в awk; битая пара (end раньше start / нет end) → файл не трогаем.
-  # CRLF-файл → и блок в CRLF, чтобы не смешивать переносы.
+
+
+
+
   local crlf=0 tmp
   [ -f "$f" ] && grep -q $'\r' "$f" && crlf=1
   [ "$crlf" = 1 ] && block="$(printf '%s\n' "$block" | sed 's/$/\r/')"
@@ -154,7 +154,7 @@ inject_rules() {
       || { rm -f "$tmp"; log "WARN: cannot update $f (битая пара маркеров?) — файл не тронут"; return 1; }
     local mode
     mode="$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f" 2>/dev/null)"
-    [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null   # mv пересоздаёт файл; umask 077 иначе даст 600
+    [ -n "$mode" ] && chmod "$mode" "$tmp" 2>/dev/null
     mv -f "$tmp" "$f" || { rm -f "$tmp"; log "WARN: cannot replace $f"; return 1; }
     log "Memory rules updated in $f (between markers)"
   else
@@ -170,11 +170,11 @@ inject_rules() {
   RULES_INJECTED=1
 }
 
-# --- hooks (как в install.sh, но токен читается из $INSTALL_DIR/data) ---------
 
-write_hook_files() {  # ~/.maxgraph/: хук + hooks.env; регистрацию в конфигах
-  # хостов делает агент по docs/HOOKS.md. hooks.env — единственное место с
-  # токеном (chmod 600), пишется один раз (не затираем ручные правки).
+
+write_hook_files() {
+
+
   local d="$HOME/.maxgraph"
   [ -L "$d" ] && { log "WARN: $d is a symlink — refusing to write hooks.env"; return 1; }
   mkdir -p "$d" || { log "WARN: cannot create $d"; return 1; }
@@ -188,12 +188,12 @@ write_hook_files() {  # ~/.maxgraph/: хук + hooks.env; регистрацию
   [ -f "$TOKEN_FILE" ] && token="$(tr -d '[:space:]' < "$TOKEN_FILE")"
   if [ ! -f "$d/hooks.env" ] && [ -n "$token" ]; then
     ( umask 077; { printf 'MG_SERVER=http://localhost:8787\n'; printf 'MG_TOKEN=%s\n' "$token"; } \
-      > "$d/hooks.env" )   # 600 с рождения: токен недолжен быть читаем даже на секунду
+      > "$d/hooks.env" )
   fi
   log "Hooks ready: ~/.maxgraph (agent registers them into its host — docs/HOOKS.md)"
 }
 
-register_hooks() {  # авто-регистрация хуков во всех НАЙДЕННЫХ хостах (молча; агент — фолбэк)
+register_hooks() {
   [ -f hooks/register_hook.py ] || return 1
   if ! command -v python3 >/dev/null 2>&1; then
     log "python3 not found — hooks not registered automatically (agent registers by docs/HOOKS.md)"
@@ -202,7 +202,7 @@ register_hooks() {  # авто-регистрация хуков во всех �
   python3 hooks/register_hook.py --auto | while IFS= read -r line; do log "hooks: $line"; done
 }
 
-print_next_steps() {  # финальный пакет для агента-установщика (см. AGENTS.md)
+print_next_steps() {
   local token="" cfg=""
   [ -f "$TOKEN_FILE" ] && token="$(tr -d '[:space:]' < "$TOKEN_FILE")"
   [ -n "$token" ] || token="<см. data/local_token.txt>"
@@ -229,8 +229,8 @@ print_next_steps() {  # финальный пакет для агента-уст
    Dashboard: http://localhost:8787/app#$token (token is in the link — opens signed in).
 =======================================================================
 EOF
-  # машиночитаемая строка — ТОЛЬКО stdout; в install-native.log токен не пишем
-  # (его прикрепляют к багрепортам). json_escape: пути с \ и " ломали JSON.
+
+
   printf 'MAXGRAPH_NEXT_STEPS={"mcp_url":"http://localhost:8787/mcp","token":"%s","dashboard":"http://localhost:8787/app#%s","rules_injected":%s,"project_dir":"%s"}\n' \
     "$(json_escape "$token")" "$(json_escape "$token")" "$([ "$RULES_INJECTED" = 1 ] && printf true || printf false)" \
     "$(json_escape "$PROJECT_DIR")"
@@ -238,22 +238,22 @@ EOF
     "$([ "$RULES_INJECTED" = 1 ] && printf true || printf false)" "$PROJECT_DIR" >> "$LOG"
 }
 
-# --- native download ----------------------------------------------------------
 
-_sha256_file() {  # $1 = path → hex
+
+_sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}';
   else shasum -a 256 "$1" | awk '{print $1}'; fi
 }
 
-# --- ed25519 verify (M-1, security review 2026-10-18) ------------------------
-# Боевой release-ключ ed25519 (trust anchor). ВШИТ константой — trust anchor
-# НЕЛЬЗЯ качать с того же хоста, что и артефакт. Копия app/release.pub.pem;
-# при ротации ключа обновить И ЗДЕСЬ (и перевыпустить установщик).
+
+
+
+
 MG_RELEASE_PUB_PEM='-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAxFQmmGesTXd9ynmG4C2dF/aWb8RCm5yD3jgA7AzkIHI=
 -----END PUBLIC KEY-----'
 
-verify_ed25519() {  # $1 = файл, $2 = .sig; fail-closed (fail → exit 1)
+verify_ed25519() {
   command -v openssl >/dev/null 2>&1 \
     || fail "OpenSSL not found - cannot verify the ed25519 signature. Install OpenSSL 3+ (macOS: brew install openssl) and re-run."
   local over
@@ -263,7 +263,7 @@ verify_ed25519() {  # $1 = файл, $2 = .sig; fail-closed (fail → exit 1)
   esac
   local pubf tmpf=""
   if [ -n "${MG_TEST_PUBKEY_FILE:-}" ]; then
-    pubf="$MG_TEST_PUBKEY_FILE"   # тестовый ключ (НЕ для прода)
+    pubf="$MG_TEST_PUBKEY_FILE"
   else
     tmpf="$(mktemp "${TMPDIR:-/tmp}/mg-pub.XXXXXX.pem")" \
       || fail "cannot create a temp file for the release pubkey"
@@ -273,14 +273,14 @@ verify_ed25519() {  # $1 = файл, $2 = .sig; fail-closed (fail → exit 1)
   if ! openssl pkeyutl -verify -pubin -inkey "$pubf" -rawin -in "$1" -sigfile "$2" >/dev/null 2>&1; then
     [ -n "$tmpf" ] && rm -f "$tmpf"
     log "ERROR: ed25519 signature INVALID for $1"
-    return 1   # не fail(): вызывающий чистит .part и падает сам
+    return 1
   fi
   [ -n "$tmpf" ] && rm -f "$tmpf"
   log "ed25519 signature verified (release key)."
 }
 
-fetch_manifest() {  # выставляет глобальный MANIFEST (fail внутри command
-  # substitution убил бы только subshell — поэтому без stdout-контракта)
+fetch_manifest() {
+
   local url="$STORE_URL/api/releases/native/manifest"
   local body code
   body="$(curl -fsS -w '\n%{http_code}' "$url" 2>/dev/null)" || true
@@ -293,11 +293,11 @@ fetch_manifest() {  # выставляет глобальный MANIFEST (fail �
   esac
 }
 
-# Манифест машинно-генерируемый и плоский: {"version":"X.Y.Z","artifacts":[
-# {"name":"...","os":"...","arch":"...","bytes":N,"sha256":"..."},...]}.
-# Парсим без jq (его может не быть): схлопываем whitespace и вырезаем объект
-# с нужными os/arch. Если формат магазина усложнится — здесь чинить.
-select_artifact() {  # $1 = manifest → выставляет ART_NAME / ART_SHA / MG_VERSION
+
+
+
+
+select_artifact() {
   local norm entry
   norm="$(printf '%s' "$1" | tr -d ' \t\r\n')"
   MG_VERSION="$(printf '%s' "$norm" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p' | head -1)"
@@ -401,7 +401,7 @@ wait_healthz() {  # до 30 секунд; строгое «ok» — не под�
 # --- main ---------------------------------------------------------------------
 
 # MG_INSTALL_LIB_ONLY=1 — только функции (тесты source'ят скрипт и дёргают
-# verify_ed25519 с MG_TEST_PUBKEY_FILE; боевой запуск не трогаем).
+
 if [ "${MG_INSTALL_LIB_ONLY:-0}" = "1" ]; then return 0 2>/dev/null || exit 0; fi
 
 log "Store: $STORE_URL; install dir: $INSTALL_DIR ($MG_OS-$ARCH)"
@@ -411,7 +411,7 @@ fetch_manifest
 select_artifact "$MANIFEST"
 download_verified
 bin="$BIN"
-create_shortcuts "$bin" || true   # ярлык не критичен; exe при старте повторит ensure_shortcuts
+create_shortcuts "$bin" || true
 
 if [ "$NO_START" = 1 ]; then
   log "no-start: skipping the binary launch, healthz wait and token read (test mode)."
@@ -422,7 +422,7 @@ else
   log "MaxGraph is up (http://localhost:8787)."
 fi
 
-inject_rules || true   # правила не критичны для запуска; предупреждение уже в логе
+inject_rules || true
 write_hook_files || true
 register_hooks || true
 log "MaxGraph native installed (version $MG_VERSION)."
