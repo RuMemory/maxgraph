@@ -421,6 +421,102 @@ def ensure_hostfp(data_dir=None, platform: str | None = None) -> bool:
 
 
 
+_HOOK_NAMES = ("maxgraph_hook.py", "register_hook.py")
+
+
+def _hook_src_dir() -> Path:
+
+
+    cand = _RESOURCE_BASE / "hooks"
+    return cand if cand.is_dir() else _RESOURCE_BASE.parent / "hooks"
+
+
+def _atomic_write(path: Path, data: bytes, mode: int | None = None) -> None:
+
+
+
+
+
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+             | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
+    created = False
+    try:
+        try:
+            fd = os.open(tmp, flags, 0o600)
+        except FileExistsError:
+            tmp.unlink()
+            fd = os.open(tmp, flags, 0o600)
+        created = True
+        try:
+            os.write(fd, data)
+        finally:
+            os.close(fd)
+        if mode is not None:
+            try:
+                os.chmod(tmp, mode)
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    finally:
+        if created:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def ensure_hook_files(home=None, token: str = "", port: int = 8787) -> bool:
+
+
+
+
+
+
+
+
+    try:
+        home = Path.home() if home is None else Path(home)
+        d = home / ".maxgraph"
+        if d.is_symlink():
+            log.warning("hooks: %s — symlink, отказ от записи", d)
+            return False
+        d.mkdir(parents=True, exist_ok=True)
+        src = _hook_src_dir()
+        for name in _HOOK_NAMES:
+            try:
+
+                s = src / name
+                if not s.is_file():
+                    log.warning("hooks: %s нет в ресурсах — пропуск", s)
+                    continue
+                data = s.read_bytes()
+                t = d / name
+                if not t.is_file() or t.read_bytes() != data:
+                    _atomic_write(t, data)
+                    log.info("hooks: %s обновлён из ресурсов exe", t)
+            except Exception as exc:
+                log.warning("hooks: %s не обновлён: %s", name, exc)
+    except Exception as exc:
+        log.warning("hooks: ensure_hook_files не удался: %s", exc)
+        return False
+    try:
+
+
+        tok = "".join(str(token or "").split())
+        if tok:
+            _atomic_write(d / "hooks.env",
+                          f"MG_SERVER=http://localhost:{port}\nMG_TOKEN={tok}\n"
+                          .encode("utf-8"), mode=0o600)
+    except Exception as exc:
+        log.warning("hooks: hooks.env не записан: %s", exc)
+        return False
+    return True
+
+
+
+
 HEARTBEAT_SEC = 6 * 3600
 
 

@@ -70,6 +70,10 @@ jobs:
             [ -f "$f" ] && ARGS="$ARGS --add-data $f:."
           done
           [ -d app/static ] && ARGS="$ARGS --add-data app/static:static"
+          # хуки в exe — ensure_hook_files (native.py) освежает ими ~/.maxgraph
+          for f in hooks/maxgraph_hook.py hooks/register_hook.py; do
+            [ -f "$f" ] && ARGS="$ARGS --add-data $f:hooks"
+          done
           # иконка трея (assets/): в exe — _MEIPASS/assets/, как в исходниках
           [ -f app/assets/tray-icon.png ] && ARGS="$ARGS --add-data app/assets/tray-icon.png:assets"
           # иконка exe: .lnk-ярлыки (IconLocation=exe) берут её из ресурсов
@@ -92,6 +96,10 @@ jobs:
             if (Test-Path $f) { $pyArgs += @('--add-data', "$f;.") }
           }
           if (Test-Path app/static) { $pyArgs += @('--add-data', 'app/static;static') }
+          # хуки в exe — ensure_hook_files (native.py) освежает ими ~/.maxgraph
+          foreach ($f in @('hooks/maxgraph_hook.py','hooks/register_hook.py')) {
+            if (Test-Path $f) { $pyArgs += @('--add-data', "$f;hooks") }
+          }
           # иконка трея (assets/): в exe — _MEIPASS/assets/, как в исходниках
           if (Test-Path app/assets/tray-icon.png) { $pyArgs += @('--add-data', 'app/assets/tray-icon.png;assets') }
           # иконка exe: .lnk-ярлыки (IconLocation=exe) берут её из ресурсов

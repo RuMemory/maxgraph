@@ -2852,6 +2852,7 @@ RECALL_MAX_FACT = 300
 RECALL_MAX_FACTS_CHARS = 1500
 RECALL_TOP_ENTITIES = 3
 RECALL_MIN_SCORE = float(os.environ.get("MG_RECALL_MIN_SCORE", "0.85"))
+RECALL_MIN_COS = float(os.environ.get("MG_RECALL_MIN_COS", "0.82"))
 RECALL_RATE_LIMIT = 120
 SESSION_CONTEXT_DEFAULT_BUDGET = 4000
 
@@ -2887,6 +2888,8 @@ async def api_session_context(request: Request):
 
 @mcp.custom_route("/api/recall", methods=["POST"])
 async def api_recall(request: Request):
+
+
 
 
 
@@ -2935,10 +2938,25 @@ def _recall(query: str, slug: str) -> dict:
     slug = _resolve_project(slug)
     res = op_search(query, slug, limit=10)
     qts = set(searchrank.tokenize(query))
+
+
+
+
+
+
+    _w, cos_fn = _hybrid_search(query)
     facts, total = [], 0
     for e in res.get("entities", []):
         if len(facts) >= RECALL_TOP_ENTITIES:
             break
+        if cos_fn is not None:
+            try:
+                cos = cos_fn(e["name"])
+            except Exception as exc:
+                cos = None
+                log.debug("recall: cos_fn сбой для %s: %s", e.get("name"), exc)
+            if cos is not None and cos < RECALL_MIN_COS:
+                continue
         score = float(e.get("score") or 0)
         if score < RECALL_MIN_SCORE:
             continue
@@ -8425,6 +8443,9 @@ if __name__ == "__main__":
         native.ensure_hostfp()
         native.ensure_autostart()
         native.ensure_shortcuts()
+
+
+        native.ensure_hook_files(token=TOKEN, port=PORT)
         import selfupdate
         selfupdate.start_update_loop(lambda: VERSION, PUBLIC_BASE_URL, DATA_DIR, PORT,
                                      on_update=native.notify_update_available)

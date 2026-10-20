@@ -94,6 +94,17 @@ SPOOL_KEEP = SPOOL_MAX // 2
 FIELD_MAX = 2000
 
 
+
+
+
+
+_MACHINE_PROMPT_RE = re.compile(
+    r"^(?:Agent [0-9a-f-]{36} sent a message:|Background subagent [0-9a-f-]{36} |"
+    r"background job \S+ |# MaxGraph: память проекта|Current runtime context\.|"
+    r"This is an automatically generated checkpoint|Time sampled while preparing|"
+    r"<system-reminder>)")
+
+
 def _env(name: str) -> str:
 
 
@@ -541,12 +552,16 @@ def _prompt_recall(event: dict) -> None:
 
 
 
+
+
     if _env("MG_RECALL") == "0":
         return
     project = event.get("project") or ""
     prompt = (event.get("data") or {}).get("prompt") or ""
     stripped = prompt.lstrip()
     if not project or not stripped or len(stripped) < 12 or stripped[0] in "/!#":
+        return
+    if _MACHINE_PROMPT_RE.search(stripped):
         return
     h = hashlib.sha256(prompt.strip().lower().encode("utf-8")).hexdigest()
     if h in _recalled_hashes():
