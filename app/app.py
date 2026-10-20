@@ -565,7 +565,12 @@ def _project_entity_name(slug: str) -> str:
 def _in_project(entity: dict, slug: str) -> bool:
 
 
-    return (entity.get("project") or "") == slug or entity["name"] == _project_entity_name(slug)
+
+    fam = _project_family(slug)
+    p = entity.get("project") or ""
+    if p in fam:
+        return True
+    return any(entity["name"] == _project_entity_name(s) for s in fam if s)
 
 
 def _filter_graph(ents: dict, rels: list, slug: str, all_projects: bool):
@@ -607,11 +612,14 @@ def _aliases_load() -> dict:
 
 
 
+
                 if (isinstance(k, str) and isinstance(v, str)
                         and len(k) <= 64 and len(v) <= 64
                         and _PROJECT_RE.fullmatch(k) and _PROJECT_RE.fullmatch(v)
                         and k not in _RESERVED_SLUGS and v not in _RESERVED_SLUGS):
                     data[k] = v
+                    if len(data) >= _ALIASES_CAP:
+                        break
     except Exception as ex:
         log.warning("project-aliases: сбой чтения: %s", ex)
     _aliases_cache = data
@@ -642,6 +650,21 @@ def _resolve_project(slug: str) -> str:
 
 
     return _aliases_load().get(slug, slug) if slug else slug
+
+
+def _project_family(slug: str) -> frozenset:
+
+
+
+
+    if not slug:
+        return frozenset({""})
+    canon = _resolve_project(slug)
+    fam = {canon}
+    for k, v in _aliases_load().items():
+        if v == canon:
+            fam.add(k)
+    return frozenset(fam)
 
 
 
@@ -1646,12 +1669,17 @@ def op_timeline(limit=100, project: str = "", all_projects: bool = False):
     events = []
     if project and not all_projects:
 
+
+        fam = _project_family(project)
         for line in reversed(lines):
             try:
                 ev = json.loads(line)
             except Exception:
                 continue
-            if ev.get("project") == project:
+            ep = ev.get("project")
+            if not isinstance(ep, str):
+                continue
+            if ep in fam:
                 events.append(ev)
                 if len(events) >= limit:
                     break
@@ -1912,12 +1940,16 @@ def _touched_today(project: str, today: str, exclude: str = "", lines=None) -> l
             return []
         lines = EVENTS_FILE.read_text(encoding="utf-8").splitlines()
     names, seen = [], set()
+    fam = _project_family(project)
     for line in reversed(lines):
         try:
             ev = json.loads(line)
         except Exception:
             continue
-        if (ev.get("project") or "") != project:
+        ep = ev.get("project") or ""
+        if not isinstance(ep, str):
+            continue
+        if ep not in fam:
             continue
         if str(ev.get("ts", ""))[:10] != today:
             continue
@@ -2257,8 +2289,15 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET,
         ev_lines = (EVENTS_FILE.read_text(encoding="utf-8").splitlines()
                     if EVENTS_FILE.exists() else [])
         _reprime_writes[project] = 0
-    proj_ent = ents.get(pname)
-    proj_ents = [e for e in ents.values() if (e.get("project") or "") == project]
+
+    fam = _project_family(project)
+    proj_ent = None
+    for s in [project] + sorted(fam - {project}):
+        if _project_entity_name(s) in ents:
+            proj_ent = ents[_project_entity_name(s)]
+            break
+    proj_ents = [e for e in ents.values()
+                 if (e.get("project") or "") in fam]
 
     proj_facts = _valid_obs(proj_ent) if proj_ent else []
 
@@ -2274,7 +2313,8 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET,
             ev = json.loads(line)
         except Exception:
             continue
-        if ev.get("project") == project:
+        ep = ev.get("project")
+        if isinstance(ep, str) and ep in fam:
             total_events += 1
             recent_buf.append(ev)
             if (str(ev.get("ts", ""))[:10] == today
@@ -2300,7 +2340,8 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET,
     else:
         plines = [f"- {f}" for f in proj_facts[:_SS_CAP_PROJECT_FACTS]]
         sections.append(("project", header, plines))
-        sec_names.append([pname] * len(plines))
+
+        sec_names.append([proj_ent["name"]] * len(plines))
 
 
 
@@ -2900,6 +2941,8 @@ def _project_memory_counts() -> dict:
 
 
 
+
+
     ents, _ = _load()
     counts = {}
     for e in ents.values():
@@ -2909,6 +2952,9 @@ def _project_memory_counts() -> dict:
         if e.get("entityType") == "session":
             continue
         counts[slug] = counts.get(slug, 0) + 1
+        canon = _resolve_project(slug)
+        if canon != slug:
+            counts[canon] = counts.get(canon, 0) + 1
     return counts
 
 
@@ -3647,6 +3693,11 @@ async def api_ingest(request: Request):
 
 
                 if _REPO_TAG_RE.match(legacy):
+                    continue
+                if canon_tag in aliases or legacy in aliases.values():
+
+
+
                     continue
                 if _REPO_TAG_RE.match(canon_tag):
 
