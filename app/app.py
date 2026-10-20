@@ -3301,9 +3301,59 @@ def _hook_digest(hook: str, data: dict) -> str:
         if isinstance(v, (dict, list)):
             v = json.dumps(v, ensure_ascii=False, separators=(",", ":"))
         return re.sub(r"\s+", " ", str(v or "")).strip()[:n]
+
+    def key_arg(inp):
+        """Ключевой аргумент инструмента без JSON-обёртки (лента памяти —
+        человекочитаемая): file_path/description/command/query/… Строка-JSON
+        (хук шлёт _cut) распарсивается обратно, прочее — как есть."""
+        if isinstance(inp, str):
+            s = inp.strip()
+            if s.startswith("{"):
+                try:
+                    inp = json.loads(s)
+                except Exception:
+                    return short(s, 100)
+            else:
+                return short(s, 100)
+        if isinstance(inp, dict):
+            for k in ("file_path", "description", "command", "pattern", "query",
+                      "title", "name", "path", "url"):
+                v = inp.get(k)
+                if isinstance(v, str) and v.strip():
+                    return short(v, 100)
+            obs = inp.get("observations")  # maxgraph add_observations
+            if isinstance(obs, list) and obs and isinstance(obs[0], dict):
+                return short(obs[0].get("entityName"), 100)
+            names = inp.get("names")       # maxgraph open_nodes
+            if isinstance(names, list) and names:
+                return short(", ".join(str(x) for x in names[:3]), 100)
+            return ""
+        return short(inp, 100)
+
+    def resp_text(r):
+        """Ответ инструмента: JSON-объект → ok / «ошибка: …», текст — как есть."""
+        obj = r
+        if isinstance(r, str) and r.strip().startswith("{"):
+            try:
+                obj = json.loads(r)
+            except Exception:
+                obj = None
+        if isinstance(obj, dict):
+            err = obj.get("error")
+            if isinstance(err, str) and err:
+                return short(f"ошибка: {err}", 60)
+            return "ok"
+        return short(r, 60)
+
     if hook == "PostToolUse":
-        text = (f"{short(data.get('tool'), 40)}: {short(data.get('input'), 100)}"
-                f" → {short(data.get('response'), 50)}")
+        tool = short(data.get("tool"), 40)
+        # mcp__maxgraph__add_observations → maxgraph:add_observations
+        if tool.startswith("mcp__"):
+            parts = tool.split("__", 2)
+            tool = f"{parts[1]}:{parts[2]}" if len(parts) == 3 else tool[5:]
+        arg = key_arg(data.get("input"))
+        resp = resp_text(data.get("response"))
+        text = f"{tool}: {arg} → {resp}" if arg else f"{tool} → {resp}"
     elif hook == "UserPromptSubmit":
         text = short(data.get("prompt"), 190)
     elif hook == "SessionStart":
