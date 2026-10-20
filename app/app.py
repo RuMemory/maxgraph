@@ -2995,6 +2995,15 @@ async def api_search(request: Request):
             for e in resp["entities"]:
                 name = e.get("name") or ""
                 s = name[8:] if name.startswith("project:") else name
+
+
+
+
+
+                if not name.startswith("project:"):
+                    ep = e.get("project") or ""
+                    if ep and ep != s:
+                        continue
                 canon = _resolve_project(s)
                 if canon in seen:
                     continue

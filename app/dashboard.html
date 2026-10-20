@@ -287,6 +287,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
 #projDel{width:36px;height:36px;padding:0;align-items:center;justify-content:center}
 #projDel:hover{background:rgba(225,90,79,.12);color:var(--bad)}
 .htag{font-family:var(--mono);font-size:9px;color:var(--ink-4);border:1px solid var(--border);border-radius:5px;padding:0 5px;opacity:.9}
+.ttag{font-size:9px;border:1px solid;border-radius:5px;padding:0 5px;opacity:.85}
  
 .theme-sw{position:relative;width:46px;height:26px;border-radius:99px;background:var(--bg);border:1px solid var(--border);box-shadow:inset 0 2px 4px rgba(0,0,0,.35);display:flex;align-items:center;justify-content:space-between;padding:0 6px;color:var(--ink-4);transition:all var(--t-fast)}
 .theme-sw::before{content:"";position:absolute;inset:-9px -7px}
@@ -882,6 +883,10 @@ const CANON_FILTERS=['project','decision','task','bug','event','request','sessio
 const statusBadge=e=>{const ty=canonType(e.entityType);if(ty!=='bug'&&ty!=='task')return '';const st=String(e.status||'').toLowerCase();const done=ty==='bug'?st==='fixed':st==='done';if(!done&&st!=='open')return '';return ' <span class="st-chip '+(done?'st-done':'st-open')+'">'+esc(st)+'</span>';};
 const projTag=p=>p&&p!==curProject?' <span class="ptag">'+esc(p)+'</span>':'';
 const hostTag=h=>h?' <span class="htag">'+esc(h)+'</span>':'';
+
+
+const entTypeOf=n=>{if(!n||!graph.entities)return'';const e=graph.entities.find(x=>x.name===n);return e?canonType(e.entityType):'';};
+const typeTag=n=>{const ty=entTypeOf(n);if(!ty)return'';const c=typeColor(ty);return ' <span class="ttag" style="color:'+c+';border-color:'+c+'">'+esc(typeLabel(ty))+'</span>';};
 function fmtTs(s){if(!s)return'—';const d=new Date(s);if(isNaN(d))return String(s);const loc=LANG==='ru'?'ru':'en';return d.toLocaleDateString(loc)+' '+d.toLocaleTimeString(loc,{hour:'2-digit',minute:'2-digit'});}
 function fmtTime(s){const d=new Date(s);if(isNaN(d))return'';return d.toLocaleTimeString(LANG==='ru'?'ru':'en',{hour:'2-digit',minute:'2-digit'});}
 function dayLabel(s){const d=new Date(s),n=new Date();const dd=(x)=>x.getFullYear()+'-'+x.getMonth()+'-'+x.getDate();if(dd(d)===dd(n))return t('tl.today');const y=new Date(n);y.setDate(n.getDate()-1);if(dd(d)===dd(y))return t('tl.yesterday');return d.toLocaleDateString(LANG==='ru'?'ru':'en');}
@@ -1187,23 +1192,25 @@ async function loadTimeline(){try{
 }catch(e){}}
 function renderJournal(){
   
-  const byP=tlEvents.filter(e=>e.action!=='hook_PostToolUse'&&byHost(e));
+  
+  const byP=tlEvents.filter(e=>e.action!=='hook_PostToolUse'&&e.action!=='hook_Stop'&&byHost(e));
   $('#journal').innerHTML=byP.slice(0,6).map(e=>{
     const dl=dayLabel(e.ts),today=dl===t('tl.today');
-    return '<div class="j-row"><span class="j-t">'+(today?'':(dl===t('tl.yesterday')?(LANG==='ru'?'вч ':'y. '):''))+esc(fmtTime(e.ts))+'</span><span class="j-ic" style="background:'+(ACT_COLOR[e.action]||'#8F8778')+'"></span><span class="j-body"><a href="#" data-open="'+esc(e.entity||'')+'">'+esc(e.entity||'')+'</a> '+esc(e.detail||'')+(e.project?projTag(e.project):'')+(e.host?hostTag(e.host):'')+'</span></div>';
+    return '<div class="j-row"><span class="j-t">'+(today?'':(dl===t('tl.yesterday')?(LANG==='ru'?'вч ':'y. '):''))+esc(fmtTime(e.ts))+'</span><span class="j-ic" style="background:'+(ACT_COLOR[e.action]||'#8F8778')+'"></span><span class="j-body"><a href="#" data-open="'+esc(e.entity||'')+'">'+esc(e.entity||'')+'</a>'+typeTag(e.entity)+' '+esc(e.detail||'')+(e.project?projTag(e.project):'')+(e.host?hostTag(e.host):'')+'</span></div>';
   }).join('')||'<div class="empty">'+esc(curProject?t('tl.quietproj'):t('tl.quiet'))+'</div>';
 }
 function renderTimeline(){
   
   
-  const list=(pulseFilter==='all'?tlEvents.filter(e=>e.action!=='hook_PostToolUse')
-    :pulseFilter==='tools'?tlEvents.filter(e=>e.action==='hook_PostToolUse')
+  const TECH=['hook_PostToolUse','hook_Stop'];
+  const list=(pulseFilter==='all'?tlEvents.filter(e=>TECH.indexOf(e.action)<0)
+    :pulseFilter==='tools'?tlEvents.filter(e=>TECH.indexOf(e.action)>=0)
     :tlEvents.filter(e=>evClass(e.action)===pulseFilter)).filter(byHost);
   let html='',lastDay='';
   for(const e of list){
     const dl=dayLabel(e.ts);
     if(dl!==lastDay){html+='<div class="tl-day">'+esc(dl)+'</div>';lastDay=dl;}
-    html+='<div class="tl-row"><span class="ts">'+esc(fmtTime(e.ts))+'</span><span class="ic" style="color:'+(ACT_COLOR[e.action]||'#8F8778')+'">'+esc(ACT_ICON[e.action]||'•')+'</span><span class="en"><a href="#" data-open="'+esc(e.entity||'')+'">'+esc(e.entity||'')+'</a></span><span class="dt">'+esc(e.detail||'')+(e.project?projTag(e.project):'')+(e.host?hostTag(e.host):'')+'</span></div>';
+    html+='<div class="tl-row"><span class="ts">'+esc(fmtTime(e.ts))+'</span><span class="ic" style="color:'+(ACT_COLOR[e.action]||'#8F8778')+'">'+esc(ACT_ICON[e.action]||'•')+'</span><span class="en"><a href="#" data-open="'+esc(e.entity||'')+'">'+esc(e.entity||'')+'</a>'+typeTag(e.entity)+'</span><span class="dt">'+esc(e.detail||'')+(e.project?projTag(e.project):'')+(e.host?hostTag(e.host):'')+'</span></div>';
   }
   $('#tlList').innerHTML=html||'<div class="empty">'+esc(curProject?t('tl.quietproj'):t('tl.quiet'))+'</div>';
 }
