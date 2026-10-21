@@ -14,9 +14,11 @@ Maxgraph embed — опциональный семантический слой 
   ({"_model": отпечаток модели, name: {"v": [...], "u": updatedAt}}, атомарная
   запись tmp+replace; файл с чужим/без отпечатка → вектора инвалидированы,
   пополнитель пересчитает). Поиск (app._hybrid_search): запрос эмбеддится
-  (LRU 128 по (query, model)), косинусы — по FTS top-200 кандидатам, а при
-  корпусе ≤ HYBRID_FULL_SCAN_MAX — по всем (full-scan, recall парафраз;
-  см. searchrank.rank), гибрид (1−w)·fts_norm + w·cos_norm — в searchrank.
+  (LRU 128 по (query, model)); корпус ≤ HYBRID_FULL_SCAN_MAX (6000) — косинус
+  по всем (full-scan, recall парафраз); корпус больше — двухуровневый скан:
+  грубый отбор топ-M по центроиду сущности (scan_top, один проход, чанками
+  с уступкой GIL) + FTS top-200, точный max-по-окнам — только у кандидатов;
+  гибрид (1−w)·fts_norm + w·cos_norm — в searchrank.
 
 Офлайн-safe: без EMBED_URL/EMBED_KEY модуль выключен (enabled() → False) —
 поведение не меняется (чистый FTS). Fail-open: любая ошибка
@@ -52,13 +54,17 @@ Zero-config: configure_runtime(url, key, model) задаёт конфиг пов
 до рестарта. Поисковый путь и refresh подхватывают на следующем вызове/тике.
 
 Лимиты/компромиссы (задокументированный выбор):
-  - Предфильтр: косинус считается только по FTS top-200 (searchrank
-    .HYBRID_CANDIDATES). 10k×1024 dims на чистом stdlib — ~0.5–1с полным
-    проходом (нет numpy); 200×1024 ≈ 10–20мс. Цена: сущность без единого
-    FTS-совпадения векторно не поднимется (recall-стадия = FTS).
+  - Корпус > HYBRID_FULL_SCAN_MAX (6000): грубый отбор по центроиду
+    (нормализованное среднее векторов сущности, лениво в памяти, в файл не
+    пишется), топ-M=HYBRID_CENTROID_TOP + FTS top-200 получают точный
+    max-косинус по окнам. 10k×384 центроидный проход ≈ 240 мс (замеры —
+    report_fullscan.md), точный этап ≤ 400×5 окон ≈ миллисекунды. Цена:
+    парафраз, спрятанный в одном окне мега-сущности, может не вытянуть
+    центроид в топ-M (частичная деградация именно на мега-сущностях).
   - Сущность без вектора (ещё не посчитан) → cos_norm = 0.5 (нейтраль,
     не штраф): порядок внутри FTS-выдачи без векторов не меняется.
-  - Вектора в памяти — plain list[float] (10k×1024 ≈ 300MB RSS): фича
+  - Вектора в памяти — plain list[float] (10k×1024 ≈ 300MB RSS; +~30–50%
+    на ленивые центроиды rec["c"] при корпусах > HYBRID_FULL_SCAN_MAX): фича
     опциональна и включается только явным EMBED_URL/KEY.
   - Запрос эмбеддится синхронно на поисковом пути (как _load() в op_search):
     LRU 128 снимает повторы, EMBED_TIMEOUT ограничивает худший случай.
@@ -67,11 +73,13 @@ Zero-config: configure_runtime(url, key, model) задаёт конфиг пов
 """
 
 import hashlib
+import heapq
 import json
 import logging
 import math
 import os
 import threading
+import time
 import urllib.request
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -463,6 +471,70 @@ def cosine_scorer(store, query_vec):
     return score
 
 
+# --- двухуровневый скан (Семантика 2.0, ceiling-fix): центроид → топ-M → окна ---
+
+SCAN_CHUNK = 2000  # векторов между уступками GIL (time.sleep(0)) — event loop
+                   # не блокируется (поиск и так в threadpool, см. app.py)
+
+
+def _centroid(rec):
+    """Центроид сущности: нормализованное среднее основного вектора и окон.
+    Лениво, кэшируется В ПАМЯТИ в rec["c"] (в embeddings.json НЕ пишется —
+    формат файла не меняется; save_store читает только v/u/w). Один вектор →
+    он сам (уже нормализован), без копий. Рассинхрон размерностей окна
+    пропускаются. Нечего усреднять → None."""
+    c = rec.get("c")
+    if c is not None:
+        return c
+    v = rec.get("v")
+    if not isinstance(v, list) or not v:
+        return None
+    ws = [w for w in (rec.get("w") or [])
+          if isinstance(w, list) and len(w) == len(v)]
+    if not ws:
+        rec["c"] = v
+        return v
+    dims = len(v)
+    acc = list(v)
+    for w in ws:
+        for i in range(dims):
+            acc[i] += w[i]
+    c = normalize(acc)
+    rec["c"] = c
+    return c
+
+
+def scan_top(store, query_vec, m, chunk=SCAN_CHUNK):
+    """Грубый отбор: топ-m сущностей по косинусу ЦЕНТРОИДА, один проход по
+    store → [(name, cos)] по убыванию. Точный max-по-окнам — у cosine_scorer
+    на кандидатах (searchrank). Записи без вектора/рассинхрон размерностей
+    пропускаются. Порционность: каждые chunk векторов time.sleep(0) — уступка
+    GIL/event loop'у (поиск работает в threadpool, но чанкинг страхует
+    синхронные вызовы)."""
+    q = [float(x) for x in (query_vec or [])]
+    qlen = len(q)
+    if not qlen:
+        return []
+    m = max(1, int(m))
+    heap = []  # min-heap (cos, name), размер ≤ m
+    i = 0
+    for name, rec in (store or {}).items():
+        i += 1
+        if i % chunk == 0:
+            time.sleep(0)  # порционность: GIL другим потокам/event loop'у
+        if not isinstance(rec, dict):
+            continue
+        c = _centroid(rec)
+        if not c or len(c) != qlen:
+            continue
+        cos = dot(c, q)
+        if len(heap) < m:
+            heapq.heappush(heap, (cos, name))
+        elif cos > heap[0][0]:
+            heapq.heapreplace(heap, (cos, name))
+    return [(nm, c) for c, nm in sorted(heap, key=lambda t: t[0], reverse=True)]
+
+
 # ----------------------------------------------------------------- store -----
 # data/embeddings.json: {"_model": отпечаток модели, name: {"v": [float,…],
 # "u": updatedAt}}. Отпечаток нужен потому, что refresh сверяет только
@@ -751,6 +823,9 @@ def refresh(entities, store_path, state_path, cfg=None, http_post=None) -> dict:
             rec = {"v": vs[0], "u": str(e.get("updatedAt") or "")}
             if len(vs) > 1:
                 rec["w"] = vs[1:]  # доп. окна — scorer берёт max-косинус
+            # центроид в момент пересчёта — тёплый кэш store не платит
+            # ленивый пересчёт на первом поиске (in-memory only, в файл не пишется)
+            rec["c"] = normalize([sum(x) for x in zip(*vs)]) if len(vs) > 1 else vs[0]
             store[str(e["name"])] = rec
         spend(state_path, cost)
         stats["tokens"] += cost

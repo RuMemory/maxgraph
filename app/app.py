@@ -27,8 +27,6 @@ Env:
                   анонимный install-ping — один POST {install_id, version, fp?}
                   на магазин при старте. fp — sha256-хеш machine fingerprint;
                   магазин отвечает якорем начала триала → снос data/ не сбрасывает 7 дней.
-                  Сюда же learn-events: анонимный пакет
-                  «запрос → открытый заголовок» раз в 5 мин
   INSTALL_FLAVOR — метка способа установки (docker|docker-desktop|python; rancher =
                   легаси-установки) в install-ping; ставится установщиком
                   (install.sh/install.ps1), пусто → autodetect по /.dockerenv
@@ -76,8 +74,6 @@ import plans       # stdlib-only: тарифы/лейблы планов (общ
 import searchrank  # --- stdlib-only: ранжированный FTS-lite поиск
 import embed       # --- (волна 2) --- stdlib-only: опциональные эмбеддинги, гибридный поиск
 import actr        # --- (волна 2) --- stdlib-only: ACT-R reinforcement (частые факты всплывают)
-import learn       # --- stdlib-only: анонимные learn-events «запрос → открытый заголовок»
-import rankcfg     # --- stdlib-only: версионированный словарь синонимов (relay rank)
 
 # Компоненты магазина: в self-hosted сборке их нет; роуты, которые ими пользуются,
 # и так отвечают 404 через _store_gate() (STORE_MODE=0) — импорт терпимый.
@@ -182,12 +178,10 @@ PROJECTS_DIR = DATA_DIR / "projects"  # шарды графа по проект�
 EVENTS_FILE = DATA_DIR / "events.jsonl"
 PROJECT_ALIASES_FILE = DATA_DIR / "project-aliases.json"  # --- алиасы legacy-slug → repo-тег ---
 INSTALLS_FILE = DATA_DIR / "installs.json"  # --- install-ping учёт ---
-LEARN_EVENTS_FILE = DATA_DIR / "learn_events.jsonl"  # --- learn-events ---
 HEARTBEATS_FILE = DATA_DIR / "heartbeats.jsonl"  # --- (native-client): heartbeat живости ---
 SUPPORT_REPORTS_FILE = DATA_DIR / "support_reports.jsonl"  # --- отчёты о багах из дашборда ---
 UPDATE_LOG_FILE = DATA_DIR / "update.log"    # журнал helper'а автообновлений (selfupdate)
 SERVER_LOG_FILE = DATA_DIR / "maxgraph.log"  # журнал сервера (windowed-exe, ротация 2×1МБ)
-RANK_CONFIG_FILE = DATA_DIR / "rank_config.json"  # --- last-good словарь синонимов ---
 _ENV_TOKEN = bool((os.environ.get("MEMORY_TOKEN") or "").strip())
 TOKEN = _resolve_token()
 WEBHOOK_SECRET = os.environ.get("PLATEGA_WEBHOOK_SECRET", "")
@@ -1502,27 +1496,95 @@ def op_read_graph(project: str = "", all_projects: bool = False):
 
 
 def _hybrid_search(query_str: str):
-    """(vector_weight, cosine_fn) для searchrank.rank; (0.0, None) — чистый FTS.
+    """(vector_weight, cosine_fn, vector_top_fn) для searchrank.rank;
+    (0.0, None, None) — чистый FTS.
 
     Гибрид применяется ТОЛЬКО когда embed включён (EMBED_URL+EMBED_KEY) И у
     запроса есть вектор (LRU-кэш в embed; промах = один /embeddings вызов с
-    EMBED_TIMEOUT; сбой/кап → None). Любой сбой → (0.0, None): поведение
+    EMBED_TIMEOUT; сбой/кап → None). Любой сбой → (0.0, None, None):
     поведение без изменений. Корпус уже отфильтрован ДО вызова rank —
     косинусы считаются только по именам из видимого корпуса (изоляция
-    проектов сохраняется, вектора чужих проектов не читаются)."""
+    проектов сохраняется, вектора чужих проектов не читаются).
+    vector_top_fn(m) — имена грубого векторного топ-M по центроидам
+    (embed.scan_top; двухуровневый скан для корпуса > HYBRID_FULL_SCAN_MAX)."""
     cfg = embed.config_from_env()
     if not embed.enabled(cfg):
-        return 0.0, None
+        return 0.0, None, None
     w = cfg["hybrid_weight"]
     if w <= 0.0:
-        return 0.0, None  # w=0 → чистый FTS: запрос даже не эмбеддим (не жжём API)
+        return 0.0, None, None  # w=0 → чистый FTS: запрос даже не эмбеддим (не жжём API)
     store = embed.load_store(EMBEDDINGS_FILE)  # stat-only при тёплом кэше
     if not store:
-        return 0.0, None  # пополнитель ещё не наполнил — не жжём API на запрос
+        return 0.0, None, None  # пополнитель ещё не наполнил — не жжём API на запрос
     qv = embed.query_vector(query_str, cfg=cfg, state_path=EMBED_STATE_FILE)
     if qv is None:
-        return 0.0, None
-    return w, embed.cosine_scorer(store, qv)
+        return 0.0, None, None
+
+    def vector_top_fn(m):
+        return [nm for nm, _cos in embed.scan_top(store, qv, m)]
+
+    return w, embed.cosine_scorer(store, qv), vector_top_fn
+
+
+# --- PRF (Семантика 2.0): векторный топ → стемы заголовков/имён → FTS --------
+_PRF_TOP_K = 5         # столько верхних по векторному скору сущностей дают стемы
+_PRF_COARSE_POOL = 50  # верх грубого центроидного пула для точного дожима PRF
+_PRF_MAX_TERMS = 8     # потолок дописываемых в FTS стемов (шум размывает BM25)
+_PRF_MIN_COS = 0.5     # гейт: шумовой максимум cos на 10k×384d ≈ 0.2–0.25,
+                       # релевантные e5-пары ≈ 0.7–0.9 (bench/results) —
+                       # 0.5 консервативная середина; подтверждено офлайн-бенчем
+                       # (онлайн-доводка — bench-ключом, не pro-ключом)
+_PRF_FTS_MIN_HITS = 3  # меньше результатов — FTS слаб, PRF нужен
+_PRF_FTS_CONFIDENCE = 2.0  # top1/median FTS-скоров ≥ 2 → FTS уверен, PRF
+                       # пропускаем: дописанные стемы сдвигают idf/BM25 и
+                       # РАЗБАВЛЯЮТ FTS-сильную выдачу (регрессы бенча
+                       # 2026-10-21 #7/#8: top1/med 5.0/3.5; спасённые PRF
+                       # кейсы — flat 1.2)
+
+
+def _prf_expand(query_str, corpus, cos_fn, vtop_fn):
+    """Pseudo-relevance feedback: векторный топ-K → стемы title/name, которых
+    нет в стемах запроса, дописываются в FTS-ветку (источник — вектора,
+    не словарь синонимов). Стеммер идемпотентен на своих выходах — re-tokenize
+    расширенного запроса вернёт те же стемы.
+
+    Грубый центроидный пул (vtop_fn — обычно уже посчитанный для rank) →
+    точный max-по-окнам cos_fn только по пулу → топ-K с cos ≥ _PRF_MIN_COS.
+    Без векторов/при сбое — запрос не меняется (no-op, fail-open)."""
+    if vtop_fn is None or cos_fn is None:
+        return query_str
+    try:
+        names = vtop_fn(_PRF_COARSE_POOL)
+    except Exception:
+        return query_str  # fail-open: PRF не роняет поиск
+    if not names:
+        return query_str
+    by_name = {str(e.get("name") or ""): e for e in corpus}
+    qstems = set(searchrank.tokenize(query_str))
+    hits = []
+    for nm in names:
+        e = by_name.get(str(nm))
+        if e is None:
+            continue
+        try:
+            cos = cos_fn(str(nm))
+        except Exception:
+            cos = None  # fail-open, как в rank
+        if cos is None or cos < _PRF_MIN_COS:
+            continue
+        hits.append((float(cos), e))
+    hits.sort(key=lambda t: t[0], reverse=True)
+    extra = []
+    for _cos, e in hits[:_PRF_TOP_K]:
+        for stem in (searchrank.tokenize(str(e.get("title") or ""))
+                     + searchrank.tokenize(str(e.get("name") or ""))):
+            if stem not in qstems and stem not in extra:
+                extra.append(stem)
+                if len(extra) >= _PRF_MAX_TERMS:
+                    break
+        if len(extra) >= _PRF_MAX_TERMS:
+            break
+    return query_str + " " + " ".join(extra) if extra else query_str
 
 
 def op_search(query, project: str = "", all_projects: bool = False, type_filter: str = "",
@@ -1536,8 +1598,11 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
 
     Опционально: при заданных EMBED_URL+EMBED_KEY — гибрид FTS+косинус
     эмбеддингов (searchrank.rank(vector_weight=HYBRID_VECTOR_WEIGHT, default 0.6);
-    корпус ≤2000 → косинус по всем (full-scan), больше → FTS top-200 предфильтр;
-    score ответа становится blended 0..1).
+    корпус ≤6000 → косинус по всем (full-scan), больше → двухуровневый скан:
+    FTS top-200 + грубый векторный топ-200 по центроидам;
+    score ответа становится blended 0..1). PRF (Семантика 2.0): векторный топ-5
+    с cos≥0.5 дописывает стемы title/name вне запроса в FTS-ветку (≤8 стемов);
+    без векторов — no-op.
     Без эмбеддингов (выключен/сбой/нет векторов) — чистый FTS.
 
     ACT-R буст (default ON, отключается ACTR_MAX_BOOST=0) — часто и недавно
@@ -1584,15 +1649,40 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
     if _changed:
         corpus = _corpus
     query_str = str(query or "")
-    # FTS-ветка расширяется словарём синонимов (rank/tokenize/snippet
-    # согласованно); векторный запрос остаётся исходным.
-    expanded_str = rankcfg.expand_query(query_str)
+    # FTS-ветка расширяется PRF (векторный топ → стемы title/name — ниже,
+    # после _hybrid_search); векторный запрос остаётся исходным.
+    expanded_str = query_str
     qts = searchrank.tokenize(expanded_str)
     if query_str.strip() and qts:
-        vec_w, cos_fn = _hybrid_search(query_str)  # (0.0, None) → чистый FTS
+        vec_w, cos_fn, vtop_fn = _hybrid_search(query_str)  # (0.0, None, None) → чистый FTS
+        if cos_fn is not None and vtop_fn is not None:
+            # Гейт по силе FTS (дешёвый пробный прогон): PRF — для запросов,
+            # где лексика молчит или выдача плоская (top1/med < 2); при
+            # уверенном FTS дописанные стемы только разбавляют выдачу.
+            fts_probe = searchrank.rank(corpus, expanded_str, limit=5)
+            _prf_ok = True
+            if len(fts_probe) >= _PRF_FTS_MIN_HITS:
+                _med = sorted(s for s, _ in fts_probe)[len(fts_probe) // 2]
+                _prf_ok = not _med or fts_probe[0][0] / _med < _PRF_FTS_CONFIDENCE
+            if _prf_ok:
+                # Один грубый центроидный проход на PRF и двухуровневый скан rank
+                # (иначе 10k платил бы за скан дважды). rank потребляет только
+                # имена и только при n > HYBRID_FULL_SCAN_MAX.
+                try:
+                    _coarse = vtop_fn(max(_PRF_COARSE_POOL,
+                                          searchrank.HYBRID_CENTROID_TOP))
+                except Exception:
+                    _coarse = None  # fail-open: rank сам повторит и отвалится молча
+                if _coarse is not None:
+                    vtop_fn = lambda m, _c=list(_coarse): _c[:m]
+                    prf_str = _prf_expand(expanded_str, corpus, cos_fn, vtop_fn)
+                    if prf_str != expanded_str:
+                        expanded_str = prf_str
+                        qts = searchrank.tokenize(expanded_str)
         pairs = searchrank.rank(corpus, expanded_str, limit=limit,
                                 vector_weight=vec_w, cosine_fn=cos_fn,
-                                actr_fn=_actr_boost_fn())  # None → без изменений
+                                actr_fn=_actr_boost_fn(),  # None → без изменений
+                                vector_top_fn=vtop_fn)     # None → без двухуровневого
         ranked = True
     else:
         ranked = False
@@ -1634,14 +1724,6 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
         # Пустой query (дамп корпуса) не учитываем — как read_graph, это не
         # сигнал интереса к конкретным фактам (и это O(N) касаний на вызов).
         _touch([e["name"] for e in out_entities[:actr.TOUCH_TOP]])
-    # learn-events: источник связки search→open. Только память, сети нет;
-    # не-ранжированные ветки (пустой query, CJK-фоллбек) сбрасывают связку.
-    if ranked:
-        learn.record_search(query_str,
-                            [(e["name"], e.get("title"))  # без фоллбэка на name
-                             for e in out_entities])
-    else:
-        learn.record_search("", [])
     return {"entities": out_entities, "relations": mrels}
 
 
@@ -1657,13 +1739,11 @@ def op_open(names, project: str = "", with_ids: bool = False):
         found = [e for n, e in ents.items() if n in want]
         frels = [r for r in rels if r["from"] in want and r["to"] in want]
         _touch([e["name"] for e in found])  # явное открытие = обращение
-        learn.record_open([e["name"] for e in found])  # связка со свежим поиском
     else:
         found = [e for n, e in ents.items() if n in want and _in_project(e, project)]
         found_names = {e["name"] for e in found}
         frels = [r for r in rels if r["from"] in found_names and r["to"] in found_names]
         _touch([e["name"] for e in found])  # только реально найденные имена
-        learn.record_open([e["name"] for e in found])  # связка со свежим поиском
     if with_ids:  # копии — хранимый граф не трогаем
         found = [dict(e, observations=_obs_with_ids(e.get("observations", [])))
                  for e in found]
@@ -3049,7 +3129,7 @@ def _recall(query: str, slug: str) -> dict:
     # qv — LRU-попадание (op_search только что эмбеддил тот же запрос), сети
     # нет. Нет вектора у сущности / embed выключен → None → пропускаем
     # (fail-open, как весь векторный слой).
-    _w, cos_fn = _hybrid_search(query)
+    _w, cos_fn, _vtop = _hybrid_search(query)
     facts, total = [], 0
     for e in res.get("entities", []):
         if len(facts) >= RECALL_TOP_ENTITIES:
@@ -4372,12 +4452,6 @@ def _relay_config_pull(env=None):
                 _ensure_embed_loop()  # цикл мог не стартовать при boot (embed был выключен)
                 log.info("relay: embed-конфиг применён (model=%.80r)",
                          emb.get("model") or "default")
-        # словарь синонимов — независим от embed блок; невалиден/
-        # старая версия → rankcfg молча отклоняет, клиент остаётся на last-good
-        rank = ok and cfg.get("rank")
-        if isinstance(rank, dict) and rankcfg.apply_rank_config(rank, path=RANK_CONFIG_FILE):
-            log.info("relay: rank-конфиг применён (version=%s, синонимов=%d)",
-                     rank.get("version"), len(rank.get("synonyms") or {}))
     except Exception as e:
         # hosted-фичи опциональны — сбой relay не ломает инстанс, но причину пишем
         log.warning("relay: конфиг не получен: %r", e)
@@ -4978,121 +5052,12 @@ async def api_telemetry_install(request: Request):
     return JSONResponse(out, headers=_NOCACHE)
 
 
-# --- learn-events ---
-_learn_lock = threading.Lock()
-_learn_prune_day = ""        # UTC-дата последнего retention-прогона
-_LEARN_RETENTION_SEC = 90 * 86400
-_LEARN_CAP = 500_000         # belt&braces: drop oldest при prune
-_LEARN_BODY_CAP = 16384
-_LEARN_MAX_EVENTS = 50
-_LEARN_TEXT_MAX = 200
-_LEARN_BYTES_CAP = 32 * 1024 * 1024  # stat-клапан до append: между
-                                     # суточными prune файл не растёт безмерно
-
-
-def _learn_clean(text):
-    """Серверная копия санитизации клиента: границе доверия не верим —
-    lone surrogate легален в JSON, но ломает utf-8 encode при записи."""
-    return (text.encode("utf-8", "ignore").decode("utf-8")
-            .replace("\x00", "").strip()[:_LEARN_TEXT_MAX])
-
-
-def _learn_prune(now):
-    """Retention 90д: переписать файл без старых/битых строк + кап (drop oldest).
-    Зовётся под _learn_lock раз в UTC-день при первой записи дня.
-    shortcut: full-parse синхронно в event loop; при капе 32МБ это ~секунда
-    раз в сутки — если магазин вырастет, вынести в поток."""
-    global _learn_prune_day
-    day = time.strftime("%Y-%m-%d", time.gmtime(now))
-    if day == _learn_prune_day or not LEARN_EVENTS_FILE.exists():
-        _learn_prune_day = day
-        return
-    cutoff = now - _LEARN_RETENTION_SEC
-    kept = []
-    try:
-        lines = LEARN_EVENTS_FILE.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError, ValueError):
-        lines = []  # битый/нечитаемый файл → начинаем с чистого
-    for line in lines:
-        try:
-            ts = float(json.loads(line).get("ts") or 0)
-        except Exception:
-            continue  # битая строка выкидывается при prune
-        if ts >= cutoff:
-            kept.append(line)
-    kept = kept[-_LEARN_CAP:]
-    try:  # атомарно: tmp + replace — крэш/disk-full не затирает файл
-        tmp = LEARN_EVENTS_FILE.with_suffix(".tmp")
-        tmp.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
-        os.replace(tmp, LEARN_EVENTS_FILE)
-    except OSError:
-        pass  # read-only data/ — retention пропустим, запись ниже откажет честно
-    _learn_prune_day = day
-
-
-@mcp.custom_route("/api/telemetry/learn", methods=["POST"])
-async def api_telemetry_learn(request: Request):
-    """Анонимные learn-events «запрос → открытый заголовок» (телеметрия всегда ON, без оптаута). Без license key/install_id/fp/IP — только
-    тексты запроса (≤200) и заголовок (≤200) + счётчик. ts ставит СЕРВЕР (часам
-    клиента не верим). Хранение: learn_events.jsonl, retention 90 дней.
-    Пер-событийная валидация: битое событие пропускаем, весь пакет битый → 400."""
-    ip = _client_ip(request)
-    if _rate_limited(ip, "learn", 30, 3600):
-        return JSONResponse({"ok": False, "error": "rate_limited"}, status_code=429)
-    body, err = await _read_capped(request, _LEARN_BODY_CAP)
-    if err is not None:
-        return err
-    try:
-        body = json.loads(body)
-    except Exception:
-        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
-    events = body.get("events") if isinstance(body, dict) else None
-    if not isinstance(events, list) or not events or len(events) > _LEARN_MAX_EVENTS:
-        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
-    now = time.time()
-    accepted = []
-    for ev in events:
-        if not isinstance(ev, dict):
-            continue
-        q, t, c = ev.get("q"), ev.get("t"), ev.get("c", 1)
-        if not isinstance(q, str) or not isinstance(t, str):
-            continue
-        q = _learn_clean(q) if isinstance(q, str) else ""
-        t = _learn_clean(t) if isinstance(t, str) else ""
-        if not q or not t:
-            continue
-        if isinstance(c, bool) or not isinstance(c, int) or not (1 <= c <= 1000):
-            continue
-        accepted.append({"ts": now, "q": q, "t": t, "c": c})
-    if not accepted:
-        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
-    with _learn_lock:
-        _learn_prune(now)
-        try:  # stat-клапан ДО append — файл не растёт сверх капа
-            full = (LEARN_EVENTS_FILE.exists()
-                    and LEARN_EVENTS_FILE.stat().st_size > _LEARN_BYTES_CAP)
-        except OSError:
-            full = False
-        if full:
-            return JSONResponse({"ok": False, "error": "store_full"},
-                                status_code=503)  # клиент сохранит буфер
-        try:
-            with LEARN_EVENTS_FILE.open("a", encoding="utf-8") as f:
-                for ev in accepted:
-                    f.write(json.dumps(ev, ensure_ascii=False) + "\n")
-        except OSError:
-            # read-only data/ → честный отказ; клиент сохранит буфер (fail-open)
-            return JSONResponse({"ok": False, "error": "store_unavailable"},
-                                status_code=503)
-    return JSONResponse({"ok": True, "accepted": len(accepted)}, headers=_NOCACHE)
-
-
 # --- heartbeat живости клиентов ---
 _hb_lock = threading.Lock()
 _hb_prune_day = ""          # UTC-дата последнего retention-прогона
-_HB_RETENTION_SEC = 90 * 86400   # как learn-events
+_HB_RETENTION_SEC = 90 * 86400
 _HB_BODY_CAP = 2048
-_HB_BYTES_CAP = 8 * 1024 * 1024  # stat-клапан до append (как learn): между
+_HB_BYTES_CAP = 8 * 1024 * 1024  # stat-клапан до append: между
                                  # суточными prune файл не растёт безмерно
 _HB_OS = frozenset({"windows", "macos", "linux"})
 _HB_ID_RE = re.compile(r"^[0-9A-Za-z-]{1,64}$")  # uuid клиента; послабление к _INSTALL_ID_RE
@@ -5100,8 +5065,8 @@ _HB_VER_RE = re.compile(r"^\d+\.\d+\.\d+([-.+][0-9A-Za-z.-]+)?$")
 
 
 def _hb_prune(now):
-    """Retention 90д, раз в UTC-день при первой записи дня (конвенция
-    learn_events.jsonl): переписать файл без старых/битых строк, атомарно.
+    """Retention 90д, раз в UTC-день при первой записи дня: переписать файл
+    без старых/битых строк, атомарно.
     shortcut: отдельного cap строк нет — stat-клапан _HB_BYTES_CAP достаточен
     для потока «1 событие / 6ч / установка»."""
     global _hb_prune_day
@@ -5136,7 +5101,7 @@ def _hb_prune(now):
 async def api_telemetry_heartbeat(request: Request):
     """Анонимный heartbeat клиентов (телеметрия всегда ON, без оптаута): {install_id, version, os, flavor, ts}. Без fp/license key/IP —
     только живость и факты установки. ts в файле — СЕРВЕРНЫЙ (часам клиента не
-    верим, как learn-events), клиентский храним рядом в cts. Только STORE_MODE
+    верим), клиентский храним рядом в cts. Только STORE_MODE
     (self-hosted копии отвечают 404 через _store_gate)."""
     g = _store_gate()
     if g:
@@ -5178,7 +5143,7 @@ async def api_telemetry_heartbeat(request: Request):
             with HEARTBEATS_FILE.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         except OSError:
-            # read-only data/ → честный отказ (как learn-events)
+            # read-only data/ → честный отказ
             return JSONResponse({"ok": False, "error": "store_unavailable"},
                                 status_code=503)
     return JSONResponse({"ok": True}, headers=_NOCACHE)
@@ -5378,214 +5343,6 @@ async def api_support_context(request: Request):
     return JSONResponse({"version": VERSION, "os": osname,
                          "update_log_tail": tail, "server_log_errors": errs},
                         headers=_NOCACHE)
-
-
-# --- агрегация словаря синонимов из learn-events ---
-RANK_VETO_FILE = DATA_DIR / "rank_veto.json"   # [[stem_a, stem_b], ...] — вето владельца
-_rank_lock = threading.Lock()
-_rank_cache = {"computed_at": 0.0, "mtime": -1.0,
-               "cfg": {"version": 0, "synonyms": {}}, "stats": {}}
-_RANK_RECOMPUTE_SEC = 3600   # пересчёт не чаще раза в час, даже если mtime пляшет
-_RANK_MIN_COUNT = 5          # авто-включение: суммарный c ≥ 5
-_RANK_MIN_DAYS = 3           # …в ≥3 разных UTC-дня (прокси «разных пользователей»)
-_RANK_NOISE_MIN = 2          # count < 2 не храним (одноразовый шум)
-_RANK_PAIRS_CAP = 500
-_RANK_SYNONYMS_CAP = 5       # синонимов на токен (топ по count)
-_RANK_STATS_CAP = 200_000    # кап пар ДО фильтра шума (пара
-                             # из 100-токенных q/t плодит ~10k записей за 450 байт)
-
-
-def _load_rank_veto():
-    """Вето-список владельца. Битый файл → пусто (не блокируем агрегацию)."""
-    try:
-        v = json.loads(RANK_VETO_FILE.read_text(encoding="utf-8"))
-        return {tuple(p) for p in v
-                if isinstance(p, list) and len(p) == 2
-                and all(isinstance(x, str) for x in p)}
-    except Exception:
-        return set()
-
-
-def _surface_map(text):
-    """стем → Counter поверхностных форм (значение словаря должно быть читаемым
-    в /admin; re-tokenize формы вернёт тот же стем)."""
-    out = {}
-    for _, _, raw in searchrank._subtokens(str(text or "")):
-        out.setdefault(searchrank._stem(raw), {})
-        out[searchrank._stem(raw)][raw] = out[searchrank._stem(raw)].get(raw, 0) + 1
-    return out
-
-
-def _rank_config_compute(now):
-    """learn_events.jsonl → (cfg {version, synonyms}, stats для /admin).
-
-    Кандидат: стем запроса вне заголовка → стем заголовка вне запроса; все
-    комбинации получают +c — истинные пары накапливаются быстрее шума.
-    Активен при count≥5 и days≥3 и не в вето. version = int(mtime событий)."""
-    try:
-        mtime = LEARN_EVENTS_FILE.stat().st_mtime
-    except OSError:
-        return {"version": 0, "synonyms": {}}, {}
-    # вето должно доезжать до клиентов немедленно — версия
-    # учитывает и mtime вето-файла, иначе клиент отклонит пересчёт как «старый»
-    try:
-        vmtime = RANK_VETO_FILE.stat().st_mtime
-    except OSError:
-        vmtime = 0.0
-    version = int(max(mtime, vmtime) * 1000)  # мс-разрешение: вето в ту же
-                                              # секунду всё равно бампит версию
-    # монотонность: mtime квантуется (NTFS ~15.6мс) — вето в пределах кванта
-    # давало ТУ ЖЕ версию, клиент отклонял пересчёт как «старый»
-    # (флаки test_version_bumps_on_veto на быстрых машинах)
-    prev = _rank_cache["cfg"].get("version") or 0
-    if version <= prev:
-        version = prev + 1
-    stats = {}  # (qs, ts) -> {count, days:set, surf_q:Counter, surf_t:Counter}
-    try:
-        lines = LEARN_EVENTS_FILE.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError, ValueError):
-        lines = []
-    for line in lines:
-        try:
-            ev = json.loads(line)
-            q, t = ev["q"], ev["t"]
-        except Exception:
-            continue  # битая строка — не наша забота (prune выкинет)
-        c = ev.get("c", 1)
-        if isinstance(c, bool) or not isinstance(c, int) or not (1 <= c <= 1000):
-            c = 1
-        qs_map, ts_map = _surface_map(q), _surface_map(t)
-        only_q = set(qs_map) - set(ts_map)
-        only_t = set(ts_map) - set(qs_map)
-        if not only_q or not only_t:
-            continue
-        try:
-            day = time.strftime("%Y-%m-%d", time.gmtime(float(ev.get("ts") or 0)))
-        except (TypeError, ValueError, OSError):
-            continue
-        for a in only_q:
-            for b in only_t:
-                key_ab = (a, b)
-                st = stats.get(key_ab)
-                if st is None:
-                    if len(stats) >= _RANK_STATS_CAP:
-                        continue  # кап против DoS-раздувания
-                    st = stats[key_ab] = {"count": 0, "days": set(),
-                                          "surf_q": {}, "surf_t": {}}
-                st["count"] += c
-                st["days"].add(day)
-                for raw, n in qs_map[a].items():
-                    st["surf_q"][raw] = st["surf_q"].get(raw, 0) + n
-                for raw, n in ts_map[b].items():
-                    st["surf_t"][raw] = st["surf_t"].get(raw, 0) + n
-    stats = {k: v for k, v in stats.items() if v["count"] >= _RANK_NOISE_MIN}
-    veto = _load_rank_veto()
-    active = [(k, v) for k, v in stats.items()
-              if v["count"] >= _RANK_MIN_COUNT and len(v["days"]) >= _RANK_MIN_DAYS
-              and k not in veto]
-    active.sort(key=lambda kv: -kv[1]["count"])
-    by_q = {}
-    for (a, b), st in active[:_RANK_PAIRS_CAP]:
-        if len(by_q.setdefault(a, [])) < _RANK_SYNONYMS_CAP:
-            by_q[a].append((b, st))
-    synonyms = {a: [max(v["surf_t"].items(), key=lambda kv: kv[1])[0]  # частая форма
-                    for _, v in pairs]
-                for a, pairs in by_q.items()}
-    return {"version": version, "synonyms": synonyms}, stats
-
-
-def _rank_config_cached():
-    """cfg из кэша; пересчёт при смене mtime learn_events.jsonl, не чаще часа.
-    Вето-эндпоинт сбрасывает кэш принудительно (mtime=-1)."""
-    now = time.time()
-    with _rank_lock:
-        try:
-            mtime = LEARN_EVENTS_FILE.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        c = _rank_cache
-        if mtime and (mtime != c["mtime"] or c["mtime"] < 0) \
-                and now - c["computed_at"] >= _RANK_RECOMPUTE_SEC:
-            c["cfg"], c["stats"] = _rank_config_compute(now)
-            c["mtime"] = mtime
-            c["computed_at"] = now
-        return c["cfg"]
-
-
-def _rank_admin_view():
-    """Витрина /admin: активные/кандидаты/заветоенные пары с читаемыми формами."""
-    _rank_config_cached()  # кэш свежий в пределах часового гейта
-    with _rank_lock:
-        stats = dict(_rank_cache["stats"])
-    veto = _load_rank_veto()
-    active, candidates, vetoed = [], [], []
-    for (a, b), st in sorted(stats.items(), key=lambda kv: -kv[1]["count"]):
-        row = {"a": a, "b": b,
-               "a_surf": max(st["surf_q"], key=st["surf_q"].get) if st["surf_q"] else a,
-               "b_surf": max(st["surf_t"], key=st["surf_t"].get) if st["surf_t"] else b,
-               "count": st["count"], "days": len(st["days"])}
-        if (a, b) in veto:
-            vetoed.append(row)
-        elif st["count"] >= _RANK_MIN_COUNT and len(st["days"]) >= _RANK_MIN_DAYS:
-            active.append(row)
-        else:
-            candidates.append(row)
-    return {"active": active[:200], "candidates": candidates[:200],
-            "vetoed": vetoed[:200],
-            "thresholds": {"count": _RANK_MIN_COUNT, "days": _RANK_MIN_DAYS}}
-
-
-@mcp.custom_route("/api/admin/synonyms", methods=["GET"])
-async def api_admin_synonyms(request: Request):
-    """витрина словаря синонимов для владельца магазина."""
-    g = _store_gate()
-    if g:
-        return g
-    if not _admin_auth(request):
-        return _admin_401()
-    return JSONResponse(_rank_admin_view(), headers=_NOCACHE)
-
-
-@mcp.custom_route("/api/admin/synonyms/veto", methods=["POST"])
-async def api_admin_synonyms_veto(request: Request):
-    """вето пары (a,b) — исключается из словаря навсегда
-    (снятие вето — ручной edit data/rank_veto.json). Кэш сбрасывается сразу."""
-    g = _store_gate()
-    if g:
-        return g
-    if not _admin_auth(request):
-        return _admin_401()
-    body, err = await _read_capped(request, 4096)
-    if err is not None:
-        return err
-    try:
-        body = json.loads(body)
-    except Exception:
-        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
-    a = str(body.get("a") or "").strip() if isinstance(body, dict) else ""
-    b = str(body.get("b") or "").strip() if isinstance(body, dict) else ""
-    if (not a or not b or len(a) > 64 or len(b) > 64
-            or any(ch.isspace() for ch in a + b)):
-        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
-    try:
-        (a + b).encode("utf-8")  # lone surrogate легален в JSON, но
-    except UnicodeEncodeError:   # ломает запись veto-файла → 400, не 500
-        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
-    with _rank_lock:
-        try:
-            veto = json.loads(RANK_VETO_FILE.read_text(encoding="utf-8"))
-            if not isinstance(veto, list):
-                veto = []
-        except Exception:
-            veto = []
-        if [a, b] not in veto:
-            veto.append([a, b])
-            tmp = RANK_VETO_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(veto, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, RANK_VETO_FILE)
-        _rank_cache["mtime"] = -1.0      # форс-пересчёт при следующем чтении
-        _rank_cache["computed_at"] = 0.0
-    return JSONResponse({"ok": True}, headers=_NOCACHE)
 
 
 @mcp.custom_route("/api/installs", methods=["GET"])
@@ -6998,8 +6755,7 @@ async def api_relay_config(request: Request):
         "key": token,
         "model": _RELAY_EMBED_MODEL,
         "query_prefix": _RELAY_EMBED_QUERY_PREFIX,
-        "passage_prefix": _RELAY_EMBED_PASSAGE_PREFIX},
-        "rank": _rank_config_cached()}  # словарь синонимов
+        "passage_prefix": _RELAY_EMBED_PASSAGE_PREFIX}}
     return JSONResponse(out, headers=_NOCACHE)
 
 
@@ -7090,7 +6846,6 @@ _ADMIN_COOKIE_PATHS = {"/api/payments", "/api/tenants", "/api/codes", "/api/code
                        "/api/codes/export", "/api/installs", "/api/admin/revoke",
                        "/api/admin/logout", "/api/admin/password",
                        "/api/admin/machines", "/api/admin/machines/unbind",  # host-fp
-                       "/api/admin/synonyms", "/api/admin/synonyms/veto",
                        "/api/admin/support-reports",  # вкладка «Баги» (GET отчётов)
                        "/api/admin/stats"}            # вкладка «Статистика» (агрегация)
 
@@ -8412,7 +8167,6 @@ class TokenAuth:
                     "/billing/create", "/billing/success", "/api/license/validate",
                     "/api/billing/lava/invoice", "/api/webhooks/lava",  # lava.top (EN-витрина, USD)
                     "/api/telemetry/install",  # анонимный install-ping
-                    "/api/telemetry/learn",  # анонимные learn-events
                     "/api/telemetry/heartbeat",  # анонимный heartbeat живости (native-client)
                     "/api/support/report",  # отчёт о баге из дашборда (только магазин, rate-limited)
                     "/api/version",  # апдейт-чип дашборда (публичная версия)
@@ -8499,13 +8253,11 @@ def main():
     if not STORE_MODE:
         threading.Thread(target=_bootstrap_hosted, daemon=True, name="bootstrap-hosted").start()  # ping → relay-pull при boot
         threading.Thread(target=_license_watchdog, daemon=True, name="license-watchdog").start()
-        learn.start_learn_loop(post=_post_json, base_url=PUBLIC_BASE_URL)
         # heartbeat раз в 6ч — всем установкам (docker/python/native), не только exe;
         # flavor внутри: "native" при _FROZEN, иначе autodetect как у install-ping.
         # native stdlib-only при импорте (pystray/PIL — лениво) и входит в Docker-образ (COPY app/).
         import native
         native.start_heartbeat(_post_json, PUBLIC_BASE_URL, DATA_DIR, lambda: VERSION)
-    rankcfg.load(RANK_CONFIG_FILE)  # last-good словарь синонимов
     env_key = os.environ.get("LICENSE_KEY", "").strip()  # лицензия из env (self-hosted pro)
     if env_key and not STORE_MODE and st.get("state") != "licensed":  # на магазине self-activation не нужен
         res = _activate_key(env_key)

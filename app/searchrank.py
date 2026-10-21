@@ -22,9 +22,11 @@
   fts/max(fts) по кандидатам, cos_norm = (cos+1)/2 ∈ [0,1], отсутствующий
   вектор → нейтраль 0.5. Корпус ≤ HYBRID_FULL_SCAN_MAX → косинус по ВСЕМ
   кандидатам (full-scan: парафраз без лексического пересечения поднимается;
-  fts=0 у непопавших, формула корректна); корпус больше → косинус только по
-  FTS top-HYBRID_CANDIDATES (предфильтр: 10k×1024 dims полным проходом на
-  чистом stdlib — ~секунды; 200×1024 ≈ миллисекунды; замеры — у констант).
+  fts=0 у непопавших, формула корректна); корпус больше → двухуровневый скан:
+  FTS top-HYBRID_CANDIDATES + грубый векторный топ-HYBRID_CENTROID_TOP по
+  центроидам (vector_top_fn, embed.scan_top), точный косинус — по обоим
+  наборам (замеры — у констант). Без vector_top_fn большой корпус остаётся
+  на FTS-предфильтре top-200 (поведение ≤1.4.x).
   w≤0/без cosine_fn → поведение без изменений (чистый FTS).
   Опциональный ACT-R: при заданном actr_fn(name) → множитель ≥0
   итоговый score кандидата (FTS или blended) домножается на него ПОСЛЕ
@@ -60,12 +62,16 @@ DEFAULT_LIMIT = 20
 # (N ≥ limit). 10k сущностей × 1024 dims на чистом stdlib = ~0.5–1с полным
 # проходом (numpy нельзя); 200×1024 ≈ 10–20мс — укладываемся в цель <150мс.
 HYBRID_CANDIDATES = 200
-# Full-scan: корпус ≤2000 кандидатов → косинус по ВСЕМ (включая ноль FTS-
+# Full-scan: корпус ≤6000 кандидатов → косинус по ВСЕМ (включая ноль FTS-
 # пересечений), иначе парафраз без общих токенов не поднимается НИКОГДА
-# (recall-потолок предфильтра). Замер: 2000×1024 dims dot'ов чистым stdlib
-# ≈ 35–40мс (без numpy) — приемлемо; 10k ≈ 180мс+FTS — за целью <150мс,
-# поэтому большие корпусы остаются на предфильтре top-200 (~5–10мс).
-HYBRID_FULL_SCAN_MAX = 2000
+# (recall-потолок предфильтра). Замеры (report_fullscan.md, py3.13, 384 dims):
+# 2000 ≈ 23мс, 6000 ≈ 70мс, 10k ≈ 240мс — 6000 укладывается в бюджет 300мс
+# с запасом на FTS; корпус больше → двухуровневый скан (см. ниже).
+HYBRID_FULL_SCAN_MAX = 6000
+# Двухуровневый скан (n > HYBRID_FULL_SCAN_MAX): грубый отбор топ-M по
+# центроиду сущности (embed.scan_top, один проход N×D — 10k×384 ≈ 240мс),
+# точный max-по-окнам — только у топ-M и FTS top-HYBRID_CANDIDATES.
+HYBRID_CENTROID_TOP = 200
 
 # ---------------------------------------------------------- токенизация -----
 
@@ -232,7 +238,7 @@ def score(query_tokens, entity, *, df=None, n_docs=0, avg_lens=None, now=None):
 
 
 def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=None,
-         actr_fn=None):
+         actr_fn=None, vector_top_fn=None):
     """Топ-N сущностей по запросу → [(score, entity)], только score>0.
     Стабильная сортировка: score desc → updatedAt desc → name asc.
     Запрос без извлекаемых терминов → [] (фоллбек на подстроку — в op_search).
@@ -242,8 +248,10 @@ def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=N
     иначе поведение без изменений. Корпус ≤ HYBRID_FULL_SCAN_MAX →
     косинус по всем кандидатам (full-scan: fts=0 у непопавших — парафраз без
     общих токенов поднимается, в выдачу входит весь корпус, хвост = w·0.5);
-    корпус больше → косинус по FTS top-HYBRID_CANDIDATES (предфильтр — перф,
-    см. шапку). score кандидата: (1−w)·fts_norm + w·cos_norm; fts_norm =
+    корпус больше → двухуровневый скан: FTS top-HYBRID_CANDIDATES плюс
+    vector_top_fn(HYBRID_CENTROID_TOP) → имена грубого векторного топ-M по
+    центроидам (embed.scan_top; сбой/отсутствие → старый FTS-предфильтр,
+    поведение ≤1.4.x). score кандидата: (1−w)·fts_norm + w·cos_norm; fts_norm =
     fts/max(fts) по кандидатам, cos_norm — mean-anchored по кандидатам запроса:
     (cos−mean)/(max−mean) обрезанное в [0,1] ((cos+1)/2 сжимало диапазон e5 — по бенчам);
     без вектора → 0.5 (нейтраль, не штраф). Сбой cosine_fn →
@@ -279,7 +287,11 @@ def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=N
     for _, prep in preps:
         for tok in qset & prep["stems"]:
             df[tok] = df.get(tok, 0) + 1
-    if not df and not (w > 0.0 and n <= HYBRID_FULL_SCAN_MAX):
+    if not df and not (w > 0.0 and (n <= HYBRID_FULL_SCAN_MAX
+                                    or vector_top_fn is not None)):
+        # обрыв снят (Семантика 2.0): при активном векторном слое выдача
+        # возможна и без единого FTS-совпадения — full-scan (n≤MAX) или
+        # двухуровневый скан (vector_top_fn) дадут векторных кандидатов
         return []
     sums = {f: 0 for f in FIELD_WEIGHTS}
     for _, prep in preps:
@@ -305,7 +317,8 @@ def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=N
     # --- гибрид FTS+vector. Только при w>0 и cosine_fn; иначе —
     # чистый FTS, поведение без изменений. ---
     final = scored
-    if w > 0.0 and (scored or n <= HYBRID_FULL_SCAN_MAX):
+    if w > 0.0 and (scored or n <= HYBRID_FULL_SCAN_MAX
+                    or vector_top_fn is not None):
         # Full-scan (корпус ≤ HYBRID_FULL_SCAN_MAX): косинус по ВСЕМ сущностям
         # корпуса — парафраз без лексического пересечения иначе не поднимется
         # никогда (recall-потолок предфильтра = FTS top-HYBRID_CANDIDATES).
@@ -317,8 +330,29 @@ def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=N
             cand = [(fts_by_name.get(str(e.get("name") or ""), 0.0), e)
                     for e in ents]
         else:
-            cand = scored[:max(lim, HYBRID_CANDIDATES)]  # предфильтр: cos по топу
-            fts_max = cand[0][0] or 1.0  # scored отсортирован desc; все fts > 0
+            cand = list(scored[:max(lim, HYBRID_CANDIDATES)])  # FTS-предфильтр
+            fts_max = scored[0][0] if scored else 1.0
+            # Двухуровневый скан: грубый векторный топ-M по центроидам
+            # (vector_top_fn → имена, embed.scan_top) добавляет кандидатов без
+            # FTS-пересечения — парафраз за пределами FTS top-200 поднимается.
+            # Точный max-по-окнам им считает общий цикл cosine_fn ниже.
+            if vector_top_fn is not None:
+                try:
+                    top_names = vector_top_fn(HYBRID_CENTROID_TOP)
+                except Exception:  # fail-open, как cosine_fn: старый предфильтр
+                    top_names = None
+                if top_names:
+                    have = {str(e.get("name") or "") for _, e in cand}
+                    fts_all = {str(e.get("name") or ""): s for s, e in scored}
+                    by_name = {str(e.get("name") or ""): e for e in ents}
+                    for nm in top_names:
+                        nm = str(nm)
+                        if nm in have:
+                            continue
+                        e = by_name.get(nm)
+                        if e is not None:  # вектор есть, сущности нет — пропуск
+                            cand.append((fts_all.get(nm, 0.0), e))
+                            have.add(nm)
         blended = []
         raw = []   # (fts, entity, cos|None) — cos собираем до бленда для z-norm
         coses = []
