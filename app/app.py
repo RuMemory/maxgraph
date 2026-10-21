@@ -176,7 +176,6 @@ HOST = _bind_host()  # exe → 127.0.0.1; иначе 0.0.0.0 (изоляция =
 MEMORY_FILE = DATA_DIR / "memory.json"
 PROJECTS_DIR = DATA_DIR / "projects"  # шарды графа по проектам
 EVENTS_FILE = DATA_DIR / "events.jsonl"
-PROJECT_ALIASES_FILE = DATA_DIR / "project-aliases.json"  # --- алиасы legacy-slug → repo-тег ---
 INSTALLS_FILE = DATA_DIR / "installs.json"  # --- install-ping учёт ---
 HEARTBEATS_FILE = DATA_DIR / "heartbeats.jsonl"  # --- (native-client): heartbeat живости ---
 SUPPORT_REPORTS_FILE = DATA_DIR / "support_reports.jsonl"  # --- отчёты о багах из дашборда ---
@@ -436,6 +435,84 @@ def _migrate_to_shards():
              len(ents), len(rels), backup.name)
 
 
+_REPO_TAG_SHARD_RE = re.compile(r"^repo-(.+)-[0-9a-f]{12}$")
+
+
+def _heal_repo_tag_projects():
+    """Самолечение после удаления механизма repo-тегов (1.5.1): установки,
+    где авто-алиас успел увести данные в проект repo-<name>-<hex12>
+    (инцидент 2026-10-21 — «пустая память»), получают их обратно: сущности
+    переписываются на проект <name>, события пульса — тоже, project:<tag>
+    сливается в project:<name>. Идемпотентно: без repo-проектов — no-op.
+    READONLY: пропуск (записи запрещены)."""
+    if READONLY:
+        return
+    try:
+        ents, rels = _load()
+    except Exception as ex:
+        log.warning("repo-tag heal: граф не читается: %s", ex)
+        return
+    moves = {}  # tag → legacy name
+    for e in ents.values():
+        m = _REPO_TAG_SHARD_RE.match(e.get("project") or "")
+        if m:
+            moves[e["project"]] = m.group(1)
+    if not moves:
+        return
+    moved = 0
+    for e in ents.values():
+        tgt = moves.get(e.get("project") or "")
+        if tgt:
+            e["project"] = tgt
+            moved += 1
+    for tag, legacy in moves.items():
+        tag_pe = ents.pop(_project_entity_name(tag), None)
+        if tag_pe is None:
+            continue
+        canon_pe = ents.get(_project_entity_name(legacy))
+        obs = tag_pe.get("observations") or []
+        if canon_pe is not None:
+            have = {_norm_obs(o) for o in (canon_pe.get("observations") or [])}
+            for o in obs:
+                if _norm_obs(o) not in have:
+                    canon_pe.setdefault("observations", []).append(o)
+        else:
+            tag_pe["name"] = _project_entity_name(legacy)
+            tag_pe["title"] = legacy
+            ents[tag_pe["name"]] = tag_pe
+        # связи на старое имя сущности проекта — на новое (merge и rename)
+        for r in rels:
+            if r.get("from") == _project_entity_name(tag):
+                r["from"] = _project_entity_name(legacy)
+            if r.get("to") == _project_entity_name(tag):
+                r["to"] = _project_entity_name(legacy)
+    _save(ents, rels)
+    # пульс: события repo-тега → legacy (JSONL; битые строки — как есть)
+    ev_moved = 0
+    try:
+        if EVENTS_FILE.exists():
+            out_lines = []
+            for line in EVENTS_FILE.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    out_lines.append(line)
+                    continue
+                if r.get("project") in moves:
+                    r["project"] = moves[r["project"]]
+                    ev_moved += 1
+                out_lines.append(json.dumps(r, ensure_ascii=False))
+            tmp = EVENTS_FILE.with_suffix(".tmp")
+            tmp.write_text("".join(l + "\n" for l in out_lines), encoding="utf-8")
+            tmp.replace(EVENTS_FILE)
+    except Exception as ex:
+        log.warning("repo-tag heal: пульс не мигрирован: %s", ex)
+    log.info("repo-tag heal: %s (сущностей %d, событий %d)", moves, moved, ev_moved)
+
+
 def _graph_file_bytes() -> int:
     """Размер хранилища графа для дашборда: memory.json + все шарды."""
     total = MEMORY_FILE.stat().st_size if MEMORY_FILE.exists() else 0
@@ -558,69 +635,6 @@ def _filter_graph(ents: dict, rels: list, slug: str, all_projects: bool):
     es = [e for e in ents.values() if _in_project(e, slug)]
     names = {e["name"] for e in es}
     return es, [r for r in rels if r["from"] in names and r["to"] in names]
-
-
-# --- алиасы проектов (legacy slug → repo-<name>-<sha12>) -------------
-# Клиент-хук вычисляет проект как repo-тег (канон) и шлёт старый slug в
-# legacy_project; сервер заводит алиас (api_ingest) и дальше ПРОЗРАЧНО
-# резолвит legacy → канон во всех точках доступа к данным проекта (op_*,
-# api_ingest). Данные физически НЕ переносятся: legacy-сущности остаются под
-# старым slug и видны в all_projects-кросс-поиске (туда алиас не применяется).
-
-_REPO_TAG_RE = re.compile(r"^repo-[a-z0-9-]+-[0-9a-f]{12}$")
-_ALIASES_CAP = 10_000  # потолок реестра алиасов; сверх — только перезапись
-_aliases_cache = None  # None = ещё не читали с диска; dict — актуальный снимок
-
-
-def _aliases_load() -> dict:
-    """Алиасы {legacy_slug: canon_slug}, лениво с кэшем. Битый/отсутствующий
-    файл → {} (fail-open: память читается и без алиасов)."""
-    global _aliases_cache
-    if _aliases_cache is not None:
-        return _aliases_cache
-    data = {}
-    try:
-        if PROJECT_ALIASES_FILE.exists():
-            raw = json.loads(PROJECT_ALIASES_FILE.read_text(encoding="utf-8"))
-            for k, v in (raw.get("aliases") or {}).items():
-                # файл — граница доверия (ручная правка): оба конца — валидные
-                # slug'и и не reserved-слова, иначе запись игнорируем
-                # (как _shard_of_entity)
-                if (isinstance(k, str) and isinstance(v, str)
-                        and len(k) <= 64 and len(v) <= 64
-                        and _PROJECT_RE.fullmatch(k) and _PROJECT_RE.fullmatch(v)
-                        and k not in _RESERVED_SLUGS and v not in _RESERVED_SLUGS):
-                    data[k] = v
-    except Exception as ex:  # журнал алиасов не должен ронять память
-        log.warning("project-aliases: сбой чтения: %s", ex)
-    _aliases_cache = data
-    return _aliases_cache
-
-
-def _aliases_save(aliases: dict):
-    """Атомарная запись (tmp+replace, как _ingest_hashes_save): crash mid-write
-    не ротует алиасы. Сбой — только warning: хуже потерять алиас, чем приём."""
-    global _aliases_cache
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = PROJECT_ALIASES_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"aliases": aliases}, ensure_ascii=False,
-                                  sort_keys=True), encoding="utf-8")
-        tmp.replace(PROJECT_ALIASES_FILE)
-        try:
-            os.chmod(PROJECT_ALIASES_FILE, 0o600)  # как spool
-        except OSError:
-            pass
-        _aliases_cache = dict(aliases)
-    except Exception as ex:
-        log.warning("project-aliases: сбой записи: %s", ex)
-
-
-def _resolve_project(slug: str) -> str:
-    """legacy-slug → канонический slug по алиасу; без алиаса — как есть.
-    Применять ДО доступа к данным проекта (чтение и запись); НЕ применять к
-    all_projects-кросс-поиску (там оба slug видны осознанно)."""
-    return _aliases_load().get(slug, slug) if slug else slug
 
 
 # ------------------------------------------------------------- taxonomy -----
@@ -931,7 +945,6 @@ def op_create_entities(items, project: str = "", source: str = ""):
     переданного — default "open"; status для прочих типов и невалидное значение —
     игнор с warnings[] в ответе.
     """
-    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         out, changed = _create_entities_graph(ents, rels, items, project, source)
@@ -1133,7 +1146,6 @@ def op_update_entity(item, project: str = "", source: str = ""):
     и при невалидном значении — игнор с warnings[] в ответе. Смена типа на тип
     без статуса снимает status, на bug/task — ставит default "open" (явный status
     в том же вызове важнее); статус, валидный для нового типа, сохраняется."""
-    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         name = item.get("name", "")
@@ -1217,7 +1229,6 @@ def op_update_entity(item, project: str = "", source: str = ""):
 
 
 def op_create_relations(items, project: str = ""):
-    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         existing = {(r["from"], r["to"], r["relationType"]) for r in rels}
@@ -1250,7 +1261,6 @@ def op_add_observations(items, project: str = ""):
     удаление — delete_observations всегда). Совпадение — точное по сырой
     строке; уже помеченная — идемпотентный пропуск; ненайденные — в
     supersedesNotFound ответа (молча не теряем)."""
-    project = _resolve_project(project)  # legacy slug → канон
     today = now_iso()[:10]
     with _lock:
         ents, rels = _load()
@@ -1342,7 +1352,6 @@ def op_add_observations(items, project: str = ""):
 def op_delete_entities(names, project: str = ""):
     """project: удаляются только сущности этого проекта — чужие с тем же
     именем не трогаем (изоляция деструктивных операций)."""
-    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         deleted = [n for n in names
@@ -1361,7 +1370,6 @@ def op_delete_project(project: str) -> dict:
     """Удалить проект ЦЕЛИКОМ (v1.4.7, кнопка в дашборде): все сущности с
     project=slug, структурная project:<slug> и все их связи. Пульс (events)
     не трогаем — это аудит. → {"deleted", "relations_removed"}"""
-    project = _resolve_project(project)
     if not project:
         return {"error": "project is required"}
     pname = _project_entity_name(project)
@@ -1373,23 +1381,14 @@ def op_delete_project(project: str) -> dict:
         doomed = {n for n, e in ents.items()
                   if (e.get("project") or "") == project or n == pname
                   or (n == project and e.get("entityType") == "project")}
-        # реестр алиасов чистим ВСЕГДА: иначе после удаления canon-проекта
-        # чтения по legacy-slug резолвятся в пустоту, а алиас ИЗ удалённого
-        # slug продолжает перенаправлять.
-        aliases = {k: v for k, v in _aliases_load().items()
-                   if k != project and v != project}
-        aliases_changed = len(aliases) != len(_aliases_load())
-        if not doomed and not aliases_changed:
+        if not doomed:
             return {"deleted": 0, "relations_removed": 0}
         before = len(rels)
         rels = [r for r in rels
                 if r.get("from") not in doomed and r.get("to") not in doomed]
         for n in doomed:
             del ents[n]
-        if doomed:
-            _save(ents, rels)
-        if aliases_changed:
-            _aliases_save(aliases)
+        _save(ents, rels)
         out = {"deleted": len(doomed), "relations_removed": before - len(rels)}
     _event("delete_project", project, f"{out['deleted']} entities",
            project=project)
@@ -1398,7 +1397,6 @@ def op_delete_project(project: str) -> dict:
 
 def op_delete_observations(items, project: str = ""):
     """project: затрагиваются только сущности этого проекта."""
-    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         removed = 0
@@ -1424,7 +1422,6 @@ def op_delete_observations_by_id(items, project: str = ""):
     Сущность обязана существовать и быть видимой в проекте — иначе errors[]
     (как op_add_observations); ненайденные ids — в notFound записи результата
     (молча не теряем). Пульс — как у op_delete_observations: без события."""
-    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         results, errors = [], []
@@ -1467,7 +1464,6 @@ def op_delete_observations_by_id(items, project: str = ""):
 def op_delete_relations(items, project: str = ""):
     """project: удаляются только связи, чьи ОБА конца видимы в проекте —
     кросс-проектные связи из контекста проекта не трогаем."""
-    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         drop = {(r["from"], r["to"], r["relationType"]) for r in items}
@@ -1485,14 +1481,10 @@ def op_delete_relations(items, project: str = ""):
 
 
 def op_read_graph(project: str = "", all_projects: bool = False):
-    canon = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
-    es, rs = _filter_graph(ents, rels, canon, all_projects)
-    out = {"entities": es, "relations": rs}
-    if canon != project and project and not all_projects:
-        out["meta"] = {"aliased_to": canon}  # чтение по legacy-slug
-    return out
+    es, rs = _filter_graph(ents, rels, project, all_projects)
+    return {"entities": es, "relations": rs}
 
 
 def _hybrid_search(query_str: str):
@@ -1623,7 +1615,6 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
     (id = _obs_id, для delete_observations_by_id); default False — старый
     формат (список строк), обратная совместимость."""
     tf = _canonical_type(type_filter) if str(type_filter or "").strip() else ""
-    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
     corpus = list(ents.values())
@@ -1730,7 +1721,6 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
 def op_open(names, project: str = "", with_ids: bool = False):
     """with_ids: observations — объекты {id, text} (id = _obs_id,
     для delete_observations_by_id); default False — старый формат строк."""
-    project = _resolve_project(project)  # legacy slug → канон
     want = set(names)
     with _lock:
         ents, rels = _load()
@@ -1751,7 +1741,6 @@ def op_open(names, project: str = "", with_ids: bool = False):
 
 
 def op_timeline(limit=100, project: str = "", all_projects: bool = False):
-    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         if not EVENTS_FILE.exists():
             return {"events": []}
@@ -1841,7 +1830,6 @@ def op_task_add(title, note: str = "", project: str = "", source: str = "",
     своего проекта в том же вызове (контекст задачи не теряется); неизвестные/
     чужие — в links_skipped (молча не теряем).
     → {"created": entity, "linked": [...], "links_skipped": [...]} | {"error": …}."""
-    project = _resolve_project(project)  # legacy slug → канон
     title = re.sub(r"\s+", " ", str(title or "")).strip()[:_TASK_TITLE_MAX]
     if not title:
         return {"error": "task_add: пустой title"}
@@ -1894,7 +1882,6 @@ def op_task_done(name: str, project: str = "", source: str = "") -> dict:
     При закрытии — связь «discussed» от session-сущности сегодняшнего
     дня к задаче, если сессия дня существует (stub SessionEnd-хука тоже считается;
     новую сессию НЕ создаём — авто-записей нет). Ответ: + linked_to_session."""
-    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, rels = _load()
         e = ents.get(name)
@@ -1934,7 +1921,6 @@ def op_task_list(project: str = "") -> dict:
     Контракт чтения: task_list — «полная правда», как
     read_graph/open_nodes: инвалидированные наблюдения видны с маркером
     [~дата] (фильтруют только session_start и search)."""
-    project = _resolve_project(project)  # legacy slug → канон
     with _lock:
         ents, _rels = _load()
     tasks = sorted((e for e in ents.values()
@@ -2054,7 +2040,6 @@ def op_session_close(summary: str = "", done=(), links=(), project: str = "",
     (механически, по пишущим событиям). Повторный вызов за день — домердж.
     → {"session", "merged", "linked", "links_skipped", "open_tasks_hint",
        "already_closed"} | {"error": …} (пустые summary+done)."""
-    project = _resolve_project(project)  # legacy slug → канон
     summary = re.sub(r"\s+", " ", str(summary or "")).strip()
     obs = []
     if summary:
@@ -2334,13 +2319,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
     (после бюджетной обрезки), учитываются как обращения (_touch). Сессии —
     чистая хронология (свежесть сессии важна сама по себе), секция событий —
     журнал, не чтение фактов сущности: ни буста, ни учёта.
-
-    legacy-slug резолвится в канон по алиасу (данные канона), в meta
-    добавляется "aliased_to": "<canon>".
     """
-    canon = _resolve_project(project)  # legacy slug → канон
-    aliased_to = canon if canon != project else ""
-    project = canon
     try:
         budget = max(0, int(budget_chars))
     except (TypeError, ValueError):
@@ -2528,8 +2507,6 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
         sec_meta[key]["items"] = n
     meta = {"project": project, "budget_chars": budget, "used_chars": len(text),
             "sections": sec_meta, "truncated": truncated}
-    if aliased_to:  # запросили по legacy-slug — отдали данные канона
-        meta["aliased_to"] = aliased_to
     log.info("session_start: project=%s budget=%d used=%d truncated=%s",
              project, budget, len(text), truncated)
     return {"context_block": text, "meta": meta}
@@ -2976,7 +2953,6 @@ async def api_export(request: Request):
     slug, err = _query_project(request)
     if err:
         return JSONResponse({"error": err}, status_code=400)
-    slug = _resolve_project(slug)  # legacy slug → канон
     with _lock:
         ents, rels = _load()  # объединение шардов (файл на диске уже не полная картина)
         events_raw = EVENTS_FILE.read_text(encoding="utf-8") if EVENTS_FILE.exists() else ""
@@ -3120,7 +3096,6 @@ async def api_recall(request: Request):
 
 def _recall(query: str, slug: str) -> dict:
     """Ядро /api/recall (синхронное; вызывается из хендлера через to_thread)."""
-    slug = _resolve_project(slug)  # legacy slug → канон
     res = op_search(query, slug, limit=10)
     qts = set(searchrank.tokenize(query))  # стемы запроса (lowercase)
     # Хвостовой косинусный гейт: embed включён → отсекаем сущности с cos <
@@ -3646,24 +3621,13 @@ async def api_ingest(request: Request):
         slug, err = _check_project(ev.get("project"))
         if err:
             return JSONResponse({"error": err}, status_code=400)
-        slug = _resolve_project(slug)  # события legacy-slug → в канон
         ts = ev.get("ts", "")
         if not isinstance(ts, str):
             return JSONResponse({"error": "event.ts must be a string"}, status_code=400)
         data = ev.get("data", {})
         if not isinstance(data, dict):
             return JSONResponse({"error": "event.data must be an object"}, status_code=400)
-        # опциональный legacy_project (старый slug из каскада хука) —
-        # кандидат на алиас; невалидный/совпадающий — молча игнорируем (не
-        # роняем батч из-за вспомогательного поля).
-        legacy = ""
-        lp = ev.get("legacy_project")
-        if lp is not None:
-            lslug, lerr = _check_project(lp)
-            if not lerr and lslug and lslug != slug:
-                legacy = lslug
-        norm.append({"hook": hook, "project": slug, "ts": ts, "data": data,
-                     "legacy_project": legacy})
+        norm.append({"hook": hook, "project": slug, "ts": ts, "data": data})
     # идемпотентность: content-hash против последних 1000 + внутри батча
     with _lock:
         hashes = _ingest_hashes_load()
@@ -3680,55 +3644,6 @@ async def api_ingest(request: Request):
             fresh.append(ev)
         if fresh:
             _ingest_hashes_save(hashes)
-    # алиас legacy-slug → repo-тег (прозрачная миграция проекта).
-    # Условия: project — repo-тег (^repo-…-[0-9a-f]{12}$), legacy_project передан
-    # и валиден, legacy-проект существует с данными (есть сущности), repo-тег-
-    # проекта ещё нет, алиаса ещё нет (идемпотентно). Создаём ДО сущностей
-    # батча: SessionEnd-stub получил бы project=repo-тег и сломал бы условие
-    # «repo-тег-проекта ещё нет». Под _lock, гонок нет.
-    legacy_hints = {}
-    for ev in norm:
-        lp = ev.get("legacy_project") or ""
-        if lp and _REPO_TAG_RE.match(ev["project"]):
-            legacy_hints.setdefault(lp, ev["project"])
-    aliases_created = {}
-    if legacy_hints:
-        with _lock:
-            ents, _rels = _load()
-            aliases = dict(_aliases_load())
-            for legacy, canon_tag in sorted(legacy_hints.items()):
-                cur = aliases.get(legacy)
-                if cur == canon_tag:
-                    continue  # идемпотентно: алиас уже есть → no-op
-                if cur:
-                    # anti-squat: алиас перезаписываем, только пока
-                    # его canon-проект ПУСТ — скваттер удерживает лишь пустой
-                    # тег; настоящая миграция перехватывает алиас первым же
-                    # пингом, а наполненный данными canon неизменен.
-                    if any((e.get("project") or "") == cur for e in ents.values()):
-                        continue
-                    log.warning("project-aliases: перезапись %s: %s → %s (пустой canon)",
-                                legacy, cur, canon_tag)
-                elif len(aliases) >= _ALIASES_CAP:
-                    continue  # потолок реестра: дальше — только перезапись
-                # security: легитимный legacy — имя репо, НЕ repo-тег
-                # (иначе алиас-цепочки repo→repo и перехват чужого тег-проекта).
-                if _REPO_TAG_RE.match(legacy):
-                    continue
-                # и привязка canon↔legacy: в легитимном потоке canon =
-                # repo-<name>-<hash>, legacy = то же name — префикс гарантирован;
-                # сфабрикованный canon (repo-x-<любые hex>) не пройдёт.
-                if not canon_tag.startswith(f"repo-{legacy}-"):
-                    continue
-                if any((e.get("project") or "") == canon_tag for e in ents.values()):
-                    continue  # repo-тег-проект уже жив — не перетягиваем
-                if not any((e.get("project") or "") == legacy for e in ents.values()):
-                    continue  # legacy-проекта с данными нет — нечего алиасить
-                aliases[legacy] = canon_tag
-                aliases_created[legacy] = canon_tag
-            if aliases_created:
-                _aliases_save(aliases)
-                log.info("project-aliases: созданы/перезаписаны %s", aliases_created)
     # лёгкая обработка: дайджест в пульс
     for ev in fresh:
         _event(f"hook_{ev['hook']}", detail=_hook_digest(ev["hook"], ev["data"]),
@@ -3825,8 +3740,6 @@ async def api_ingest(request: Request):
             if changed:
                 _save(ents, rels)
     out = {"ok": True, "accepted": len(fresh), "dedup": dedup}
-    if aliases_created:  # какие алиасы legacy→canon заведены этим батчем
-        out["aliases"] = aliases_created
     return JSONResponse(out)
 
 
@@ -8234,6 +8147,7 @@ class TokenAuth:
 def main():
     _require_store_token()  # магазин без явного MEMORY_TOKEN → fail-fast, не ротация
     _migrate_to_shards()  # одноразовая разрезка memory.json → projects/ (с бэкапом)
+    _heal_repo_tag_projects()  # самолечение: данные из repo-тегов назад в имя папки
     st = _license_status()  # при старте: создаёт license.json на первом запуске, ловит fail-closed
     log.info("license: %s (days_left=%s)%s", st.get("state"), st.get("days_left"),
              "" if licensing.allows_write(st) else " — МУТАЦИИ ЗАБЛОКИРОВАНЫ, activate: /#activate")

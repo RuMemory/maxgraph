@@ -898,7 +898,6 @@ components:
             used_chars: { type: integer }
             sections: { type: object, description: '{project|decisions|bugs|tasks|sessions|events: {items, total}}; items<total без truncated=true — кэп секции' }
             truncated: { type: boolean }
-            aliased_to: { type: string, description: 'канонический repo-тег, если project — legacy-алиас (v0.50.0)' }
     RecallFact:
       type: object
       properties:
