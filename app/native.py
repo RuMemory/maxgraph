@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
+"""Нативный клиент MaxGraph без Docker: системный трей (pystray) + автозапуск ОС.
 
+Stdlib-only на уровне импорта: pystray/PIL импортируются ЛЕНИВО внутри run_tray() —
+серверный запуск (Docker / python app/app.py) не должен зависеть от GUI-библиотек.
 
-
-
-
-
-
-
-
-
+Автозапуск (ensure_autostart, идемпотентно; ошибки — log.warning, сервер не роняем):
+  Windows — HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run: "MaxGraph" = "<путь exe>"
+  macOS   — ~/Library/LaunchAgents/ru.rezonai.maxgraph.plist (RunAtLoad=true)
+  Linux   — ~/.config/autostart/maxgraph.desktop (XDG autostart)
+"""
 from __future__ import annotations
 
 import logging
@@ -30,27 +30,27 @@ APP_NAME = "MaxGraph"
 _MACOS_LABEL = "ru.rezonai.maxgraph"
 _WIN_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
-
-
+# Ресурсы exe (PyInstaller --add-data) лежат в распакованном sys._MEIPASS;
+# в исходниках — рядом с native.py (как _RESOURCE_BASE в app.py)
 _RESOURCE_BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 
 
-
+# ----------------------------------------------------------- билдеры (чистые)
 
 def _exe_path() -> str:
     return str(Path(sys.executable).resolve())
 
 
 def _run_key_value(exe: str | None = None) -> str:
-
+    """Значение Run-ключа Windows: путь к exe в кавычках (пробелы в пути)."""
     exe = exe or _exe_path()
     return f'"{exe}"'
 
 
 def _plist_xml(exe: str | None = None) -> str:
-
+    """LaunchAgent plist для macOS."""
     exe = exe or _exe_path()
-    exe = _xml_escape(exe)
+    exe = _xml_escape(exe)  # путь с & < > иначе ломает plist XML
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -69,7 +69,7 @@ def _plist_xml(exe: str | None = None) -> str:
 
 
 def _desktop_entry(exe: str | None = None) -> str:
-
+    """XDG .desktop для автозапуска на Linux."""
     exe = exe or _exe_path()
     return f"""[Desktop Entry]
 Type=Application
@@ -87,7 +87,7 @@ def _autostart_path(platform: str, home: Path) -> Path:
 
 
 def _write_if_changed(path: Path, content: str) -> None:
-
+    """Идемпотентная запись: пишем, только если записи нет или содержимое отличается."""
     if path.exists() and path.read_text(encoding="utf-8") == content:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -95,7 +95,7 @@ def _write_if_changed(path: Path, content: str) -> None:
     log.info("autostart: записан %s", path)
 
 
-
+# ------------------------------------------------------------------- Windows
 
 def _win_ensure() -> None:
     import winreg
@@ -119,23 +119,23 @@ def _win_remove() -> None:
             winreg.DeleteValue(key, APP_NAME)
             log.info("autostart: HKCU Run %s удалён", APP_NAME)
         except FileNotFoundError:
-            pass
+            pass  # уже нет — идемпотентно
 
 
-
+# ----------------------------------------------------------------- ярлыки (Windows)
 
 _SHORTCUT_DESC = "MaxGraph — память для AI-агентов"
 _SHORTCUT_NAME = f"{APP_NAME}.lnk"
 
 
 def _win_desktop_dir() -> Path:
-
-
+    """KnownFolder Desktop из User Shell Folders: надёжнее ~\\Desktop —
+    при OneDrive-редиректе «Рабочий стол» физически живёт не в профиле."""
     import winreg
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                         r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as k:
         raw, _ = winreg.QueryValueEx(k, "Desktop")
-    return Path(os.path.expandvars(raw))
+    return Path(os.path.expandvars(raw))  # значение может быть REG_EXPAND_SZ (%USERPROFILE%)
 
 
 def _win_start_menu_programs() -> Path:
@@ -143,21 +143,21 @@ def _win_start_menu_programs() -> Path:
 
 
 def _shortcut_paths(desktop_dir=None, start_menu_dir=None) -> tuple[Path, Path]:
-
+    """Оба места ярлыка; параметры — точка инъекции для тестов/установщика."""
     desktop_dir = Path(desktop_dir) if desktop_dir else _win_desktop_dir()
     start_menu_dir = Path(start_menu_dir) if start_menu_dir else _win_start_menu_programs()
     return desktop_dir / _SHORTCUT_NAME, start_menu_dir / _SHORTCUT_NAME
 
 
 def _ps_quoted(s: str) -> str:
-
+    """Одинарные кавычки PowerShell: без интерполяции $ и бэктиков, ' дублируется."""
     return "'" + s.replace("'", "''") + "'"
 
 
 def _win_write_shortcut(link: Path, exe: str) -> None:
-
-
-
+    """Создать/перезаписать .lnk через WScript.Shell COM (CreateShortcut).
+    Вызов — powershell- subprocess: native.py остаётся stdlib-only при импорте
+    (pywin32 в PyInstaller-сборке нет), та же техника, что в install.ps1."""
     link.parent.mkdir(parents=True, exist_ok=True)
     ps = ("$ws = New-Object -ComObject WScript.Shell; "
           f"$sc = $ws.CreateShortcut({_ps_quoted(str(link))}); "
@@ -171,15 +171,15 @@ def _win_write_shortcut(link: Path, exe: str) -> None:
                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
-
+# ----------------------------------------------------------------- ярлыки (Linux/macOS)
 
 def _linux_desktop_path(home: Path) -> Path:
-
+    """XDG: меню приложений Linux."""
     return home / ".local" / "share" / "applications" / "maxgraph.desktop"
 
 
 def _linux_desktop_entry(exe: str) -> str:
-
+    """.desktop для меню приложений (не автозапуск — см. _desktop_entry)."""
     return f"""[Desktop Entry]
 Type=Application
 Name={APP_NAME}
@@ -193,24 +193,24 @@ Categories=Utility
 def _linux_ensure_shortcut(home: Path, exe: str) -> None:
     path = _linux_desktop_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_linux_desktop_entry(exe), encoding="utf-8")
+    path.write_text(_linux_desktop_entry(exe), encoding="utf-8")  # (пере)записываем всегда
     log.info("shortcuts: записан %s -> %s", path, exe)
 
 
 def _macos_apps_link(home: Path) -> Path:
-
+    """«Пуск-аналог» macOS: симлинк в ~/Applications (Launchpad подхватывает его)."""
     return home / "Applications" / APP_NAME
 
 
 def _macos_ensure_shortcut(home: Path, exe: str) -> None:
-
-
+    """~/Applications/MaxGraph → exe (.app-бандл не собираем). Симлинк битый/чужой
+    или на месте обычный файл — пересоздаём."""
     link = _macos_apps_link(home)
     link.parent.mkdir(parents=True, exist_ok=True)
     if link.is_symlink():
         try:
             if os.readlink(link) == exe:
-                return
+                return  # уже правильный — идемпотентно
         except OSError:
             pass
         link.unlink()
@@ -221,7 +221,7 @@ def _macos_ensure_shortcut(home: Path, exe: str) -> None:
 
 
 def _remove_shortcut_path(path: Path) -> None:
-    if path.is_symlink() or path.exists():
+    if path.is_symlink() or path.exists():  # is_symlink: ловит и БИТЫЕ ссылки (exists=False)
         path.unlink()
         log.info("shortcuts: удалён %s", path)
 
@@ -229,13 +229,13 @@ def _remove_shortcut_path(path: Path) -> None:
 def ensure_shortcuts(platform: str | None = None, desktop_dir=None,
                      start_menu_dir=None, exe: str | None = None,
                      home: Path | None = None) -> bool:
-
-
-
-
-
-
-
+    """Ярлык приложения в «меню» ОС:
+      Windows — MaxGraph.lnk: рабочий стол + меню «Пуск» (WScript.Shell);
+      Linux   — ~/.local/share/applications/maxgraph.desktop (перезаписываем всегда);
+      macOS   — симлинк ~/Applications/MaxGraph → exe;
+      прочие  — no-op True.
+    Идемпотентно. Ошибки — log.warning, сервер не роняем.
+    desktop_dir/start_menu_dir/home/exe — инъекция для тестов/установщика."""
     platform = sys.platform if platform is None else platform
     exe = exe or _exe_path()
     try:
@@ -250,14 +250,14 @@ def ensure_shortcuts(platform: str | None = None, desktop_dir=None,
         else:
             return True
         return True
-    except Exception as exc:
+    except Exception as exc:  # ярлыки не критичны — сервер живёт и без них
         log.warning("shortcuts: не удалось создать ярлыки: %s", exc)
         return False
 
 
 def remove_shortcuts(platform: str | None = None, desktop_dir=None,
                      start_menu_dir=None, home: Path | None = None) -> bool:
-
+    """Обратная операция (для uninstall): снять ярлык. True = успех/уже не было."""
     platform = sys.platform if platform is None else platform
     try:
         if platform.startswith("win"):
@@ -275,10 +275,10 @@ def remove_shortcuts(platform: str | None = None, desktop_dir=None,
         return False
 
 
-
+# ------------------------------------------------------------------ публичное
 
 def ensure_autostart(platform: str | None = None, home: Path | None = None) -> bool:
-
+    """Идемпотентная регистрация автозапуска текущего exe. True = успех (или уже было)."""
     platform = sys.platform if platform is None else platform
     home = Path.home() if home is None else Path(home)
     try:
@@ -290,13 +290,13 @@ def ensure_autostart(platform: str | None = None, home: Path | None = None) -> b
         else:
             _write_if_changed(_autostart_path(platform, home), _desktop_entry())
         return True
-    except Exception as exc:
+    except Exception as exc:  # автозапуск не критичен — сервер живёт и без него
         log.warning("autostart: не удалось зарегистрировать (%s): %s", platform, exc)
         return False
 
 
 def remove_autostart(platform: str | None = None, home: Path | None = None) -> bool:
-
+    """Обратная операция (для uninstall). True = успех (или уже не было)."""
     platform = sys.platform if platform is None else platform
     home = Path.home() if home is None else Path(home)
     try:
@@ -313,14 +313,14 @@ def remove_autostart(platform: str | None = None, home: Path | None = None) -> b
         return False
 
 
-
+# ------------------------------------------------------------------- hostfp
 
 def _mac_str() -> str:
     return ":".join(f"{b:02x}" for b in uuid.getnode().to_bytes(6, "big"))
 
 
 def _win_components() -> dict:
-
+    """MachineGuid (реестр) + UUID/серийники через CIM (powershell)."""
     out = {}
     try:
         import winreg
@@ -387,8 +387,8 @@ def _collect_components(platform: str | None = None) -> dict:
 
 
 def ensure_hostfp(data_dir=None, platform: str | None = None) -> bool:
-
-
+    """hostfp.json рядом с данными, если его нет: exe сам собирает отпечаток
+    (с машины уходят только хеши — как в install.sh/install.ps1)."""
     import hostfp
     platform = sys.platform if platform is None else platform
     if data_dir is None:
@@ -411,41 +411,41 @@ def ensure_hostfp(data_dir=None, platform: str | None = None) -> bool:
         try:
             os.chmod(f, 0o600)
         except OSError:
-            pass
+            pass  # Windows: chmod частичен — не критично
         log.info("hostfp: отпечаток хоста записан (%s)", f)
         return True
-    except Exception as exc:
+    except Exception as exc:  # привязка не критична — сервер живёт и без неё
         log.warning("hostfp: не удалось записать отпечаток: %s", exc)
         return False
 
 
-
+# ---------------------------------------------------------------------- hooks
 
 _HOOK_NAMES = ("maxgraph_hook.py", "register_hook.py")
 
 
 def _hook_src_dir() -> Path:
-
-
+    """frozen exe: _MEIPASS/hooks/ (--add-data hooks/…:hooks); исходники:
+    repo/hooks/ (рядом с app/)."""
     cand = _RESOURCE_BASE / "hooks"
     return cand if cand.is_dir() else _RESOURCE_BASE.parent / "hooks"
 
 
 def _atomic_write(path: Path, data: bytes, mode: int | None = None) -> None:
-
-
-
-
-
+    """Атомарная запись через O_EXCL tmp (pid в имени — без предсказуемого
+    пути и сквозной записи по заранее подложенному symlink) + os.replace
+    (replace поверх symlink подменяет ссылку, цель не трогается).
+    mode — права tmp ДО replace (0o600 для hooks.env: окна
+    create-с-umask→chmod нет)."""
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-
+    # O_BINARY: на Windows os.open без него пишет в text-режиме CRT и \n → \r\n
     flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
              | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
     created = False
     try:
         try:
             fd = os.open(tmp, flags, 0o600)
-        except FileExistsError:
+        except FileExistsError:  # застрявший tmp прошлого краша с тем же pid
             tmp.unlink()
             fd = os.open(tmp, flags, 0o600)
         created = True
@@ -457,36 +457,36 @@ def _atomic_write(path: Path, data: bytes, mode: int | None = None) -> None:
             try:
                 os.chmod(tmp, mode)
             except OSError:
-                pass
+                pass  # Windows: chmod частичен — не критично (как hostfp)
         os.replace(tmp, path)
     finally:
         if created:
             try:
-                tmp.unlink(missing_ok=True)
+                tmp.unlink(missing_ok=True)  # crash между create и replace
             except OSError:
                 pass
 
 
 def ensure_hook_files(home=None, token: str = "", port: int = 8787) -> bool:
-
-
-
-
-
-
-
-
+    """Самолечение ~/.maxgraph при старте exe (2026-10-20). Автообновление
+    подменяет только бинарник — без этого шага у клиентов с ранних версий
+    навсегда остаются старый хук и нет hooks.env (реальный кейс машины
+    владельца: recall молчал из-за хука без UTF-8 stdin). Хук и
+    register_hook.py обновляем при расхождении байт; hooks.env переписываем
+    ВСЕГДА из актуального токена (решение владельца: файл наш, ручных правок
+    пользователя не существует). Конфиги хостов не трогаем — их чинит
+    register_hook.py при повторной установке. Идемпотентно, fail-open."""
     try:
         home = Path.home() if home is None else Path(home)
         d = home / ".maxgraph"
-        if d.is_symlink():
+        if d.is_symlink():  # как установщик: в reparse point не пишем
             log.warning("hooks: %s — symlink, отказ от записи", d)
             return False
         d.mkdir(parents=True, exist_ok=True)
         src = _hook_src_dir()
         for name in _HOOK_NAMES:
-            try:
-
+            try:  # файл за файлом: занятый хук (Windows, работающий pythonw)
+                # не должен ронять остальные файлы и hooks.env
                 s = src / name
                 if not s.is_file():
                     log.warning("hooks: %s нет в ресурсах — пропуск", s)
@@ -498,12 +498,12 @@ def ensure_hook_files(home=None, token: str = "", port: int = 8787) -> bool:
                     log.info("hooks: %s обновлён из ресурсов exe", t)
             except Exception as exc:
                 log.warning("hooks: %s не обновлён: %s", name, exc)
-    except Exception as exc:
+    except Exception as exc:  # хуки не критичны — сервер живёт и без них
         log.warning("hooks: ensure_hook_files не удался: %s", exc)
         return False
-    try:
-
-
+    try:  # hooks.env — отдельный try: сбой хук-файлов не отменяет свежий токен
+        # весь whitespace из токена вычищаем: внутренний \n инъецировал бы
+        # лишнюю строку в hooks.env (та же защита, что в install.ps1)
         tok = "".join(str(token or "").split())
         if tok:
             _atomic_write(d / "hooks.env",
@@ -515,15 +515,15 @@ def ensure_hook_files(home=None, token: str = "", port: int = 8787) -> bool:
     return True
 
 
+# ------------------------------------------------------------------ heartbeat
 
-
-HEARTBEAT_SEC = 6 * 3600
+HEARTBEAT_SEC = 6 * 3600  # раз в 6ч; MG_HEARTBEAT_SEC — для тестов
 
 
 def _read_install_id(data_dir) -> str:
-
-
-
+    """install_id из <data>/install.json (его пишет app._telemetry_ping через
+    _install_id). Нет/битый → "" — heartbeat молча пропускает тик, НЕ генерирует
+    (генерация — прерогатива install-ping, иначе два источника id)."""
     try:
         return str(json.loads((Path(data_dir) / "install.json")
                               .read_text(encoding="utf-8")).get("install_id") or "")
@@ -532,8 +532,8 @@ def _read_install_id(data_dir) -> str:
 
 
 def _install_flavor(env=None) -> str:
-
-
+    """frozen exe → "native"; иначе конвенция install-ping (app._telemetry_ping):
+    INSTALL_FLAVOR установщика или autodetect по /.dockerenv."""
     try:
         import app as _app
         if getattr(_app, "_FROZEN", False):
@@ -546,9 +546,9 @@ def _install_flavor(env=None) -> str:
 
 
 def heartbeat_tick(post_json, base_url, data_dir, get_version) -> bool:
-
-
-
+    """Один анонимный heartbeat на магазин: {install_id, version, os, flavor, ts}.
+    True = POST ушёл без исключения (ответ не разбираем — шлём и забываем).
+    Без install_id/base_url — молчаливый пропуск (сети нет вообще)."""
     iid = _read_install_id(data_dir)
     if not iid or not (base_url or "").strip():
         return False
@@ -561,11 +561,11 @@ def heartbeat_tick(post_json, base_url, data_dir, get_version) -> bool:
 
 def start_heartbeat(post_json, base_url, data_dir, get_version,
                     interval=None, stop=None):
-
-
-
-
-
+    """Daemon-поток heartbeat'а: тик сразу, дальше раз в
+    6ч (MG_HEARTBEAT_SEC для тестов). Телеметрия анонимная и всегда ON —
+    выключателя нет. Fail-open: первый сбой — log.warning, повторные
+    — log.debug (не спамим раз в 6ч), успех сбрасывает. Магазин (STORE_MODE)
+    поток не стартует — гейт в app.main()."""
     if interval is None:
         try:
             interval = float(os.environ.get("MG_HEARTBEAT_SEC", "") or HEARTBEAT_SEC)
@@ -582,7 +582,7 @@ def start_heartbeat(post_json, base_url, data_dir, get_version,
             except Exception as exc:
                 if warned:
                     log.debug("heartbeat: повторный сбой: %r", exc)
-                else:
+                else:  # тишина ≠ зависание — один warning, не поток
                     log.warning("heartbeat: сбой отправки (дальше — debug): %r", exc)
                     warned = True
             stop.wait(interval)
@@ -592,14 +592,14 @@ def start_heartbeat(post_json, base_url, data_dir, get_version,
     return t
 
 
-
+# ---------------------------------------------------------------------- трей
 
 def _default_port() -> int:
     return int(os.environ.get("PORT", "8787"))
 
 
 def _read_local_token() -> str:
-
+    """Токен локального сервера из <data>/local_token.txt (пусто — если недоступен)."""
     try:
         import app as _app
         f = _app.DATA_DIR / "local_token.txt"
@@ -611,20 +611,20 @@ def _read_local_token() -> str:
 
 
 def _dashboard_url(port: int, token: str = "") -> str:
-
+    """Дашборд принимает токен через # (dashboard.html: фрагмент не уходит на сервер)."""
     return f"http://localhost:{port}/app" + (f"#{token}" if token else "")
 
 
 def open_dashboard(port: int | None = None) -> None:
-
-
+    """Дашборд живого экземпляра в браузере (токен из data/local_token.txt,
+    если читается). single-instance guard зовёт это из второго процесса."""
     webbrowser.open(_dashboard_url(port or _default_port(), _read_local_token()))
 
 
 def request_update_now(data_dir=None) -> bool:
-
-
-
+    """Пункт трея «Проверить обновления»: пустой маркер DATA_DIR/.update-now —
+    selfupdate.update_loop слушает его внутри интервала и триггерится мгновенно
+    (тот же канал, что у кнопки дашборда /api/update/trigger). True = маркер стоит."""
     try:
         if data_dir is None:
             import app as _app
@@ -632,19 +632,19 @@ def request_update_now(data_dir=None) -> bool:
         (Path(data_dir) / ".update-now").touch()
         log.info("tray: .update-now создан — цикл обновлений проверит магазин сейчас")
         return True
-    except Exception as exc:
+    except Exception as exc:  # трей не должен падать от ФС-ошибки
         log.warning("tray: не удалось создать .update-now: %s", exc)
         return False
 
 
+# ------------------------------------------------- ожидающее обновление (трей)
 
-
-_tray_icon = None
+_tray_icon = None  # живой pystray.Icon, пока крутится run_tray (иначе None)
 
 
 def _pending_update(data_dir=None) -> str:
-
-
+    """Версия из data/update-state.json (пишет selfupdate._update_iteration),
+    если она реально новее запущенной; иначе "" — пункта меню нет."""
     try:
         import selfupdate
         if data_dir is None:
@@ -654,40 +654,40 @@ def _pending_update(data_dir=None) -> str:
         if not version:
             return ""
         import app as _app
-
+        # после применения стейт остаётся со СВОЕЙ (теперь текущей) версией — не показываем
         return version if selfupdate.semver_newer(version, _app.VERSION) else ""
     except Exception:
         return ""
 
 
 def _balloon(msg: str) -> None:
-
-
+    """Балун трея произвольным текстом — фолбэк там, где карточка недоступна
+    (не Windows / headless). Нет иконки или notify не поддержан — тихо."""
     icon = _tray_icon
     if icon is None:
         return
     try:
         icon.notify(msg, APP_NAME)
-    except Exception as exc:
+    except Exception as exc:  # notify есть не во всех бэкендах/версиях pystray
         log.warning("tray: балун недоступен: %r", exc)
 
 
 def notify_update_available(version: str) -> None:
-
-
-
+    """Балун трея из потока update_loop (on_update). Трея нет (headless, падение
+    иконки) или notify недоступен — тихо выходим: 7-дневный фолбэк от этого
+    не зависит, он живёт в update_loop."""
     _balloon(f"Доступно обновление MaxGraph v{version}")
     icon = _tray_icon
     if icon is None:
         return
     try:
-        icon.update_menu()
+        icon.update_menu()  # переоценить visible у пункта «Обновить до …»
     except Exception:
         pass
 
 
 def _refresh_menu() -> None:
-
+    """Переоценить visible у пункта «Обновить до …» (стейт мог появиться)."""
     icon = _tray_icon
     if icon is None:
         return
@@ -698,10 +698,10 @@ def _refresh_menu() -> None:
 
 
 def apply_update_from_ui():
-
-
-
-
+    """Клик «Обновить» (карточка или пункт «Обновить до …»): скачать/проверить/
+    применить версию из update-state.json. True — helper запущен, процесс умрёт
+    сам; selfupdate.UPDATE_PENDING — версия объявлена, но файл ещё не выложен
+    (карточка покажет «Обновление ещё готовится», не «Не удалось»)."""
     try:
         import selfupdate
         import app as _app
@@ -715,9 +715,9 @@ def apply_update_from_ui():
 
 
 def _remember_update(version: str) -> None:
-
-
-
+    """update-state.json для кнопки «Обновить» карточки: apply_pending_update
+    читает версию оттуда. Если версия уже отслеживается — не трогаем
+    (не сбрасываем first_seen 7-дневного фолбэка)."""
     try:
         import selfupdate
         import app as _app
@@ -728,9 +728,9 @@ def _remember_update(version: str) -> None:
 
 
 def _check_updates_worker() -> None:
-
-
-
+    """Быстрая проверка магазина по клику (не ждём часового цикла): результат —
+    в ту же карточку (Windows) или балуном (macOS/Linux/headless — фолбэк).
+    Новая версия — ещё и стейт + переоценка меню (пункт «Обновить до …»)."""
     import update_popup
     try:
         import selfupdate
@@ -747,42 +747,42 @@ def _check_updates_worker() -> None:
         _refresh_menu()
         on_update = apply_update_from_ui
     elif state == update_popup.LATEST:
-        version = current
+        version = current  # показываем ТЕКУЩУЮ версию («У вас последняя версия»)
     if not update_popup.update_or_show(state, version=version, on_update=on_update):
         _balloon(update_popup.view_for(state, version)["title"])
 
 
 def check_updates_now() -> None:
-
-
-
+    """Клик «Проверить обновления»: карточка «Проверяю…» сразу, check() к
+    магазину — в потоке (трей не блокируем), результат — в ту же карточку.
+    MG_NO_UPDATE=1 → карточка «Обновления отключены», проверки нет."""
     import update_popup
     if os.environ.get("MG_NO_UPDATE") == "1":
         if not update_popup.update_or_show(update_popup.DISABLED):
             _balloon(update_popup.view_for(update_popup.DISABLED)["title"])
         return
-    request_update_now()
+    request_update_now()  # маркер — update_loop тоже зафиксирует стейт/уведомление
     update_popup.update_or_show(update_popup.CHECKING)
     threading.Thread(target=_check_updates_worker, daemon=True, name="update-check").start()
 
 
 def _wait_forever(event_factory=threading.Event) -> None:
-
-
-
+    """Держать main-поток живым навсегда (daemon-поток сервера умрёт вместе
+    с процессом — поэтому при падении иконки main-поток НЕ должен выйти).
+    event_factory — точка подмены для тестов."""
     event_factory().wait()
 
 
 def _tray_icon_image():
-
-
-
+    """Иконка трея: assets/tray-icon.png (бренд «Искра») из ресурс-пути.
+    Файла нет или PNG битый → программный синий круг с «M»: трей не должен
+    падать из-за иконки. PIL лениво — серверный запуск без GUI-библиотек."""
     from PIL import Image, ImageDraw
 
     png = _RESOURCE_BASE / "assets" / "tray-icon.png"
     try:
         img = Image.open(png)
-        img.load()
+        img.load()  # до конца не дочитанный/битый PNG падает здесь, а не в pystray
         return img
     except Exception as exc:
         log.warning("tray icon: не загрузился %s (%r) — программная отрисовка", png, exc)
@@ -794,13 +794,13 @@ def _tray_icon_image():
 
 
 def run_tray(main_callable, port: int | None = None) -> None:
+    """Иконка в трее + сервер в daemon-потоке.
 
-
-
-
-
-
-
+    Блокирует main thread: pystray требует главный поток под иконку (особенно macOS).
+    Падение pystray НЕ роняет сервер: main-поток уходит в headless-ожидание
+    (_wait_forever) — сервер важнее иконки (helper обновления стартует exe
+    detached, иконка в такой сессии может быть недоступна).
+    """
     import pystray
 
     port = port or _default_port()
@@ -809,7 +809,7 @@ def run_tray(main_callable, port: int | None = None) -> None:
         webbrowser.open(_dashboard_url(port, _read_local_token()))
 
     def _restart(icon=None, item=None):
-        os.execv(sys.executable, [sys.executable])
+        os.execv(sys.executable, [sys.executable])  # замена процесса; сервер поднимется заново
 
     def _quit(icon=None, item=None):
         try:
@@ -819,18 +819,18 @@ def run_tray(main_callable, port: int | None = None) -> None:
                 flush()
         except Exception as exc:
             log.warning("tray quit: actr flush failed: %s", exc)
-
+        # shortcut: uvicorn крутится в daemon-потоке — глушим жёстко, graceful shutdown нет
         os._exit(0)
 
     def _check_updates(icon=None, item=None):
-        check_updates_now()
+        check_updates_now()  # карточка + быстрый check в потоке (см. выше)
 
     def _apply_update(icon=None, item=None):
-
+        """Клик по «Обновить до …»: успех — helper подменит exe, процесс умрёт сам."""
         apply_update_from_ui()
 
     def _update_visible(item=None) -> bool:
-
+        # MG_NO_UPDATE=1 выключает всё, включая пункт меню
         return bool(_pending_update()) and os.environ.get("MG_NO_UPDATE") != "1"
 
     threading.Thread(target=main_callable, daemon=True, name="server").start()
@@ -849,6 +849,6 @@ def run_tray(main_callable, port: int | None = None) -> None:
         icon.run()
     except Exception as exc:
         _tray_icon = None
-
+        # сервер важнее иконки: main-поток НЕ выходит (daemon-сервер живёт)
         log.error("трей недоступен — сервер работает headless: %r", exc, exc_info=True)
         _wait_forever()

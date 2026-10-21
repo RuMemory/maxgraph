@@ -1,19 +1,19 @@
-
-
-
+# Hosted embed-relay — ТОЛЬКО VPS магазина (rezon-ai.ru). Self-hosted копиям
+# не нужен: им хватает EMBED_URL на свой endpoint (см. .env.example).
+# Запуск: docker compose up -d --build
 services:
   embed:
     build: .
     container_name: maxgraph-embed
     restart: unless-stopped
-    env_file: .env
+    env_file: .env            # RELAY_HMAC_SECRET — генерит deploy-скрипт, не коммитить!
     environment:
-      EMBED_DATA_DIR: /app/data
+      EMBED_DATA_DIR: /app/data   # совпадает с chown в Dockerfile
     ports:
-      - "127.0.0.1:8788:8788"
+      - "127.0.0.1:8788:8788" # только localhost — наружу смотрит nginx
     volumes:
-      - embed-data:/app/data
-    mem_limit: 1g
+      - embed-data:/app/data  # usage.json (квоты); потеря = мягкий сброс квоты на день
+    mem_limit: 1g             # e5-small int8 + fastapi: реально ~400-600MB
 
 volumes:
   embed-data:

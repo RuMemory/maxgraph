@@ -1,43 +1,43 @@
 #!/usr/bin/env python3
+"""searchrank — ранжированный FTS-lite поверх графа памяти (чистый stdlib).
 
+Замена подстроки в op_search на BM25-подобный скоринг:
 
+- tokenize(text): RU+EN, lowercase, ё→е, разбиение camelCase/kebab/snake,
+  простой стемминг — срезание частых окончаний (компактные списки, без
+  словарей-монстров; стеммер согласованный: одинаково режет запрос и документ).
+- score(query_tokens, entity): BM25-подобный по полям с весами name ×3,
+  title ×2, tags ×1.5, observations ×1; фразовый бонус (запрос из ≥2 токенов
+  целиком в поле, по стемам); recency-бонус по updatedAt (≤+10%).
+  Опциональные corpus-статистики (df/n_docs/avg_lens) подаёт rank(); без них
+  idf=1 — score() остаётся юнит-тестируемым в одиночку.
+- snippet(entity, query_tokens, width=160): лучший фрагмент observation →
+  (text, highlights); highlights — [(start, end)] ПОЗИЦИИ совпавших токенов
+  в text: никакой HTML-разметки, позиции безопасны для esc().
+- rank(entities, query, limit, *, vector_weight=0.0, cosine_fn=None,
+  actr_fn=None): топ-N с score>0, стабильная сортировка (score desc →
+  updatedAt desc → name asc).
+  Опциональный гибрид: при vector_weight>0 и заданном cosine_fn(name)
+  → cos|None итоговый score = (1−w)·fts_norm + w·cos_norm, где fts_norm =
+  fts/max(fts) по кандидатам, cos_norm = (cos+1)/2 ∈ [0,1], отсутствующий
+  вектор → нейтраль 0.5. Корпус ≤ HYBRID_FULL_SCAN_MAX → косинус по ВСЕМ
+  кандидатам (full-scan: парафраз без лексического пересечения поднимается;
+  fts=0 у непопавших, формула корректна); корпус больше → косинус только по
+  FTS top-HYBRID_CANDIDATES (предфильтр: 10k×1024 dims полным проходом на
+  чистом stdlib — ~секунды; 200×1024 ≈ миллисекунды; замеры — у констант).
+  w≤0/без cosine_fn → поведение без изменений (чистый FTS).
+  Опциональный ACT-R: при заданном actr_fn(name) → множитель ≥0
+  итоговый score кандидата (FTS или blended) домножается на него ПОСЛЕ
+  основной сортировки, затем пересортировка тем же стабильным ключом и срез
+  [:limit] — часто читаемые сущности всплывают (модуль actr; максимум
+  1+ACTR_MAX_BOOST). Сбой/NaN/≤0 → нейтраль 1.0 (fail-open, как cosine_fn).
+  Без actr_fn → byte-identical поведение (ветка не исполняется).
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Перф: токены сущности кэшируются по ключу (name, updatedAt) — updatedAt
+обновляется при любой мутации, поэтому кэш самоинвалидируется. Тёплый поиск
+по 10k сущностей — миллисекунды (benchmark в test_searchrank.py; гибрид —
+в test_embed.py).
+"""
 
 import hashlib
 import math
@@ -46,38 +46,38 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 
-
-
-
+# Веса полей: name ×3, title ×2, tags ×1.5, observations ×1.
+# Порядок dict = порядок убывания веса — используется для «один фразовый бонус
+# по самому сильному полю».
 FIELD_WEIGHTS = {"name": 3.0, "title": 2.0, "tags": 1.5, "observations": 1.0}
 
-K1 = 1.5
-B = 0.75
-RECENCY_MAX_BONUS = 0.10
-RECENCY_DECAY_DAYS = 30.0
+K1 = 1.5                      # BM25: насыщение tf
+B = 0.75                      # BM25: нормировка по длине поля
+RECENCY_MAX_BONUS = 0.10      # recency — лёгкий бонус: не более +10% к скору
+RECENCY_DECAY_DAYS = 30.0     # exp-затухание: свежая сущность ≈ полный бонус
 DEFAULT_LIMIT = 20
-
-
-
+# предфильтр гибрида — косинус считаем только по FTS top-N кандидатам
+# (N ≥ limit). 10k сущностей × 1024 dims на чистом stdlib = ~0.5–1с полным
+# проходом (numpy нельзя); 200×1024 ≈ 10–20мс — укладываемся в цель <150мс.
 HYBRID_CANDIDATES = 200
-
-
-
-
-
+# Full-scan: корпус ≤2000 кандидатов → косинус по ВСЕМ (включая ноль FTS-
+# пересечений), иначе парафраз без общих токенов не поднимается НИКОГДА
+# (recall-потолок предфильтра). Замер: 2000×1024 dims dot'ов чистым stdlib
+# ≈ 35–40мс (без numpy) — приемлемо; 10k ≈ 180мс+FTS — за целью <150мс,
+# поэтому большие корпусы остаются на предфильтре top-200 (~5–10мс).
 HYBRID_FULL_SCAN_MAX = 2000
 
+# ---------------------------------------------------------- токенизация -----
 
-
-
+# Словарный прогон: буквы RU/EN + цифры; kebab/snake/пробелы/пунктуация — границы.
 _WORD_RE = re.compile(r"[0-9a-zA-Zа-яА-ЯёЁ]+")
-
+# camelCase внутри прогона: HTTPSConnection → HTTPS Connection, fooBar → foo Bar.
 _CAMEL_RE = re.compile(
     r"[A-ZА-ЯЁ]+(?![a-zа-яё])|[A-ZА-ЯЁ][a-zа-яё]*|[a-zа-яё]+|[0-9]+")
 
-
-
-
+# Частые окончания (компактно, без полных парадигм). Срезается ОДНО самое длинное
+# совпадение при условии, что остаток ≥ _MIN_STEM. Согласованность важнее полноты:
+# запрос и документ режутся одинаково, поэтому формы слова сходятся.
 _EN_SUFFIXES = tuple(sorted((
     "ational", "tional", "tions", "tion", "ings", "ness", "ments", "ment",
     "able", "ible", "ally", "ous", "ive", "ful", "ies", "ied",
@@ -87,7 +87,7 @@ _EN_SUFFIXES = tuple(sorted((
 _RU_SUFFIXES = tuple(sorted((
     "иями", "ями", "ами", "иях", "ях", "ах",
     "ость", "ости", "ение", "ения", "ений", "ание", "ания",
-    "овый", "евый",
+    "овый", "евый",  # прилагательные: «поисковый» → «поиск»
     "ого", "его", "ому", "ему", "ыми", "ими",
     "ам", "ям", "ов", "ев", "ой", "ей", "ый", "ий", "ая", "яя",
     "ое", "ее", "ые", "ие", "ых", "их", "ым", "им", "ом", "ем",
@@ -99,8 +99,8 @@ _RU_FIRST = frozenset("абвгдежзийклмнопрстуфхцчшщъы�
 
 
 def _subtokens(text):
-
-
+    """(start, end, token_lower) по исходному тексту: словарные прогоны,
+    внутри — camelCase-разбиение; lowercase, ё→е. Позиции — в символах text."""
     for m in _WORD_RE.finditer(text):
         base = m.start()
         for c in _CAMEL_RE.finditer(m.group(0)):
@@ -109,7 +109,7 @@ def _subtokens(text):
 
 
 def _stem(tok):
-
+    """Один проход срезания окончания; цифры и коротыши (≤3) не трогаем."""
     if len(tok) <= _MIN_STEM or tok.isdigit():
         return tok
     suffixes = _RU_SUFFIXES if tok[0] in _RU_FIRST else _EN_SUFFIXES
@@ -120,23 +120,23 @@ def _stem(tok):
 
 
 def tokenize(text):
-
+    """text → список стемов (str). Пустой/неподходящий ввод → []."""
     return [_stem(tok) for _, _, tok in _subtokens(str(text or ""))]
 
 
+# ------------------------------------------------------------- кэш/поля -----
 
-
-
-
-
-
+# (name, updatedAt, digest obs) → подготовленные поля. updatedAt меняется при
+# любой мутации сущности → самоинвалидация; дайджест закрывает окно «поиск и
+# инвалидация/фильтр в одну секунду» без коллизий (пара
+# (len,sum) сталкивалась при равных длинах). Сироты вымываются потолком.
 _prep_cache = {}
 _CACHE_MAX = 20000
 
 
 def _prepare(entity):
-
-
+    """Кэшированная подготовка полей сущности: токены/Counter/длины по полям,
+    set стемов (быстрый фильтр кандидатов), padded stems-тексты (фразы)."""
     obs = [str(o) for o in (entity.get("observations") or [])]
     obs_digest = hashlib.blake2b("\x00".join(obs).encode("utf-8", "ignore"),
                                  digest_size=8).digest()
@@ -158,7 +158,7 @@ def _prepare(entity):
         toks = tokenize(text)
         tf[fname] = Counter(toks)
         lens[fname] = len(toks)
-        padded[fname] = " " + " ".join(toks) + " "
+        padded[fname] = " " + " ".join(toks) + " "  # границы токенов для фраз
         stems.update(toks)
     prep = {"tf": tf, "lens": lens, "padded": padded, "stems": stems, "obs": obs,
             "title": texts["title"], "name": texts["name"]}
@@ -166,20 +166,20 @@ def _prepare(entity):
     return prep
 
 
-
+# --------------------------------------------------------------- скоринг ----
 
 def _idf(tok, df, n_docs):
-
+    """BM25-idf (Robertson); без корпусной статистики (юнит-режим) — 1.0."""
     if not df or not n_docs:
         return 1.0
     return math.log(1.0 + (n_docs - df.get(tok, 0) + 0.5) / (df.get(tok, 0) + 0.5))
 
 
 def _recency_bonus(updated_at, now=None):
-
-
-
-
+    """0.10 * exp(-age_days/30); битый/пустой updatedAt → 0 (штрафа нет).
+    now — фиксированное «сейчас» на весь вызов rank(): иначе каждая сущность
+    меряется по своему time.time() и равные по контенту скоры разъезжаются
+    на ~1e-13 — тай-брейк по имени переставал работать."""
     if not updated_at:
         return 0.0
     if now is None:
@@ -195,13 +195,13 @@ def _recency_bonus(updated_at, now=None):
 
 
 def score(query_tokens, entity, *, df=None, n_docs=0, avg_lens=None, now=None):
-
-
-
-
-
-
-
+    """BM25-подобный скор сущности: Σ по токенам запроса и полям
+    idf·(tf·(k1+1)/(tf + k1·(1−b+b·len/avg)))·вес поля, плюс фразовый бонус
+    (≥2 токена запроса целиком в поле, по стемам — один раз, по самому сильному
+    полю), в конце — recency-множитель (≤+10%). Нет совпадений → 0.0.
+    df/n_docs/avg_lens подаёт rank(); без них idf=1, нормировка по длине самого
+    поля (юнит-режим). now — фиксированное время запроса для recency (rank()
+    передаёт одно на всех)."""
     toks = [t for t in query_tokens if t]
     if not toks:
         return 0.0
@@ -224,7 +224,7 @@ def score(query_tokens, entity, *, df=None, n_docs=0, avg_lens=None, now=None):
     if total > 0.0 and len(toks) >= 2:
         phrase = " " + " ".join(toks) + " "
         avg_idf = sum(idfs) / len(idfs)
-        for fname, weight in FIELD_WEIGHTS.items():
+        for fname, weight in FIELD_WEIGHTS.items():  # по убыванию веса
             if phrase in prep["padded"][fname]:
                 total += weight * avg_idf
                 break
@@ -233,31 +233,31 @@ def score(query_tokens, entity, *, df=None, n_docs=0, avg_lens=None, now=None):
 
 def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=None,
          actr_fn=None):
+    """Топ-N сущностей по запросу → [(score, entity)], только score>0.
+    Стабильная сортировка: score desc → updatedAt desc → name asc.
+    Запрос без извлекаемых терминов → [] (фоллбек на подстроку — в op_search).
 
+    Гибрид (опционально): vector_weight w∈[0,1] + cosine_fn(name)
+    → cos|None (модуль embed). Применяется ТОЛЬКО при w>0 и cosine_fn —
+    иначе поведение без изменений. Корпус ≤ HYBRID_FULL_SCAN_MAX →
+    косинус по всем кандидатам (full-scan: fts=0 у непопавших — парафраз без
+    общих токенов поднимается, в выдачу входит весь корпус, хвост = w·0.5);
+    корпус больше → косинус по FTS top-HYBRID_CANDIDATES (предфильтр — перф,
+    см. шапку). score кандидата: (1−w)·fts_norm + w·cos_norm; fts_norm =
+    fts/max(fts) по кандидатам, cos_norm — mean-anchored по кандидатам запроса:
+    (cos−mean)/(max−mean) обрезанное в [0,1] ((cos+1)/2 сжимало диапазон e5 — по бенчам);
+    без вектора → 0.5 (нейтраль, не штраф). Сбой cosine_fn →
+    тоже 0.5 (fail-open: векторный слой не должен ронять поиск).
+    В гибридном режиме возвращаемый score — blended (0..1), не FTS.
+    С actr_fn итог домножается на множитель до ACTR_MAX_BOOST →
+    верхняя граница score ~1.25.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    ACT-R reinforcement (опционально): actr_fn(name) → множитель ≥0
+    (модуль actr; нейтраль 1.0). Домножает итоговый скор каждого кандидата
+    (FTS или blended) после основного скоринга, затем пересортировка и
+    срез [:limit] — часто читаемое всплывает в пределах +ACTR_MAX_BOOST.
+    Сбой/NaN/≤0/не-число → 1.0 (fail-open: ACT-R не роняет поиск). Без
+    actr_fn ветка не исполняется — поведение без изменений."""
     qts = tokenize(query)
     if not qts:
         return []
@@ -265,8 +265,8 @@ def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=N
     if not ents:
         return []
     n = len(ents)
-
-
+    # w вычисляем до раннего выхода: при full-scan пустой df не терминален
+    # (векторное совпадение без единого общего токена — тоже выдача)
     w = 0.0
     if cosine_fn is not None:
         try:
@@ -287,14 +287,14 @@ def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=N
             sums[f] += prep["lens"][f]
     avg = {f: (sums[f] / n) or 1.0 for f in FIELD_WEIGHTS}
     scored = []
-    now = time.time()
+    now = time.time()  # единое «сейчас» для recency всех кандидатов запроса
     for e, prep in preps:
         if prep["stems"].isdisjoint(qset):
             continue
         s = score(qts, e, df=df, n_docs=n, avg_lens=avg, now=now)
         if s > 0.0:
             scored.append((s, e))
-
+    # python sort стабилен → многоуровневый ключ тремя проходами
     scored.sort(key=lambda se: se[1].get("name") or "")
     scored.sort(key=lambda se: se[1].get("updatedAt") or "", reverse=True)
     scored.sort(key=lambda se: se[0], reverse=True)
@@ -302,41 +302,41 @@ def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=N
         lim = max(1, int(limit))
     except (TypeError, ValueError):
         lim = DEFAULT_LIMIT
-
-
+    # --- гибрид FTS+vector. Только при w>0 и cosine_fn; иначе —
+    # чистый FTS, поведение без изменений. ---
     final = scored
     if w > 0.0 and (scored or n <= HYBRID_FULL_SCAN_MAX):
-
-
-
-
-
+        # Full-scan (корпус ≤ HYBRID_FULL_SCAN_MAX): косинус по ВСЕМ сущностям
+        # корпуса — парафраз без лексического пересечения иначе не поднимется
+        # никогда (recall-потолок предфильтра = FTS top-HYBRID_CANDIDATES).
+        # fts=0 у непопавших — бленд корректен (w·cos_norm); безвекторные →
+        # нейтраль 0.5 из cosine_fn. Цена и порог — у HYBRID_FULL_SCAN_MAX.
         if n <= HYBRID_FULL_SCAN_MAX:
-            fts_max = scored[0][0] if scored else 1.0
+            fts_max = scored[0][0] if scored else 1.0  # scored отсортирован desc
             fts_by_name = {str(e.get("name") or ""): s for s, e in scored}
             cand = [(fts_by_name.get(str(e.get("name") or ""), 0.0), e)
                     for e in ents]
         else:
-            cand = scored[:max(lim, HYBRID_CANDIDATES)]
-            fts_max = cand[0][0] or 1.0
+            cand = scored[:max(lim, HYBRID_CANDIDATES)]  # предфильтр: cos по топу
+            fts_max = cand[0][0] or 1.0  # scored отсортирован desc; все fts > 0
         blended = []
-        raw = []
+        raw = []   # (fts, entity, cos|None) — cos собираем до бленда для z-norm
         coses = []
         for s, e in cand:
             try:
                 cos = cosine_fn(str(e.get("name") or ""))
                 cos = None if cos is None else float(cos)
-            except Exception:
-                cos = None
+            except Exception:  # fail-open: векторный слой не роняет поиск
+                cos = None     # (включая не-числовой cos от кривого cosine_fn)
             if cos is not None:
                 cos = min(1.0, max(-1.0, cos))
                 coses.append(cos)
             raw.append((s, e, cos))
-
-
-
-
-
+        # cos_norm — mean-anchored: (cos+1)/2 сжимал
+        # рабочий диапазон e5 (0.7..0.9) в 0.85..0.95 — векторный сигнал тонул
+        # в fts_norm при w=0.35 (silent-hit 43%). Якорь — среднее косинусов
+        # кандидатов запроса: выше среднего → (0..1], ниже → 0. Без вектора —
+        # нейтраль 0.5 (не штраф); все косинусы равны → 0.5 (дискриминации нет).
         c_mean = sum(coses) / len(coses) if coses else 0.0
         c_span = (max(coses) - c_mean) if coses else 0.0
         for s, e, cos in raw:
@@ -351,17 +351,17 @@ def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=N
         blended.sort(key=lambda se: se[1].get("updatedAt") or "", reverse=True)
         blended.sort(key=lambda se: se[0], reverse=True)
         final = blended
-
-
-
+    # --- ACT-R reinforcement. Только при actr_fn; иначе ветка не
+    # исполняется (byte-identical). Множитель применяется к итоговому скору
+    # (FTS или blended) ДО среза [:lim]: поднятый кандидат может войти в топ. ---
     if actr_fn is not None and final:
         boosted = []
         for s, e in final:
             try:
                 m = float(actr_fn(str(e.get("name") or "")))
-            except Exception:
+            except Exception:  # fail-open, как cosine_fn: ACT-R не роняет поиск
                 m = 1.0
-            if not math.isfinite(m) or m <= 0.0:
+            if not math.isfinite(m) or m <= 0.0:  # NaN/inf/≤0 → нейтраль
                 m = 1.0
             boosted.append((s * m, e))
         boosted.sort(key=lambda se: se[1].get("name") or "")
@@ -371,23 +371,23 @@ def rank(entities, query, limit=DEFAULT_LIMIT, *, vector_weight=0.0, cosine_fn=N
     return final[:lim]
 
 
-
+# --------------------------------------------------------------- сниппет ----
 
 def _window(text, anchor, width, qset):
-
-
+    """Окно ≤width вокруг позиции anchor (не рвём слова) → (text, highlights).
+    highlights — позиции токенов qset в итоговом text (учитывают «…»-префикс)."""
     width = max(20, int(width or 160))
     if len(text) <= width:
         start = 0
     else:
         start = max(0, anchor - width // 3)
-
-
+        # левый край — не середина слова: недорезанный токен отбрасываем целиком
+        # (start>0 обязателен: text[start-1] при start==0 — ПОСЛЕДНИЙ символ)
         while start > 0 and start < anchor \
                 and text[start - 1].isalnum() and text[start].isalnum():
             start += 1
     end = min(len(text), start + width)
-
+    # правый край — отступаем к началу недорезанного слова (но ≥20 символов тела)
     while end > start + 20 and end < len(text) \
             and text[end - 1].isalnum() and text[end].isalnum():
         end -= 1
@@ -400,13 +400,13 @@ def _window(text, anchor, width, qset):
 
 
 def snippet(entity, query_tokens, width=160):
-
-
-
-
+    """Лучший фрагмент observation под запрос → (text, highlights).
+    highlights — [(start, end)] позиции совпавших токенов в text (без HTML —
+    безопасно для esc()). Матч вне observations (name/title/tags) → сниппет
+    из title/имени с подсветкой. Пустой запрос → начало title/имени."""
     qset = {t for t in query_tokens if t}
     prep = _prepare(entity)
-    best = None
+    best = None  # (hits, first_pos, obs_index); стабильно: первый с max hits
     if qset:
         for i, obs_text in enumerate(prep["obs"]):
             hits = 0
@@ -420,5 +420,5 @@ def snippet(entity, query_tokens, width=160):
                 best = (hits, first, i)
     if best is not None:
         return _window(prep["obs"][best[2]], best[1], width, qset)
-
+    # совпадение было в name/title/tags — показываем title (или имя) с подсветкой
     return _window(prep["title"] or prep["name"], 0, width, qset)

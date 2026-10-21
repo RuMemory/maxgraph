@@ -11,15 +11,10 @@
 ```text
 У тебя есть постоянная память Maxgraph (инструменты maxgraph/*).
 
-ПРОЕКТ = текущая рабочая папка пользователя. Её slug приходит готовым: на старте
-сессии хук печатает строку «Проект этой папки: <slug>» — возьми slug ИЗ НЕЁ
-(сам не вычисляй и не транслитерируй) и передавай параметр project=<slug>
-КАЖДОМУ вызову maxgraph — так память пишется и читается в проекте пользователя,
-а сам проект появляется в графе при первой записи. Строки нет (хук не установлен)
-→ fallback: slug = имя текущей папки — буквы/цифры любого алфавита как есть
-(кириллица НЕ транслитерируется), нижний регистр, пробелы/символы → дефисы, ≤64;
-папка — корень git-репозитория с remote origin → repo-<имя-репо>-<sha256(url)[:12]>;
-подпапка репозитория — отдельный проект по имени папки (git root не побеждает).
+ПРОЕКТ = текущая рабочая папка пользователя. Вычисли её slug один раз на сессию
+(kebab-case: git remote → корень git-репозитория → имя папки) и передавай
+параметр project=<slug> КАЖДОМУ вызову maxgraph — так память пишется и читается
+в проекте пользователя, а сам проект появляется в графе автоматически.
 
 СТАРТ СЕССИИ: первым вызови session_start(project=<slug>) — вернётся готовый
 блок контекста проекта. Нужна конкретная тема — search_nodes(query, project=<slug>).
@@ -83,16 +78,10 @@ Windsurf/Devin — ~/.codeium/windsurf/hooks.json. Точные сниппеты
 ```text
 You have persistent memory via Maxgraph (maxgraph/* tools).
 
-PROJECT = the user's current working folder. Its slug arrives ready-made: at
-session start the hook prints a line «Проект этой папки: <slug>» — take the slug
-FROM THAT LINE (never derive or transliterate it yourself) and pass
-project=<slug> to EVERY maxgraph call — memory is then written and read inside
-the user's project, and the project registers in the graph on first write.
-No such line (hook not installed) → fallback: slug = the current folder name —
-letters/digits of any alphabet as-is (Cyrillic NOT transliterated), lowercase,
-spaces/symbols → hyphens, ≤64; a git repo root with remote origin →
-repo-<repo-name>-<sha256(url)[:12]>; a repo subfolder is its own project by
-folder name (the git root does NOT win).
+PROJECT = the user's current working folder. Derive its slug once per session
+(kebab-case: git remote → git repo root → folder name) and pass project=<slug>
+to EVERY maxgraph call — memory is then written and read inside the user's
+project, and the project registers in the graph automatically.
 
 Session start: call session_start(project=<slug>) FIRST — it returns a ready
 context block for the project. For a specific topic: search_nodes(query, project=<slug>).

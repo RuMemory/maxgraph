@@ -1,32 +1,32 @@
 name: Native client binaries
 
-
-
-
-
-
-
-
-
+# T5b (эпик «нативный клиент без Docker»): сборка PyInstaller-onefile бинарников
+# по тегу v* на ВИТРИНЕ RuMemory/maxgraph и выкладка ассетов в gh release того
+# же тега. Ключ подписи в CI НЕ отдаём (решение владельца): артефакты уезжают
+# неподписанными, подпись ed25519 — отдельным шагом на VPS (deploy/sign-native.sh).
+#
+# ЗАВИСИМОСТЬ: файл должен попасть на витрину — добавлен в WHITELIST
+# deploy/publish-public.sh (и в showcase-gate deploy/preflight.sh), иначе
+# workflow здесь никогда не сработает.
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: write  # gh release upload
 
 jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runs-on }}
-
-
+    # Бинарь покупателя собирается ТОЛЬКО из whitelist-дерева витрины (как
+    # GHCR-образ в docker.yml). В dev-репо тот же тег — пропускаем.
     if: github.repository == 'RuMemory/maxgraph'
     strategy:
       fail-fast: false
       matrix:
         include:
-
+          # macos-latest = Apple Silicon runner → arm64 (контракт -macos-arm64)
           - { runs-on: windows-latest, target: windows-amd64, ext: ".exe" }
           - { runs-on: macos-latest,   target: macos-arm64,   ext: "" }
           - { runs-on: ubuntu-latest,  target: linux-amd64,   ext: "" }
@@ -37,10 +37,10 @@ jobs:
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.12"  # продукт на 3.12; py3.13-флаки известны
 
-
-
+      # Контракт имени (selfupdate.artifact_name): VERSION из файла VERSION,
+      # и тег обязан с ним совпадать — иначе соберём чужое дерево под чужим именем.
       - name: Version guard (tag == VERSION)
         shell: bash
         run: |
@@ -54,10 +54,10 @@ jobs:
       - name: Install build deps
         run: pip install pyinstaller "mcp>=1.14.0,<2.0" "uvicorn>=0.30" "pydantic>=2.7" pystray pillow
 
-
-
-
-
+      # add-data — только для файлов, которые РЕАЛЬНО есть в дереве витрины:
+      # publish-public.sh вырезает billing.html/landing.html/og.png (магазинные
+      # страницы), app.py терпимо относится к их отсутствию, а pyinstaller на
+      # несуществующем --add-data падает.
       - name: PyInstaller build (unix)
         if: runner.os != 'Windows'
         shell: bash
@@ -116,7 +116,7 @@ jobs:
             --hidden-import update_popup @pyArgs app/app.py
           Move-Item dist/maxgraph.exe "dist/$env:ART"
 
-
+      # Смоук: это сервер, --help нет — проверяем существование и размер >10 МБ.
       - name: Smoke (exists, >10MB)
         shell: bash
         run: |
@@ -125,7 +125,7 @@ jobs:
           echo "size: $SIZE bytes"
           [ "$SIZE" -gt 10485760 ] || { echo "FATAL: подозрительно маленький бинарь"; exit 1; }
 
-
+      # Идемпотентно при re-run: --clobber перезаписывает ассет того же имени.
       - name: Upload to GitHub release
         shell: bash
         env:
