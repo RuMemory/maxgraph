@@ -64,7 +64,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from starlette.responses import FileResponse
@@ -1281,6 +1281,7 @@ def op_add_observations(items, project: str = ""):
             elif not isinstance(sup, list):
                 errors.append(f"{name}: supersedes must be a list of strings")
                 continue
+            sup = [s for s in sup if str(s or "").strip()]  # пустые строки не считаются вызовом
             marked, sup_nf = [], []
             for s in sup:
                 s = str(s or "").strip()
@@ -1301,6 +1302,7 @@ def op_add_observations(items, project: str = ""):
                 ents[name]["updatedAt"] = ts
                 _event("update_entity", name, f"supersedes ×{len(marked)}",
                        project=project or (ents[name].get("project") or ""))
+            empty_call = not contents and not sup
             have = {_norm_obs(o) for o in obs_list}
             added = []
             stripped = 0
@@ -1321,6 +1323,9 @@ def op_add_observations(items, project: str = ""):
                 r["supersedesNotFound"] = sup_nf
             if stripped:
                 r["markerStripped"] = stripped  # вход нёс [~дата] — срезали
+            if empty_call:
+                r["warning"] = ("пустой вызов: ни contents, ни supersedes — "
+                                "записывать нечего (поле фактов называется contents)")
             results.append(r)
             for c in added:
                 _event("add_observation", name, c[:120],
@@ -2452,7 +2457,12 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
 
 # --------------------------------------------------------------- schemas ----
 
+# Входные модели MCP-инструментов: extra="forbid" — опечатка в имени поля
+# даёт громкую ошибку валидации, а не тихую потерю данных (pydantic default
+# extra="ignore" молча выбрасывал неизвестные поля).
+
 class EntityIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     name: str
     entityType: str = "general"
     title: str = ""
@@ -2462,26 +2472,32 @@ class EntityIn(BaseModel):
 
 
 class RelationIn(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
     from_: str = Field(alias="from")
     to: str
     relationType: str
 
 
 class ObservationsIn(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
     entityName: str
-    contents: list[str] = Field(default_factory=list)
+    # копипаст с create_entities/delete_observations приносит поле observations —
+    # принимаем оба имени (в схеме для хостов остаётся contents)
+    contents: list[str] = Field(default_factory=list,
+                                validation_alias=AliasChoices("contents", "observations"))
     # устаревшие строки этой сущности — пометить [~дата], не удалять
     supersedes: list[str] = Field(default_factory=list)
 
 
 class DeletionIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     entityName: str
     observations: list[str] = Field(default_factory=list)
 
 
 class ObsIdDeletionIn(BaseModel):
     """forget по id — {entity, ids} (id = _obs_id из выдачи with_ids)."""
+    model_config = ConfigDict(extra="forbid")
     entity: str
     ids: list[str] = Field(default_factory=list)
 
@@ -3259,6 +3275,9 @@ async def api_observations(request: Request):
         return JSONResponse({"error": "observations must be an array"}, status_code=400)
     for it in items:  # supersedes — список или строка, иначе 400
         if isinstance(it, dict):
+            # алиас observations→contents, как в MCP-схеме (REST парсит тело сырым json)
+            if "contents" not in it and isinstance(it.get("observations"), list):
+                it["contents"] = it["observations"]
             sup = it.get("supersedes")
             if sup is not None and not isinstance(sup, (list, str)):
                 return JSONResponse({"error": "supersedes must be an array of strings"},

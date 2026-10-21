@@ -8,7 +8,7 @@ Base URL: `http://<host>:8787`. Всё, кроме `/healthz`, требует `A
 |---|---|---|
 | `create_entities` | `entities: [{name, entityType?, title?, tags?, observations?}]` | Создать сущности (существующее имя → merge observations) |
 | `create_relations` | `relations: [{from, to, relationType}]` | Создать связи (дубликаты пропускаются) |
-| `add_observations` | `observations: [{entityName, contents[]}]` | Добавить факты (дедупликация) |
+| `add_observations` | `observations: [{entityName, contents[]}]` (с 1.4.8 принимается и `observations[]` вместо `contents[]`) | Добавить факты (дедупликация) |
 | `delete_entities` | `entityNames: []` | Удалить сущности и их связи |
 | `delete_observations` | `deletions: [{entityName, observations[]}]` | Удалить конкретные факты |
 | `delete_observations_by_id` | `items: [{entity, ids[]}]` | v0.50.0: удалить факты по id (id — из `search_nodes`/`open_nodes` с `with_ids=true`) |
