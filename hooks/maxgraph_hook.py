@@ -57,12 +57,14 @@ Env (дополнительно):
   MG_RECALLED   — путь к дедуп-файлу recall (default ~/.maxgraph/recalled.json)
 """
 
+import glob
 import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -623,6 +625,64 @@ def _git_post_commit() -> None:
         pass
 
 
+# v1.9.3 (баг покупателя B): register_hook --host dsh до первого запуска DSH не
+# ставил пакет моста — каталога рантайма ещё не было, а ряд на неустановленный
+# пакет в DSH молча мёртв. Самолечение: наши ряды в cordis.patch.yml есть,
+# пакета моста нет, рантайм появился → фоновый register_hook.py --host dsh
+# (идемпотентен, сам доустановит). Маркер bridge-repair-last — не чаще раза в
+# 6 часов; всё fail-open, хук никогда не блокируется.
+_SELFHEAL_MARKER = "~/.maxgraph/bridge-repair-last"
+_SELFHEAL_EVERY = 6 * 3600
+_DSH_RUNTIME_JSON = "~/.dsh/dsh-runtimes/dsh-primary-runtime/runtime.json"
+_DSH_BRIDGE_DIR = ("@deepseek-ai", "dsh-hooks-claude-code")
+
+
+def _dsh_selfheal() -> None:
+    try:
+        marker = Path(_SELFHEAL_MARKER).expanduser()
+        try:
+            if time.time() - marker.stat().st_mtime < _SELFHEAL_EVERY:
+                return
+        except OSError:
+            pass  # маркера нет/не читается — пробовать можно
+        if not Path(_DSH_RUNTIME_JSON).expanduser().exists():
+            return
+        register = Path(__file__).resolve().parent / "register_hook.py"
+        if not register.exists():
+            return
+        for cfg in sorted(glob.glob(str(Path("~/.dsh/profiles/*/cordis.patch.yml").expanduser()))):
+            cfg = Path(cfg)
+            try:
+                if "maxgraph" not in cfg.read_text(encoding="utf-8", errors="replace"):
+                    continue   # наших рядов нет — чужой профиль не трогаем
+            except OSError:
+                continue
+            if (cfg.parent / "node_modules" / _DSH_BRIDGE_DIR[0] / _DSH_BRIDGE_DIR[1]).exists():
+                continue       # мост на месте — чинить нечего
+            kw = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+                  "stderr": subprocess.DEVNULL, "close_fds": True}
+            # маркер ДО Popen (TOCTOU): два конкурентных события хука не
+            # запустят register_hook параллельно (гонка записи cordis.patch.yml)
+            try:
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                marker.write_text("", encoding="utf-8")
+            except OSError:
+                pass
+            if os.name == "nt":
+                # снижаем связь с деревом хоста; полный отрыв от job-объекта
+                # (если DSH выйдет посреди pnpm install) — только через
+                # WMI-запуск в install.ps1, здесь остаётся best-effort
+                kwargs_flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                subprocess.Popen([sys.executable, str(register), "--host", "dsh"],
+                                 creationflags=kwargs_flags, **kw)
+            else:
+                subprocess.Popen([sys.executable, str(register), "--host", "dsh"],
+                                 start_new_session=True, **kw)
+            return  # одного запуска хватает — register_hook сам обходит все профили
+    except Exception:
+        pass
+
+
 # ------------------------------------------------------------------ main -----
 
 def main(stdin=None, argv=None) -> int:
@@ -642,6 +702,7 @@ def main(stdin=None, argv=None) -> int:
         if "--git-post-commit" in args:
             _git_post_commit()
             return 0
+        _dsh_selfheal()
         src = stdin if stdin is not None else sys.stdin
         _reconfigure_stdout(src)  # до чтения: переключаем именно тот поток
         raw = _read_stdin(src)

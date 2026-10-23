@@ -662,7 +662,9 @@ def _dsh_ensure_hook_plugin(profile_dir: Path, dry: bool) -> str:
     if dry:
         return f"would install {' '.join(specs)} into {profile_dir}"
     if not node or not ver:
-        return f"hooks plugin NOT installed (DSH не вызовет хук) — установите: {manual}"
+        return (f"hooks plugin NOT installed (DSH не вызовет хук) — полностью "
+                f"перезапустите DSH (runtime появится) и повторите: "
+                f"python hooks/register_hook.py --host dsh; либо вручную: {manual}")
     stale = [p for p in pkgs if _dsh_pkg_version(profile_dir, p) != ver]
     was_present = any(_dsh_pkg_version(profile_dir, p) for p in pkgs)
     if stale:
