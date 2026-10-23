@@ -227,6 +227,8 @@ print_next_steps() {  # финальный пакет для агента-уст
 4. Verify memory: create_entities install-check → search_nodes install-check.
 5. Tell the user: fully restart the host and start a NEW session in the project folder.
    Dashboard: http://localhost:8787/app#$token (token is in the link — opens signed in).
+   If the link is not clickable: open http://localhost:8787/app and paste the token:
+   Token: $token
 =======================================================================
 EOF
   # машиночитаемая строка — ТОЛЬКО stdout; в install-native.log токен не пишем
