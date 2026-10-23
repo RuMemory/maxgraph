@@ -79,10 +79,10 @@ jobs:
           # иконка exe: .lnk-ярлыки (IconLocation=exe) берут её из ресурсов
           [ -f build/maxgraph.ico ] && ARGS="$ARGS --icon build/maxgraph.ico"
           echo "add-data: $ARGS"
-          # update_popup: импортируется из native.py лениво (внутри функций) —
+          # update_popup/hostscan: импортируются из native.py лениво (внутри функций) —
           # modulegraph подхватит, но страхуемся явным hidden-import
           pyinstaller -y --onefile --name maxgraph --paths app \
-            --hidden-import update_popup $ARGS app/app.py
+            --hidden-import update_popup --hidden-import hostscan $ARGS app/app.py
           mv "dist/maxgraph" "dist/$ART"
 
       - name: PyInstaller build (windows)
@@ -110,10 +110,10 @@ jobs:
           # Логи helper'а идут в data/update.log (FileHandler), stdout не нужен.
           # На unix НЕ добавляем: macOS onefile+windowed собирает .app-бандл и
           # ломает контракт dist/maxgraph (smoke + mv), а окна там и так нет.
-          # update_popup: импортируется из native.py лениво (внутри функций) —
+          # update_popup/hostscan: импортируются из native.py лениво (внутри функций) —
           # modulegraph подхватит, но страхуемся явным hidden-import
           pyinstaller -y --onefile --windowed --name maxgraph --paths app `
-            --hidden-import update_popup @pyArgs app/app.py
+            --hidden-import update_popup --hidden-import hostscan @pyArgs app/app.py
           Move-Item dist/maxgraph.exe "dist/$env:ART"
 
       # Смоук: это сервер, --help нет — проверяем существование и размер >10 МБ.

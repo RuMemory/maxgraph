@@ -9173,8 +9173,9 @@ if __name__ == "__main__":
         selfupdate.start_update_loop(lambda: VERSION, PUBLIC_BASE_URL, DATA_DIR, PORT,
                                      on_update=native.notify_update_available)
         if os.environ.get("MG_NO_TRAY") != "1":
-            native.run_tray(main)
+            native.run_tray(main)   # hostscan стартует внутри (балуну нужна иконка)
         else:
+            native.start_host_scan()   # headless: событие в лог, балуна нет
             main()
     else:
         # python-фолбэк (dev/spike): тот же guard, но headless — без webbrowser,

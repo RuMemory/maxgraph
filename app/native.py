@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -687,7 +688,8 @@ def notify_update_available(version: str) -> None:
 
 
 def _refresh_menu() -> None:
-    """Переоценить visible у пункта «Обновить до …» (стейт мог появиться)."""
+    """Переоценить visible у пунктов с колбэком («Обновить до …», «Подключить
+    хосты…») — стейт мог появиться/исчезнуть."""
     icon = _tray_icon
     if icon is None:
         return
@@ -695,6 +697,139 @@ def _refresh_menu() -> None:
         icon.update_menu()
     except Exception:
         pass
+
+
+# --------------------------------------- дообнаружение хостов (app/hostscan.py)
+
+_pending_hosts: list = []   # неподключённые хосты последнего скана (пункт меню трея)
+
+
+def _find_python() -> str:
+    """Реальный интерпретатор для hook-команды. В frozen exe sys.executable —
+    сам maxgraph.exe, в конфиги хостов его писать нельзя. Путь пишется в конфиги
+    ПЕРСИСТЕНТНО (security MED-2): py.exe-лаунчер в приоритете (C:\\Windows), пути
+    из user-writable Temp/Downloads отклоняем — не усиливаем чужой PATH-hijack."""
+    names = ("py.exe", "pythonw.exe", "python.exe") if os.name == "nt" else ("python3", "python")
+    bad = (f"{os.sep}temp{os.sep}", f"{os.sep}tmp{os.sep}", f"{os.sep}downloads{os.sep}")
+    for name in names:
+        p = shutil.which(name)
+        if p and not any(b in p.lower() for b in bad):
+            return p
+    return ""
+
+
+def connect_hosts(hosts, rh=None, py: str | None = None) -> list:
+    """Подключить хосты СУЩЕСТВУЮЩИМ кодом установщика (register_hook.apply_host,
+    реальный режим — не dry). Возвращает строки-результаты per host.
+    Windows+frozen: подменяем rh._command на найденный python — иначе в конфиг
+    уехал бы путь к maxgraph.exe (rh._command берёт sys.executable). Форма
+    команды повторяет rh._command: dsh — через PowerShell-оператор `&` и
+    консольный python (pythonw DSH убивает до выполнения, аудит 2026-10-20).
+    rh — наш приватный importlib-экземпляр, правка не глобальна;
+    восстанавливаем в finally."""
+    import hostscan
+    rh = rh if rh is not None else hostscan.load_registrar()
+    if rh is None:
+        return ["hostscan: register_hook.py не найден — подключите по docs/HOOKS.md"]
+    if py is None:
+        py = _find_python()
+    orig_cmd = None
+    if os.name == "nt":
+        if not py:
+            return ["hostscan: python не найден — подключите по docs/HOOKS.md"]
+        orig_cmd = rh._command
+        hook = Path.home() / ".maxgraph" / "maxgraph_hook.py"
+        con = py
+        if Path(py).name.lower() == "pythonw.exe":
+            cand = Path(py).with_name("python.exe")
+            if cand.exists():
+                con = str(cand)   # python.exe рядом не всегда есть
+        ps = getattr(rh, "_ps_str", lambda s: s)
+        rh._command = lambda host: (
+            f'& "{ps(str(con))}" "{ps(str(hook))}" --host {host}' if host == "dsh"
+            else f'"{py}" "{hook}" --host {host}')
+    # DSH MCP-ряд: rh._mcp_token читает data/local_token.txt рядом с РЕПО —
+    # в установке его там нет, отдаём токен этой установки через env. Только
+    # когда в списке есть dsh (security LOW-2): env всего процесса наследуют
+    # конкурентные subprocess'ы — окно сокращаем до необходимого.
+    prev_tok = os.environ.get("MEMORY_TOKEN")
+    tok = _read_local_token() if "dsh" in hosts else ""
+    if tok and not prev_tok:
+        os.environ["MEMORY_TOKEN"] = tok
+    msgs = []
+    try:
+        for h in hosts:
+            try:
+                msgs.append(rh.apply_host(h))
+            except Exception as exc:   # один хост не роняет остальные (как в rh.main)
+                msgs.append(f"{h}: ERROR {exc}")
+    finally:
+        if orig_cmd is not None:
+            rh._command = orig_cmd
+        if tok and not prev_tok:
+            os.environ.pop("MEMORY_TOKEN", None)
+    return msgs
+
+
+def _wait_tray(seconds: float = 15.0) -> None:
+    """Подождать появления иконки — балун до icon.run() может не показаться."""
+    deadline = time.time() + seconds
+    while _tray_icon is None and time.time() < deadline:
+        time.sleep(0.5)
+
+
+def start_host_scan(data_dir=None) -> threading.Thread:
+    """Фоновое дообнаружение хостов при старте (дешёвое: ~15 stat + мелкие
+    конфиги). Новый хост → событие в лог + ОДИН балун (стейт host-scan.json);
+    пункт меню «Подключить хосты…» висит, пока хост реально не подключён.
+    Любой сбой — log.warning, сервер не трогаем."""
+    import hostscan
+    if data_dir is None:
+        import app as _app
+        data_dir = _app.DATA_DIR
+
+    def _work():
+        global _pending_hosts
+        try:
+            res = hostscan.scan(data_dir)
+        except Exception as exc:
+            log.warning("hostscan: сбой сканирования: %r", exc)
+            return
+        _pending_hosts = res["unconnected"]
+        if _pending_hosts:
+            log.info("hostscan: неподключённые хосты: %s", ", ".join(_pending_hosts))
+            _refresh_menu()
+        if res["notify"]:
+            log.info("hostscan: НОВЫЕ хосты без подключения: %s", ", ".join(res["notify"]))
+            _wait_tray()
+            _balloon("Найден новый ИИ-хост: " + ", ".join(res["notify"])
+                     + " — подключить: меню трея MaxGraph")
+
+    t = threading.Thread(target=_work, daemon=True, name="hostscan")
+    t.start()
+    return t
+
+
+def _connect_pending_worker(hosts: list) -> None:
+    """Клик «Подключить хосты…»: регистрация существующим кодом, затем пересчёт
+    оставшихся (меню прячется само, когда подключать больше нечего)."""
+    global _pending_hosts
+    msgs = connect_hosts(list(hosts))
+    for m in msgs:
+        log.info("hostscan connect: %s", m)
+    try:
+        import hostscan
+        rh = hostscan.load_registrar()
+        _pending_hosts = hostscan.find_unconnected(rh) if rh is not None else []
+    except Exception as exc:
+        log.warning("hostscan: пересчёт после подключения: %r", exc)
+        _pending_hosts = []
+    _refresh_menu()
+    ok = [m for m in msgs if "ERROR" not in m]
+    if ok:
+        _balloon("MaxGraph подключён: " + ", ".join(m.split(":", 1)[0] for m in ok))
+    elif msgs:
+        _balloon("Не удалось подключить хосты — см. docs/HOOKS.md")
 
 
 def apply_update_from_ui():
@@ -833,10 +968,21 @@ def run_tray(main_callable, port: int | None = None) -> None:
         # MG_NO_UPDATE=1 выключает всё, включая пункт меню
         return bool(_pending_update()) and os.environ.get("MG_NO_UPDATE") != "1"
 
+    def _connect_pending(icon=None, item=None):
+        if _pending_hosts:
+            threading.Thread(target=_connect_pending_worker, args=(list(_pending_hosts),),
+                             daemon=True, name="hostscan-connect").start()
+
+    def _hosts_visible(item=None) -> bool:
+        return bool(_pending_hosts)
+
     threading.Thread(target=main_callable, daemon=True, name="server").start()
+    start_host_scan()   # дообнаружение хостов: балун/лог из потока, иконку подождёт
     menu = pystray.Menu(
         pystray.MenuItem(lambda item: f"Обновить до v{_pending_update() or '?'}",
                          _apply_update, visible=_update_visible),
+        pystray.MenuItem(lambda item: "Подключить хосты: " + ", ".join(_pending_hosts),
+                         _connect_pending, visible=_hosts_visible),
         pystray.MenuItem("Открыть дашборд", _open_dashboard, default=True),
         pystray.MenuItem("Проверить обновления", _check_updates),
         pystray.MenuItem("Перезапуск", _restart),
