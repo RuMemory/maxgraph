@@ -22,6 +22,10 @@ Base URL: `http://<host>:8787`. Всё, кроме `/healthz`, требует `A
 | `task_add` | `title`, `note?`, `project?` | В2.1: открытое дело «на потом» → task-сущность `task-<slug(title)>` (status `open`; коллизия имени → суффикс `-2`) |
 | `task_done` | `name`, `project?` | В2.1: закрыть задачу (`status=done` + событие `task_done` в пульс; повтор — `already: true`) |
 | `task_list` | `project?` | В2.1: открытые задачи (status≠done), recency-first; без `project` — все открытые |
+| `promote_to_global` | `name`, `project?` | 1.7.0: перенести сущность в спецпроект `global` (коллизия имени → merge наблюдений, ответ `{"merged": true}`) |
+| `demote_from_global` | `name`, `project` (обязателен) | 1.7.0: вернуть сущность из `global` в указанный проект |
+
+**Global-слой (v1.7.0)**: проект со slug `global` — общий для всех проектов. Его decision-сущности (решения владельца) автоматически попадают в `session_start` любого проекта секцией `## Глобальная память` (после проектных решений/багов/задач, внутри общего бюджета; жертвуется раньше проектных секций, позже ленты событий). Баги и задачи global в чужие сессии НЕ подтягиваются (project-scoped по смыслу); в `session_start(project="global")` они видны как обычно, секция не дублируется. Пустой global (или без decision) → секции нет. Запись в global — только явная: `promote_to_global`/`demote_from_global` или обычные инструменты с `project="global"`. Изоляция поиска не меняется: global-факты находятся через `all_projects=true`.
 
 **session_start (Ф2)**: возвращает `{"context_block", "meta"}`. `context_block` — готовый к вставке в промпт текст с секциями по приоритету: `# Проект: <slug>` (title + до 5 ключевых фактов) → `## Решения владельца` (entityType `decision`, recency-first, дословно, ≤50 строк) → `## Открытые баги` (entityType `bug` без закрывающего статуса, ≤30 строк) → `## Открытые задачи` (entityType `task`, status≠`done`, ≤10 строк: title + первый факт; В2.1) → `## Прошлые сессии` (entityType `session`, ≤10: имя + первые 2 факта) → `## Недавние события` (≤15 событий пульса проекта). Бюджет жёсткий: `len(context_block) ≤ budget_chars` всегда; усечение построчное, снизу вверх (порядок жертвования: events → sessions → tasks → bugs → decisions), с маркером «… (ещё N, усечено бюджетом)». `meta`: `{project, budget_chars, used_chars, sections: {project|decisions|bugs|tasks|sessions|events: {items, total}}, truncated}`; `items < total` без `truncated=true` — сработал кэп секции, не бюджет. Пустой проект → блок-подсказка «начни с create_entities»; без `project` — ошибка (весь граф не читается). Чтение: пульс не пишется. В2.3: внутри секций решений/багов/задач порядок — актуальность (свежесть × ACT-R множитель частоты обращений, ≤+25%; `ACTR_MAX_BOOST=0` — чистая свежесть, как раньше), а сущности, попавшие в блок, учитываются как обращения.
 
@@ -53,6 +57,8 @@ Base URL: `http://<host>:8787`. Всё, кроме `/healthz`, требует `A
 | `GET /api/stats` | Счётчики, версия, аптайм |
 | `POST /api/entities` | `{"entities":[...]}` |
 | `POST /api/entity/update` | `{"name","title"?,"entityType"?,"tags"?,"status"?}` |
+| `POST /api/entity/promote` | 1.7.0: `{"name","project"?}` — перенос сущности в `global` |
+| `POST /api/entity/demote` | 1.7.0: `{"name","project"}` — возврат сущности из `global` в проект |
 | `POST /api/task/add` | В2.1: `{"title","note"?,"project"?}` → task-сущность `task-<slug(title)>` |
 | `POST /api/task/done` | В2.1: `{"name","project"?}` → `status=done` + событие `task_done` |
 | `GET /api/tasks` | В2.1: открытые задачи (status≠`done`, recency-first); `?project=<slug>` — только этот |

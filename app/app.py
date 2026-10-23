@@ -621,6 +621,11 @@ def _project_entity_name(slug: str) -> str:
     return f"project:{slug}"
 
 
+# Спецпроект 1.7.0: decision-сущности global домешиваются в session_start
+# любого проекта («## Глобальная память»); перенос — только promote/demote.
+GLOBAL_PROJECT = "global"
+
+
 def _in_project(entity: dict, slug: str) -> bool:
     """Сущность адресуема в контексте проекта: её project == slug, либо это сама
     сущность проекта project:<slug> (она структурная, сама проекту не принадлежит)."""
@@ -2221,6 +2226,152 @@ def op_task_list(project: str = "") -> dict:
     return {"tasks": out, "total": len(out)}
 
 
+# --- global-слой (1.7.0): promote/demote — единственный путь смены project ---
+# Обычная запись в global (create_entities с project="global") не запрещается:
+# «запись в global только явная» и значит «явная».
+
+def _read_shard_entity(name: str, slug: str):
+    """Сырая entity-запись name из шард-файла slug ("" = плоский memory.json)
+    или None. Нужна promote/demote для коллизии имени между шард-файлами:
+    _load держит одну запись на имя (имена глобально уникальны, последняя
+    выигрывает), дубль в другом шарде виден только на диске. Whitelist-сборка
+    и last-wins — как в _load: подпорченный шард не проносит лишних ключей
+    и не-списковых observations в граф."""
+    path = MEMORY_FILE if not slug else PROJECTS_DIR / f"{slug}.json"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    found = None
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if rec.get("type") != "entity" or rec.get("name") != name:
+            continue
+        obs = rec.get("observations")
+        found = {
+            "name": name,
+            "title": rec.get("title") or name,
+            "entityType": rec.get("entityType", "general"),
+            "tags": list(rec.get("tags", [])) if isinstance(rec.get("tags"), list) else [],
+            "observations": obs if isinstance(obs, list) else [],
+            "createdAt": rec.get("createdAt", ""),
+            "updatedAt": rec.get("updatedAt", rec.get("createdAt", "")),
+        }
+        if rec.get("status"):
+            found["status"] = rec["status"]
+    return found
+
+
+def _merge_obs(dst: dict, src_obs: list) -> int:
+    """Долить наблюдения src_obs в dst с дедупом по _norm_obs (строки и объекты
+    {text, source} 1.6.0 — по тексту, как merge в create_entities). → добавлено."""
+    have = {_norm_obs(o) for o in dst.get("observations", [])}
+    added = 0
+    for o in src_obs:
+        k = _norm_obs(o)
+        if k in have:
+            continue
+        have.add(k)
+        dst.setdefault("observations", []).append(o)
+        added += 1
+    return added
+
+
+def _move_entity_project(name: str, dst: str, src: str, action: str,
+                         source: str = "", ev_project: str = "") -> dict:
+    """Ядро promote/demote: смена поля project сущности + updatedAt + событие
+    пульса (detail=name, метка ev_project — у promote исходный проект, у demote
+    принимающий). Наблюдения/теги/тип не трогаются, связи — тоже (from/to без
+    проекта; кросс-проектные связи видны в all_projects-вью). Физический
+    переезд между projects/<a>.json и projects/global.json делает _save: шард
+    сущности = её поле project (_shard_of_entity).
+    src — обязательный текущий проект ("" = любой, кроме dst). Дубль имени
+    в шарде назначения → merge наблюдений, ответ {"merged": True}."""
+    name = str(name or "").strip()
+    if not name:
+        return {"error": "пустое имя сущности"}
+    if src and src == dst:
+        return {"error": f"'{name}': источник и назначение совпадают ('{dst}')"}
+    if name.startswith("project:"):
+        # структурный маркер project:<slug> привязан к своему проекту — перенос
+        # травил бы блок «# Проект» в session_start обоих проектов
+        return {"error": f"'{name}' — структурный маркер проекта, не переносится"}
+    with _lock:
+        ents, rels = _load()
+        e = ents.get(name)
+        if e is None:
+            return {"error": f"Entity '{name}' not found"}
+        cur = e.get("project") or ""
+        ts = now_iso()
+        if cur == dst:
+            if not src:
+                return {"error": f"Entity '{name}' уже в проекте '{dst or 'плоском графе'}'"}
+            dup = _read_shard_entity(name, src)
+            if dup is None:
+                return {"error": f"Entity '{name}' не в проекте '{src}' "
+                                 f"(она в '{cur or 'плоском графе'}')"}
+            # в памяти выиграла dst-версия, переносимая — дубль в шарде src;
+            # доливаем её наблюдения, дубль пропадает при перезаписи шарда
+            added = _merge_obs(e, dup.get("observations", []))
+            e["updatedAt"] = ts
+            _save(ents, rels)
+            out = {"merged": True, "entity": e, "observations_added": added}
+            lost = [f for f in ("title", "tags", "entityType", "status")
+                    if dup.get(f) is not None and dup.get(f) != e.get(f)]
+            if lost:
+                out["warnings"] = [f"merge: метаданные дубля ({', '.join(lost)}) "
+                                   f"не перенесены — долиты только наблюдения"]
+        elif src and cur != src:
+            return {"error": f"Entity '{name}' не в проекте '{src}' "
+                             f"(она в '{cur or 'плоском графе'}')"}
+        else:
+            dup = _read_shard_entity(name, dst)
+            if dup is not None:
+                # коллизия имени в назначении: merge в существующую запись,
+                # переносимая исчезает из исходного проекта
+                added = _merge_obs(dup, e.get("observations", []))
+                dup["project"] = dst
+                dup["updatedAt"] = ts
+                ents[name] = dup
+                _save(ents, rels)
+                out = {"merged": True, "entity": dup, "observations_added": added}
+                lost = [f for f in ("title", "tags", "entityType", "status")
+                        if e.get(f) is not None and e.get(f) != dup.get(f)]
+                if lost:
+                    out["warnings"] = [f"merge: метаданные переносимой записи "
+                                       f"({', '.join(lost)}) не перенесены — "
+                                       f"долиты только наблюдения"]
+            else:
+                e["project"] = dst
+                e["updatedAt"] = ts
+                _save(ents, rels)
+                out = {"moved": e}
+        _event(action, name, name, project=ev_project or src or dst, source=source)
+        _reprime_tick(ev_project or src or dst, out)
+        return out
+
+
+def op_promote_global(name: str, project: str = "", source: str = "") -> dict:
+    """Перенос сущности в спецпроект global: её decision-факты попадают в
+    session_start любого проекта. project — где сущность сейчас ("" = любой).
+    Коллизия имени в global → merge ({"merged": true}), исходная исчезает."""
+    return _move_entity_project(name, GLOBAL_PROJECT, project, "promote_global", source)
+
+
+def op_demote_global(name: str, project: str, source: str = "") -> dict:
+    """Обратный перенос из global в указанный проект (project обязателен)."""
+    if not project:
+        return {"error": "demote требует project=<kebab-slug> назначения"}
+    return _move_entity_project(name, project, GLOBAL_PROJECT, "demote_global",
+                                source, ev_project=project)
+
+
 # --- закрытие сессии одним вызовом + напоминание --
 # session_close создаёт/мерджит session-сущность дня с итогами
 # и discussed-связями за один вызов (вместо 3 забываемых), а session_start
@@ -2236,6 +2387,7 @@ _UNCLOSED_TOUCHED_MAX = 5             # сколько имён затронут
 _WRITE_ACTIONS = frozenset({          # пишущие события пульса (для авто-линков)
     "create_entity", "merge_entity", "create_relation", "update_entity",
     "add_observation", "delete_entity", "task_done", "session_close",
+    "promote_global", "demote_global",
 })
 
 
@@ -2580,7 +2732,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
     """Бюджетная инъекция контекста проекта: {context_block, meta}.
 
     Секции по приоритету (обрезка бюджетом — снизу вверх, от последней; порядок
-    жертвования: events → sessions → unclosed → tasks → bugs → decisions):
+    жертвования: events → sessions → global → unclosed → tasks → bugs → decisions):
       # Проект: <slug>    — title + до 5 ключевых фактов project:<slug>
       ## Решения владельца — entityType=decision, recency-first, дословно (≤50 строк)
       ## Открытые баги    — entityType=bug, явный status≠fixed; legacy без
@@ -2588,6 +2740,10 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
       ## Открытые задачи  — entityType=task, status≠done (work_state, ≤10
                             строк): title + первый факт; дела важнее истории,
                             поэтому выше сессий
+      ## Глобальная память — decision-сущности спецпроекта global (1.7.0), те же
+                            recency × ACT-R; баги/задачи global не подтягиваются
+                            (project-scoped по смыслу). В project="global"
+                            секция не дублируется; нет global-decision — нет секции
       ## Незакрытая сессия — (1 строка, только если ≥5 пишущих событий
                             сегодня и сессия дня без тега session-close);
                             механическое напоминание, ничего не пишет
@@ -2775,6 +2931,34 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
             sections.append(("events", "## Недавние события", elines))
             sec_names.append([""] * len(elines))  # журнал — не чтение фактов
 
+    # Глобальная память (1.7.0): после проектных decisions/bugs/tasks, до
+    # «Прошлые сессии»/«Недавние события» — так порядок жертвования бюджетом
+    # выходит events → sessions → global → … (локальный контекст важнее).
+    if project != GLOBAL_PROJECT:
+        gdec = _ss_sort_recent(
+            (e for e in ents.values()
+             if (e.get("project") or "") == GLOBAL_PROJECT
+             and e.get("entityType") == "decision"), mult_fn)
+        glines, gnames, gtotal = [], [], 0
+        for e in gdec:
+            obs_valid = _valid_obs(e)
+            gtotal += len(obs_valid)
+            prefix = _ss_head(e) + ": "
+            for obs in obs_valid:
+                if len(glines) >= _SS_CAP_DECISION_LINES:
+                    break
+                glines.append(prefix + _obs_text(obs))
+                gnames.append(e["name"])
+            if len(glines) >= _SS_CAP_DECISION_LINES:
+                break
+        if gtotal:
+            totals["global"] = gtotal  # ключа нет, когда global-проекта/decision нет
+        if glines:
+            pos = next((i for i, (k, _, _) in enumerate(sections)
+                        if k in ("sessions", "events")), len(sections))
+            sections.insert(pos, ("global", "## Глобальная память", glines))
+            sec_names.insert(pos, gnames)
+
     text, shown, truncated = _fit_budget(sections, budget)
     # обращениями считаются сущности, реально попавшие в context_block
     # (после бюджетной обрезки — shown[i] строк секции i, порядок = порядок
@@ -2906,6 +3090,7 @@ WORK STATE (open loops): something to do later → task_add(project, title, note
 TYPES: canonical — project/session/bug/decision/request/event/task (synonyms RU/EN are canonicalized automatically; free-form types still work). bug has explicit status open/fixed, task — open/done (default open); search_nodes(type=…) filters by type, bug/task answers carry status.
 PROJECTS: if your host reports a project slug (kebab-case, e.g. from git remote/root/cwd), pass it as `project` in EVERY call — writes, reads and searches stay isolated per project; all_projects=true is an explicit cross-project search. No project param = flat shared graph (legacy default).
 SESSION END: call session_close(project, summary, done=[...], links=[...]) — ONE call: creates/merges today's session entity with outcomes and links it "discussed" to touched entities (links empty → derived mechanically from today's pulse). This replaces manual create_entities + create_relations.
+GLOBAL: knowledge shared by ALL projects (user rules, skills, people) lives in the special project "global" — its decision entities appear in session_start of any project («## Глобальная память»). Move an entity there ONLY on explicit user intent: promote_to_global(name); move back with demote_from_global(name, project).
 
 RU: у тебя есть постоянная память. Старт сессии — session_start(project=<slug>) — бюджетный блок контекста (read_graph — если нужен весь граф, search_nodes — по теме); после сжатия контекста (чекпоинт/summary от харнесса) — сразу повтори session_start; факты пиши СРАЗУ (create_entities/add_observations/create_relations, связи в активном залоге, name=kebab-case навсегда); конец сессии — session_close(project, summary, done, links) одним вызовом. Полный протокол: docs/PROTOCOL.md."""
 
@@ -3092,7 +3277,7 @@ def list_timeline(limit: int = 50, project: str = "", all_projects: bool = False
 
 @mcp.tool()
 def session_start(project: str = "", budget_chars: int = 10000) -> dict:
-    """ВЫЗЫВАЙ ПЕРВЫМ на старте сессии: бюджетный блок контекста проекта — {context_block, meta}. context_block готов к вставке в промпт: # Проект → ## Решения владельца (decision, дословно) → ## Открытые баги (bug, не закрытые) → ## Открытые задачи (task, status≠done — дела на потом) → ## Прошлые сессии (session, имя + 2 факта) → ## Недавние события. Внутри решений/багов/задач порядок — актуальность: свежесть × частота обращений (ACT-R). Жёсткий бюджет budget_chars (default 10000): блок никогда его не превышает, усечение построчное с маркером «… (ещё N, усечено бюджетом)», флаг meta.truncated. project ОБЯЗАТЕЛЕН (kebab-slug) — без него весь граф намеренно не читается."""
+    """ВЫЗЫВАЙ ПЕРВЫМ на старте сессии: бюджетный блок контекста проекта — {context_block, meta}. context_block готов к вставке в промпт: # Проект → ## Решения владельца (decision, дословно) → ## Открытые баги (bug, не закрытые) → ## Открытые задачи (task, status≠done — дела на потом) → ## Глобальная память (decision-сущности спецпроекта global — общие для всех проектов знания; 1.7.0) → ## Прошлые сессии (session, имя + 2 факта) → ## Недавние события. Внутри решений/багов/задач порядок — актуальность: свежесть × частота обращений (ACT-R). Жёсткий бюджет budget_chars (default 10000): блок никогда его не превышает, усечение построчное с маркером «… (ещё N, усечено бюджетом)», флаг meta.truncated. project ОБЯЗАТЕЛЕН (kebab-slug) — без него весь граф намеренно не читается."""
     slug, err = _check_project(project)
     if err:
         return {"error": err}
@@ -3160,6 +3345,38 @@ def task_list(project: str = "") -> dict:
     if err:
         return {"error": err}
     return op_task_list(slug)
+
+
+@mcp.tool()
+def promote_to_global(name: str, project: str = "") -> dict:
+    """Перенести сущность в спецпроект global: её decision-факты видны в session_start ЛЮБОГО проекта (секция «Глобальная память»). Запись в global — только явная (этот инструмент или project="global" у create_entities/add_observations). Перенос меняет только поле project (+updatedAt, событие пульса): наблюдения/теги/тип/связи сохраняются. Коллизия имени в global → merge наблюдений с дедупом по тексту (ответ {"merged": true}). project: kebab-slug текущего проекта сущности — сущность вне него считается ненайденной; без project — любой проект, кроме global."""
+    ro = _readonly_guard()
+    if ro:
+        return ro
+    blocked = _write_block()
+    if blocked:
+        return blocked
+    slug, err = _check_project(project)
+    if err:
+        return {"error": err}
+    return op_promote_global(name, slug)
+
+
+@mcp.tool()
+def demote_from_global(name: str, project: str = "") -> dict:
+    """Вернуть сущность из спецпроекта global в указанный проект (project ОБЯЗАТЕЛЕН, kebab-slug назначения). Симметричен promote_to_global: меняется только поле project (+updatedAt, событие пульса demote_global); коллизия имени в проекте назначения → merge ({"merged": true})."""
+    ro = _readonly_guard()
+    if ro:
+        return ro
+    blocked = _write_block()
+    if blocked:
+        return blocked
+    slug, err = _check_project(project)
+    if err:
+        return {"error": err}
+    if not slug:
+        return {"error": "demote_from_global требует project=<kebab-slug> назначения"}
+    return op_demote_global(name, slug)
 
 
 @mcp.tool()
@@ -3529,6 +3746,59 @@ async def api_entity_update(request: Request):
         return JSONResponse({"error": "restore must be an array of strings"},
                             status_code=400)
     return JSONResponse(op_update_entity(body, slug))
+
+
+# --- global-слой (1.7.0): REST-аналоги promote_to_global/demote_from_global ---
+
+@mcp.custom_route("/api/entity/promote", methods=["POST"])
+async def api_entity_promote(request: Request):
+    """Перенос сущности в спецпроект global: {name, project?}."""
+    ro = _readonly_guard()
+    if ro:
+        return JSONResponse(ro, status_code=403)
+    blocked = _write_block()
+    if blocked:
+        return JSONResponse(blocked, status_code=402)
+    raw, rerr = await _read_capped(request, 262144)  # кап по факту длины
+    if rerr is not None:
+        return JSONResponse({"error": "bad request"}, status_code=400)
+    try:
+        body = json.loads(raw)
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    slug, err = _body_project(body)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    return JSONResponse(op_promote_global(body.get("name", ""), slug))
+
+
+@mcp.custom_route("/api/entity/demote", methods=["POST"])
+async def api_entity_demote(request: Request):
+    """Возврат сущности из global в проект: {name, project} — project обязателен."""
+    ro = _readonly_guard()
+    if ro:
+        return JSONResponse(ro, status_code=403)
+    blocked = _write_block()
+    if blocked:
+        return JSONResponse(blocked, status_code=402)
+    raw, rerr = await _read_capped(request, 262144)  # кап по факту длины
+    if rerr is not None:
+        return JSONResponse({"error": "bad request"}, status_code=400)
+    try:
+        body = json.loads(raw)
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    slug, err = _body_project(body)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    if not slug:
+        return JSONResponse({"error": "demote требует project=<kebab-slug> назначения"},
+                            status_code=400)
+    return JSONResponse(op_demote_global(body.get("name", ""), slug))
 
 
 # --- (work_state): REST-аналоги task_add/task_done/task_list ---
