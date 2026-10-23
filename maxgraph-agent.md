@@ -35,8 +35,17 @@ search_nodes по её теме: работа могла быть уже сде�
   при смене имени — update_entity;
 - дело «на потом» → task_add; завершил задачу → task_done.
 
+ТИП СУЩНОСТИ (entityType) выбирай по смыслу: решение/договорённость → decision,
+неисправность → bug, дело на потом → task, просьба → request, сессия → session,
+событие → event. Сервер в ответе create_entities может вернуть
+hints.type_suggestion — проверь её: если права, прими тип (update_entity),
+нет — оставь свой. Общие для всех проектов знания (правила пользователя,
+навыки, люди) — пиши с project="global" или переноси promote_to_global:
+они попадут в session_start любого проекта.
+
 КОНЕЦ СЕССИИ: вызови session_close(project=<slug>, summary="...", done=[...]) —
-итоги и связи запишутся сами.
+итоги и связи запишутся сами. Если в ответе warning про «сессию без записей» —
+проверь, не забыл ли записать факты, и допиши их сейчас.
 
 ЗАХВАТ-ХУКИ (проверь один раз на этой машине): если существует
 ~/.maxgraph/maxgraph_hook.py — зарегистрируй его в конфиге СВОЕГО хоста (только
@@ -92,6 +101,10 @@ new topic → create_entities (name = kebab-case id, title = human name; search 
 new durable fact about an existing entity → add_observations (one observation = one atomic fact, dated when it matters);
 dependencies → create_relations in active voice ("uses", "depends on", "configured by").
 Something for later → task_add; finished a task → task_done.
+Entity type: decision / bug / task / request / session / event by meaning.
+create_entities may return hints.type_suggestion — accept it if right
+(update_entity), keep yours otherwise. Knowledge shared across all projects
+(user rules, skills, people) → project="global" or promote_to_global.
 Session end: call session_close(project=<slug>, summary="...", done=[...]) —
 outcomes and links are recorded for you.
 

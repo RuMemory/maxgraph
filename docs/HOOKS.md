@@ -312,6 +312,9 @@ Fail-open: сеть/сервер недоступны — события ост�
   sha256 промпта в `~/.maxgraph/recalled.json`, последние 500). Факты в контексте
   помечены маркером `▣` — если факт повлиял на ответ, источник называй «из maxgraph».
   Выключатель: `MG_RECALL=0`.
+  С 1.8.0: промпт, начинающийся с «запомни» / «запиши» / «remember…», даёт агенту
+  прямую инструкцию (тем же additionalContext) немедленно записать факт в память.
+  Детект локальный: `MG_RECALL=0` выключает только recall, remember остаётся.
 - **PreToolUse** → read-only инструменты maxgraph (`search_nodes`, `open_nodes`,
   `read_graph`, `session_start`, `task_list`) разрешаются автоматически, без
   диалога подтверждения. Записи (`create_entities`, `add_observations`, `delete_*`,

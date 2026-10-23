@@ -698,6 +698,30 @@ def _check_status(value, etype: str) -> tuple[str, str]:
     return st, ""
 
 
+# --- авто-тайпинг (1.8.0): подсказка типа при create_entities -------------
+# Детерминированные RU/EN-регексы по title+наблюдениям, приоритет
+# bug > decision > task > request > session (первое совпадение побеждает).
+# ТОЛЬКО совет (hints.type_suggestion в ответе): данные не меняются, агент
+# может игнорировать; нет совпадения → подсказки нет (fail-open).
+_TYPE_SUGGEST_RULES = tuple(
+    (t, re.compile(p, re.IGNORECASE)) for t, p in (
+        ("bug", r"баг|bug|сломан|падает|crash|error|fix|почини"),
+        ("decision", r"решил|решение|decision|утверждено|approved|выбрали"),
+        ("task", r"надо|нужно сделать|todo|task|задача|доделать"),
+        ("request", r"просьба|request|хотелка"),
+        ("session", r"сессия|session"),
+    ))
+
+
+def _suggest_type(title, observations):
+    """→ {"suggested", "matched_rule"} | None. matched_rule — сработавший паттерн."""
+    text = " ".join([str(title or "")] + [_obs_text(o) for o in (observations or [])])
+    for suggested, rx in _TYPE_SUGGEST_RULES:
+        if rx.search(text):
+            return {"suggested": suggested, "matched_rule": rx.pattern}
+    return None
+
+
 # ------------------------------------------------------------- graph ops ----
 
 def _obs_text(o) -> str:
@@ -1006,6 +1030,17 @@ def op_create_entities(items, project: str = "", source: str = ""):
     hints = _quality_hints(ents, rels, touched, new_texts, project)
     if hints:
         out["hints"] = hints
+    # авто-тайпинг (1.8.0): у созданной сущности без типа (general) — подсказка
+    # по тексту; только совет, данные не трогаем. Совместимо с similar/hygiene.
+    type_hints = []
+    for ent in created:
+        if ent.get("entityType") != "general":
+            continue
+        st = _suggest_type(ent.get("title"), ent.get("observations"))
+        if st:
+            type_hints.append({"entity": ent["name"], **st})
+    if type_hints:
+        out.setdefault("hints", {})["type_suggestion"] = type_hints
     return out
 
 
@@ -2390,6 +2425,12 @@ _WRITE_ACTIONS = frozenset({          # пишущие события пульс
     "promote_global", "demote_global",
 })
 
+# Детектор «пустой сессии» (1.8.0): активная работа по хукам за день, а
+# пишущих событий в граф — 0 → session_close честно предупреждает (не блокирует).
+EMPTY_SESSION_MIN_EVENTS = 5
+_EMPTY_SESSION_ACTIVITY = frozenset({"hook_PostToolUse", "hook_UserPromptSubmit"})
+_EMPTY_SESSION_WRITES = frozenset({"add_observation", "create_entity", "update_entity"})
+
 
 # --- слой 2 «устойчивость к компактизации»: reprime_hint ----------------------
 # In-memory счётчик пишущих op-вызовов с последнего session_start проекта:
@@ -2561,6 +2602,25 @@ def op_session_close(summary: str = "", done=(), links=(), project: str = "",
         _reprime_tick(project, out)
     if changed or linked:
         _event("session_close", name, obs[0][:120], project=project, source=source)
+    # детектор «пустой сессии» (1.8.0) — по пульсу дня, прочитанному до лока:
+    # хук-активность ≥ порога, а записей в граф 0 → warning (закрытию не мешает)
+    activity = writes = 0
+    for line in ev_lines:
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        if (ev.get("project") or "") != project or str(ev.get("ts", ""))[:10] != today:
+            continue
+        act = ev.get("action")
+        if act in _EMPTY_SESSION_ACTIVITY:
+            activity += 1
+        elif act in _EMPTY_SESSION_WRITES:
+            writes += 1
+    if activity >= EMPTY_SESSION_MIN_EVENTS and not writes:
+        out["warning"] = (f"сессия закрыта без записей в память при активной "
+                          f"работе ({activity} событий хуков)")
+        _event("empty_session_warn", name, f"activity={activity}", project=project)
     return out
 
 
@@ -3484,6 +3544,186 @@ async def api_export(request: Request):
         "memory_ndjson": memory_raw,
         "events_jsonl": events_raw,
     }, headers={**_NOCACHE, "Content-Disposition": f'attachment; filename="maxgraph-export-{now_iso()[:10]}.json"'})
+
+
+# --- NDJSON-импорт (1.8.0): экспорт /api/export обратно в граф -------------
+# Доверенный вход (Bearer мастер-токена): гварды псевдо-проектов
+# create_entities тут НЕ действуют — иначе round-trip не восстановил бы
+# структурные project:<slug>-маркеры. Валидация ВСЕГО до _save (атомарно).
+
+def _check_import_entity(rec) -> str:
+    """Строка NDJSON type=entity → "" | имя невалидного поля (строка в skipped_invalid)."""
+    name = rec.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return "name"
+    for k in ("title", "entityType", "createdAt", "updatedAt"):
+        if rec.get(k) is not None and not isinstance(rec[k], str):
+            return k
+    tags = rec.get("tags")
+    if tags is not None and (not isinstance(tags, list)
+                             or any(not isinstance(t, str) for t in tags)):
+        return "tags"
+    obs = rec.get("observations")
+    if obs is not None:
+        if not isinstance(obs, list):
+            return "observations"
+        for c in obs:
+            if _check_obs_content(c):
+                return "observations"
+    if rec.get("project") is not None:
+        _, perr = _check_project(rec["project"])
+        if perr:
+            return "project"
+    if rec.get("status") is not None:
+        _, serr = _check_status(rec["status"], _canonical_type(rec.get("entityType")))
+        if serr:
+            return "status"
+    return ""
+
+
+def op_import_ndjson(ndjson: str, project: str = "", dry_run: bool = True) -> dict:
+    """Ядро POST /api/import: NDJSON формата /api/export (строки
+    {"type":"entity"|"relation", ...}) → слияние в граф.
+
+    dry_run (default) → только отчёт, ничего не пишет. apply: merge по name —
+    существующие доливаются observations (дедуп по _norm_obs, объекты
+    {text,source} тоже; createdAt остаётся старым, updatedAt = max при реальной
+    доливке), новые создаются с createdAt записи; relations дедуп по
+    (from,to,relationType). Параметр project перебивает project записей.
+    Невалидные строки → skipped_invalid (1-based номера). Отчёт dry_run
+    совпадает с фактическим apply (один код-путь, _save только при apply)."""
+    entities_in, relations_in, skipped = [], [], []
+    for lineno, raw_line in enumerate(ndjson.splitlines(), 1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            skipped.append(lineno)
+            continue
+        if not isinstance(rec, dict):
+            skipped.append(lineno)
+            continue
+        kind = rec.get("type")
+        if kind == "entity":
+            if _check_import_entity(rec):
+                skipped.append(lineno)
+                continue
+            entities_in.append(rec)
+        elif kind == "relation":
+            if not all(isinstance(rec.get(k), str) and rec.get(k).strip()
+                       for k in ("from", "to", "relationType")):
+                skipped.append(lineno)
+                continue
+            relations_in.append(rec)
+        else:
+            skipped.append(lineno)
+    ts = now_iso()
+    report = {"dry_run": dry_run, "entities_new": 0, "entities_merged": 0,
+              "observations_added": 0, "relations_new": 0,
+              "skipped_invalid": skipped, "errors": []}
+    with _lock:
+        ents, rels = _load()
+        rel_keys = {(r["from"], r["to"], r["relationType"]) for r in rels}
+        for rec in entities_in:
+            # project записи нормализуем (_check_project уже прошёл валидацию):
+            # сырой "KIMI" иначе упал бы в flat-шард — _shard_of_entity lowercase-only
+            slug = project or (_check_project(rec["project"])[0]
+                               if rec.get("project") else "")
+            name = rec["name"].strip()
+            obs_in = rec.get("observations") or []
+            ex = ents.get(name)
+            if ex is not None:
+                report["entities_merged"] += 1
+                have = {_norm_obs(o) for o in ex["observations"]}
+                added = []
+                for c in obs_in:
+                    k = _norm_obs(c)
+                    if k in have:
+                        continue
+                    have.add(k)
+                    added.append(c)
+                if added:
+                    ex["observations"].extend(added)
+                    ex["updatedAt"] = max(ex.get("updatedAt") or "", ts)
+                    report["observations_added"] += len(added)
+                continue
+            have, obs_list = set(), []
+            for c in obs_in:
+                k = _norm_obs(c)
+                if k in have:
+                    continue
+                have.add(k)
+                obs_list.append(c)
+            etype = _canonical_type(rec.get("entityType"))
+            d = {"name": name,
+                 "title": (rec.get("title") or "").strip() or name,
+                 "entityType": etype,
+                 "tags": list(rec.get("tags") or []),
+                 "observations": obs_list,
+                 "createdAt": (rec.get("createdAt") or "").strip() or ts,
+                 "updatedAt": (rec.get("updatedAt") or "").strip()
+                              or (rec.get("createdAt") or "").strip() or ts}
+            status, _ = _check_status(rec.get("status"), etype)
+            if status and etype in _STATUS_BY_TYPE:
+                d["status"] = status
+            if slug and not name.startswith("project:"):
+                d["project"] = slug
+            ents[name] = d
+            report["entities_new"] += 1
+        for rec in relations_in:
+            key = (rec["from"].strip(), rec["to"].strip(),
+                   rec["relationType"].strip())
+            if key in rel_keys:
+                continue
+            rel_keys.add(key)
+            rels.append({"from": key[0], "to": key[1], "relationType": key[2],
+                         "createdAt": (rec.get("createdAt") or "").strip() or ts})
+            report["relations_new"] += 1
+        changed = bool(report["entities_new"] or report["observations_added"]
+                       or report["relations_new"])
+        if not dry_run and changed:
+            _save(ents, rels)
+    _event("import_entities",
+           detail=f"n={report['entities_new'] + report['entities_merged']} "
+                  f"dry_run={dry_run}", project=project)
+    return report
+
+
+@mcp.custom_route("/api/import", methods=["POST"])
+async def api_import(request: Request):
+    """Импорт NDJSON формата /api/export: {"ndjson": str, "project"?, "dry_run"}.
+    dry_run=true (default!) — только отчёт {entities_new, entities_merged,
+    observations_added, relations_new, skipped_invalid[], errors[]}; apply —
+    merge по name с дедупом (см. op_import_ndjson). Тело ≤1MB (как ingest),
+    Bearer — middleware TokenAuth. В MCP не добавляется (REST достаточно)."""
+    ro = _readonly_guard()
+    if ro:
+        return JSONResponse(ro, status_code=403)
+    blocked = _write_block()
+    if blocked:
+        return JSONResponse(blocked, status_code=402)
+    raw, rerr = await _read_capped(request, INGEST_MAX_BODY)
+    if rerr is not None:
+        return JSONResponse({"error": f"payload too large (≤{INGEST_MAX_BODY} bytes)"},
+                            status_code=413)
+    try:
+        body = json.loads(raw)
+    except Exception:
+        return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "expected JSON object"}, status_code=400)
+    ndjson = body.get("ndjson")
+    if not isinstance(ndjson, str):
+        return JSONResponse({"error": "ndjson must be a string"}, status_code=400)
+    slug, err = _check_project(body.get("project"))
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    dry_run = body.get("dry_run", True)
+    if not isinstance(dry_run, bool):
+        return JSONResponse({"error": "dry_run must be a boolean"}, status_code=400)
+    return JSONResponse(op_import_ndjson(ndjson, slug, dry_run))
 
 
 @mcp.custom_route("/api/search", methods=["GET"])
