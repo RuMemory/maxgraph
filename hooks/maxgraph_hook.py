@@ -12,6 +12,10 @@ stdin: JSON события хука (формат Claude Code / DSH dsh-hooks-cl
 (~/.maxgraph/spool.jsonl) → попытка POST всего накопленного батчами по 100 на
 $MG_SERVER/api/ingest (Bearer $MG_TOKEN, таймаут 3с).
 
+Режим `--git-post-commit` (ставится как .git/hooks/post-commit в репозитории
+пользователя): stdin не читается; `git log -1` → событие GitCommit
+{sha, subject, branch} → тот же путь spool → flush.
+
 Fail-open (референс: claude-mem — transport errors → exit 0, хук никогда не
 блокирует хоста): любая ошибка сети/HTTP≠200 → события молча остаются в spool и
 доставятся при следующем запуске; скрипт ВСЕГДА завершается кодом 0.
@@ -552,6 +556,40 @@ def _preapprove(payload: dict) -> None:
                        permissionDecisionReason="maxgraph read-only")
 
 
+def _git_post_commit() -> None:
+    """Режим .git/hooks/post-commit: git log -1 → GitCommit → spool → flush.
+    Всё в одном try: post-commit не должен ломать git."""
+    try:
+        cwd = os.getcwd()
+        out = _run_git(["git", "-C", cwd, "log", "-1", "--format=%H%n%s%n%D"])
+        lines = out.splitlines()
+        if not lines or not lines[0]:
+            return
+        refs = lines[2] if len(lines) > 2 else ""
+        # detached HEAD: %D даёт «HEAD» без стрелки.
+        # shortcut: ветка с запятой в имени обрежется — git её допускает,
+        # апгрейд — парсить %D по разделителю «, »
+        m = re.search(r"HEAD -> ([^,]+)", refs)
+        ev = {"hook": "GitCommit", "project": detect_project(cwd), "ts": _now(),
+              "data": {"sha": _cut(lines[0], 100),
+                       "subject": _cut(lines[1] if len(lines) > 1 else "",
+                                       FIELD_MAX),
+                       "branch": _cut(m.group(1).strip() if m else "", 200)}}
+        try:
+            append_spool(ev)
+        except Exception:
+            # как в main: нет записи на ФС — прямая отправка без персистентности
+            try:
+                srv, tok = _env("MG_SERVER").rstrip("/"), _env("MG_TOKEN")
+                if srv and tok:
+                    _http_post(f"{srv}/api/ingest", tok, {"events": [ev]}, TIMEOUT)
+            except Exception:
+                pass
+        flush()
+    except Exception:
+        pass
+
+
 # ------------------------------------------------------------------ main -----
 
 def main(stdin=None, argv=None) -> int:
@@ -568,6 +606,9 @@ def main(stdin=None, argv=None) -> int:
             i = args.index("--host")
             if i + 1 < len(args):
                 os.environ["MG_HOST"] = args[i + 1]
+        if "--git-post-commit" in args:
+            _git_post_commit()
+            return 0
         src = stdin if stdin is not None else sys.stdin
         _reconfigure_stdout(src)  # до чтения: переключаем именно тот поток
         raw = _read_stdin(src)

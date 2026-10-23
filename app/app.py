@@ -58,7 +58,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -695,13 +695,30 @@ def _check_status(value, etype: str) -> tuple[str, str]:
 
 # ------------------------------------------------------------- graph ops ----
 
+def _obs_text(o) -> str:
+    """Текст наблюдения: строка → как есть; объект {text, source} (1.6.0) → text."""
+    if isinstance(o, dict):
+        # файл шарда — граница доверия: руками подпорченный dict без text
+        # не должен ронять все read-пути
+        t = o.get("text")
+        return t if isinstance(t, str) else ""
+    return str(o)
+
+
+def _obs_source(o):
+    """Структурный источник наблюдения {kind, ref} (1.6.0) или None."""
+    src = o.get("source") if isinstance(o, dict) else None
+    return src if isinstance(src, dict) else None
+
+
 def _norm_obs(s) -> str:
     """Ключ дедупликации фактов (эпик «устойчивость к компактизации», слой 2):
     регистр, повторные пробелы и краевая пунктуация не делают факт новым.
-    Хранится оригинал строки — ключ нужен только для сравнения. Строка из одной
+    Хранится оригинал — ключ нужен только для сравнения (по тексту: _obs_text,
+    источник объекта в дедупе не участвует). Строка из одной
     пунктуации нормализуется в пустую → fallback на оригинал."""
-    r = " ".join(str(s).casefold().split()).strip(" .,;:!?…")
-    return r or str(s).strip()
+    r = " ".join(_obs_text(s).casefold().split()).strip(" .,;:!?…")
+    return r or _obs_text(s).strip()
 
 
 # --- инвалидация устаревших фактов --------
@@ -714,18 +731,20 @@ _INVALIDATED_RE = re.compile(r"^\[~[0-9]{4}-[0-9]{2}-[0-9]{2}\]\s*")
 
 
 def _is_invalidated(obs) -> bool:
-    s = str(obs)
+    s = _obs_text(obs)
     return s.startswith("[~") and bool(_INVALIDATED_RE.match(s))  # fast-path
 
 
-def _strip_marker_on_write(text):
+def _strip_marker_on_write(obs):
     """Входящий факт с маркером [~дата] → маркер срезаем
     (иначе запись рождается невидимой для search/session_start — копипаст из
-    read_graph при ре-прайме). → (текст, был_маркер)."""
-    s = str(text)
+    read_graph при ре-прайме). Объект {text, source} срезается внутри text,
+    source сохраняется. → (значение, был_маркер)."""
+    s = _obs_text(obs)
     if _is_invalidated(s):
-        return _INVALIDATED_RE.sub("", s, count=1), True
-    return s, False
+        s = _INVALIDATED_RE.sub("", s, count=1)
+        return ({**obs, "text": s} if isinstance(obs, dict) else s), True
+    return obs, False
 
 
 def _valid_obs(e: dict) -> list:
@@ -733,23 +752,36 @@ def _valid_obs(e: dict) -> list:
     return [o for o in e.get("observations", []) if not _is_invalidated(o)]
 
 
-def _mark_observation(obs: str, today: str) -> str:
-    """Поставить маркер инвалидации (идемпотентно: уже помеченная — как есть)."""
-    return obs if _is_invalidated(obs) else f"[~{today}] {obs}"
+def _mark_observation(obs, today: str):
+    """Поставить маркер инвалидации (идемпотентно: уже помеченная — как есть).
+    Объект с source (1.6.0): маркер ставится в поле text, source сохраняется."""
+    if _is_invalidated(obs):
+        return obs
+    if isinstance(obs, dict):
+        return {**obs, "text": f"[~{today}] {_obs_text(obs)}"}
+    return f"[~{today}] {_obs_text(obs)}"
 
 
 # --- forget по id ---------------------------------------------------
 # Стабильный id наблюдения — sha256 текста КАК ХРАНИТСЯ (с [~дата]-маркером,
 # если он есть) — вычисляемый, НЕ хранимый: старые записи работают сразу, а
 # «что видишь в выдаче with_ids, то и удаляешь» (delete_observations_by_id).
+# Объект {text, source}: id от text — тот же факт строкой имеет тот же id.
 
-def _obs_id(text) -> str:
-    return hashlib.sha256(str(text).encode("utf-8")).hexdigest()[:12]
+def _obs_id(obs) -> str:
+    return hashlib.sha256(_obs_text(obs).encode("utf-8")).hexdigest()[:12]
 
 
 def _obs_with_ids(obs_list) -> list:
-    """Наблюдения как объекты {id, text} — формат выдачи with_ids=True."""
-    return [{"id": _obs_id(o), "text": o} for o in obs_list]
+    """Наблюдения как объекты {id, text, source?} — формат выдачи with_ids=True."""
+    out = []
+    for o in obs_list:
+        d = {"id": _obs_id(o), "text": _obs_text(o)}
+        src = _obs_source(o)
+        if src:
+            d["source"] = src
+        out.append(d)
+    return out
 
 
 
@@ -964,7 +996,7 @@ def op_create_entities(items, project: str = "", source: str = ""):
     touched = [e["name"] for e in created]
     # similar — по ФАКТАМ новой сущности (name/title — идентификаторы, в
     # containment не участвуют, иначе размывают сходство)
-    new_texts = [" ".join(str(o) for o in e.get("observations", []))
+    new_texts = [" ".join(_obs_text(o) for o in e.get("observations", []))
                  for e in created[:_HINT_TEXTS_MAX]]
     hints = _quality_hints(ents, rels, touched, new_texts, project)
     if hints:
@@ -1059,8 +1091,11 @@ def _similar_hints(new_texts, ents, project, self_names) -> list:
         for n, e in ents.items():
             if n in self_names or (project and not _in_project(e, project)):
                 continue
-            if any(_is_invalidated(o) for o in e.get("observations", [])):
-                e = dict(e, observations=_valid_obs(e))
+            obs = e.get("observations", [])
+            if any(_is_invalidated(o) or not isinstance(o, str) for o in obs):
+                # searchrank работает со строками — source-объекты → текст
+                e = dict(e, observations=[_obs_text(o) for o in obs
+                                          if not _is_invalidated(o)])
             scope.append((n, e))
         out = []
         for text in texts:
@@ -1207,12 +1242,15 @@ def op_update_entity(item, project: str = "", source: str = ""):
                 continue
             idx = next((i for i, o in enumerate(e["observations"])
                         if _is_invalidated(o)
-                        and (o == s or o.strip() == s
-                             or _INVALIDATED_RE.sub("", o, count=1).strip() == s)), None)
+                        and (_obs_text(o) == s or _obs_text(o).strip() == s
+                             or _INVALIDATED_RE.sub("", _obs_text(o), count=1).strip() == s)), None)
             if idx is None:
                 restore_nf.append(s)
                 continue
-            e["observations"][idx] = _INVALIDATED_RE.sub("", e["observations"][idx], count=1)
+            o = e["observations"][idx]
+            unmarked = _INVALIDATED_RE.sub("", _obs_text(o), count=1)
+            e["observations"][idx] = ({**o, "text": unmarked}
+                                      if isinstance(o, dict) else unmarked)
             restored.append(e["observations"][idx])
         e["updatedAt"] = now_iso()
         _save(ents, rels)
@@ -1250,6 +1288,52 @@ def op_create_relations(items, project: str = ""):
         return out
 
 
+# --- поле source наблюдения (1.6.0, recall-pack) ---
+# Наблюдение — строка или {"text": str, "source": {"kind", "ref"}}. Валидация
+# fail-closed на границе (доверенный MCP/REST-клиент): невалидный source —
+# ошибка с индексом элемента, ничего не пишется.
+_SOURCE_KINDS = ("commit", "file", "url", "issue")
+_SOURCE_REF_URL_RE = re.compile(r"^https?://")
+_SOURCE_REF_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+
+
+def _check_source(src) -> str:
+    """→ "" | текст ошибки для source {"kind", "ref"}."""
+    if not isinstance(src, dict):
+        return "source must be an object {kind, ref}"
+    kind = src.get("kind")
+    if kind not in _SOURCE_KINDS:
+        return f"source.kind must be one of {'|'.join(_SOURCE_KINDS)}"
+    ref = src.get("ref")
+    if not isinstance(ref, str) or not ref.strip():
+        return "source.ref must be a non-empty string"
+    ref = ref.strip()
+    if kind == "url" and not _SOURCE_REF_URL_RE.match(ref):
+        return "source.ref for kind=url must start with http(s)://"
+    if kind == "commit" and not _SOURCE_REF_COMMIT_RE.fullmatch(ref):
+        return "source.ref for kind=commit must be a hex sha (7-40 chars)"
+    if kind in ("file", "issue") and len(ref) > 500:
+        return "source.ref must be ≤500 chars"
+    if kind == "url" and len(ref) > 2048:
+        return "source.ref for kind=url must be ≤2048 chars"
+    return ""
+
+
+def _check_obs_content(c) -> str:
+    """Элемент contents (строка | {text, source}) → "" | текст ошибки."""
+    if isinstance(c, str):
+        return ""
+    if not isinstance(c, dict):
+        return "must be a string or {text, source}"
+    if set(c) - {"text", "source"}:
+        return "unknown keys (allowed: text, source)"
+    if not isinstance(c.get("text"), str) or not c["text"].strip():
+        return "text must be a non-empty string"
+    if "source" in c:
+        return _check_source(c["source"])
+    return ""
+
+
 def op_add_observations(items, project: str = ""):
     """project: сущность адресуема только внутри своего проекта — чужая
     сущность с тем же именем считается ненайденной (имена глобально уникальны).
@@ -1258,16 +1342,27 @@ def op_add_observations(items, project: str = ""):
 
     item["supersedes"] — список УСТАРЕВШИХ строк этой же сущности:
     каждая помечается маркером [~YYYY-MM-DD] и остаётся в данных (археология;
-    удаление — delete_observations всегда). Совпадение — точное по сырой
-    строке; уже помеченная — идемпотентный пропуск; ненайденные — в
-    supersedesNotFound ответа (молча не теряем)."""
+    удаление — delete_observations всегда). Совпадение — точное по тексту
+    (для объектов {text, source} — по полю text, маркер ставится в text);
+    уже помеченная — идемпотентный пропуск; ненайденные — в
+    supersedesNotFound ответа (молча не теряем).
+
+    contents (1.6.0): элемент — строка или {"text", "source": {kind, ref}}
+    (kind ∈ commit|file|url|issue). Невалидный элемент — ValueError с индексом
+    (fail-closed, граница доверия MCP/REST); REST маппит в 400."""
     today = now_iso()[:10]
     with _lock:
         ents, rels = _load()
         results, errors = [], []
         ts = now_iso()
-        for item in items:
+        for item_i, item in enumerate(items):
             name, contents = item["entityName"], item.get("contents", [])
+            if not isinstance(contents, list):
+                raise ValueError(f"observations[{item_i}].contents must be an array")
+            for ci, c in enumerate(contents):
+                cerr = _check_obs_content(c)
+                if cerr:
+                    raise ValueError(f"observations[{item_i}].contents[{ci}]: {cerr}")
             if name not in ents or (project and not _in_project(ents[name], project)):
                 suffix = f" in project '{project}'" if project else ""
                 errors.append(f"Entity '{name}' not found{suffix}")
@@ -1292,10 +1387,11 @@ def op_add_observations(items, project: str = ""):
                 if not s:
                     continue
                 idx = next((i for i, o in enumerate(obs_list)
-                            if o == s or str(o).strip() == s), None)
+                            if _obs_text(o) == s or _obs_text(o).strip() == s), None)
                 if idx is None:
                     # уже помечена ранее? (ищем по тексту без маркера) → идемпотентно
-                    if any(_is_invalidated(o) and _INVALIDATED_RE.sub("", o, count=1).strip() == s
+                    if any(_is_invalidated(o)
+                           and _INVALIDATED_RE.sub("", _obs_text(o), count=1).strip() == s
                            for o in obs_list):
                         continue
                     sup_nf.append(s)
@@ -1313,6 +1409,13 @@ def op_add_observations(items, project: str = ""):
             for c in contents:
                 c, was_marked = _strip_marker_on_write(c)
                 stripped += 1 if was_marked else 0
+                if isinstance(c, dict):
+                    # храним нормализованное: валидация резала пробелы,
+                    # исходник с краевыми пробелами в данных не нужен
+                    c = {**c, "text": c["text"].strip()}
+                    if "source" in c:
+                        c = {**c, "source": {**c["source"],
+                                             "ref": c["source"]["ref"].strip()}}
                 k = _norm_obs(c)
                 if k in have:
                     continue
@@ -1332,7 +1435,7 @@ def op_add_observations(items, project: str = ""):
                                 "записывать нечего (поле фактов называется contents)")
             results.append(r)
             for c in added:
-                _event("add_observation", name, c[:120],
+                _event("add_observation", name, _obs_text(c)[:120],
                        project=project or (ents[name].get("project") or ""))
         if results:
             _save(ents, rels)
@@ -1341,7 +1444,7 @@ def op_add_observations(items, project: str = ""):
             out["errors"] = errors
         _reprime_tick(project, out)
         touched = [r["entityName"] for r in results]
-        new_texts = [c for r in results for c in r["addedObservations"]]
+        new_texts = [_obs_text(c) for r in results for c in r["addedObservations"]]
     # подсказки ПОСЛЕ записи, вне лока (embed = HTTP); только совет
     hints = _quality_hints(ents, rels, touched, new_texts, project)
     if hints:
@@ -1406,7 +1509,9 @@ def op_delete_observations(items, project: str = ""):
                 continue
             drop = set(item.get("observations", []))
             before = len(ents[name]["observations"])
-            ents[name]["observations"] = [o for o in ents[name]["observations"] if o not in drop]
+            # объекты с source удаляются по тексту (1.6.0)
+            ents[name]["observations"] = [o for o in ents[name]["observations"]
+                                          if _obs_text(o) not in drop]
             removed += before - len(ents[name]["observations"])
             if before != len(ents[name]["observations"]):
                 ents[name]["updatedAt"] = now_iso()
@@ -1480,10 +1585,17 @@ def op_delete_relations(items, project: str = ""):
         return out
 
 
-def op_read_graph(project: str = "", all_projects: bool = False):
+def op_read_graph(project: str = "", all_projects: bool = False, raw_obs: bool = False):
     with _lock:
         ents, rels = _load()
     es, rs = _filter_graph(ents, rels, project, all_projects)
+    # объекты с source (1.6.0) отдаются текстом; источник — с with_ids=true
+    # у search_nodes/open_nodes; raw_obs=True (REST /api/graph — дашборд
+    # рендерит source-чипы) сохраняет объекты как есть
+    if not raw_obs:
+        es = [dict(e, observations=[_obs_text(o) for o in e.get("observations", [])])
+              if any(not isinstance(o, str) for o in e.get("observations", []))
+              else e for e in es]
     return {"entities": es, "relations": rs}
 
 
@@ -1579,14 +1691,151 @@ def _prf_expand(query_str, corpus, cos_fn, vtop_fn):
     return query_str + " " + " ".join(extra) if extra else query_str
 
 
+# --- temporal-фильтры поиска (1.6.0, recall-pack) ---
+# У наблюдений своих timestamp нет — фильтр entity-level по createdAt/updatedAt.
+# Формат дат хранилища фиксирован (now_iso, UTC) → сравнение строкового
+# префикса YYYY-MM-DD корректно; «to» — конец дня включительно.
+
+def _check_date(value) -> str:
+    """Граница даты YYYY-MM-DD → строка | "" (мусор и невалидные даты молча
+    игнорируются — фильтр best-effort, не 400)."""
+    s = str(value or "").strip()
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", s):
+        return ""
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+    except ValueError:
+        return ""
+    return s
+
+
+def _date_in(iso, dfrom: str, dto: str) -> bool:
+    """createdAt/updatedAt ∈ [dfrom, dto] по префиксу даты; пустые границы не
+    ограничивают. Сущность без даты (легаси) в датированный диапазон не
+    попадает — «когда» у неё неизвестно."""
+    if not dfrom and not dto:
+        return True
+    d = str(iso or "")[:10]
+    return bool(d) and (not dfrom or d >= dfrom) and (not dto or d <= dto)
+
+
+# поле по умолчанию — updatedAt («когда трогали»); слова создания → createdAt
+_TEMPORAL_CREATED_RE = re.compile(
+    r"создан\w*|создал\w*|добавлен\w*|добавил\w*|\bcreated\b|\badded\b",
+    re.IGNORECASE)
+# стемы месяцев RU (первые 3 буквы; «мае/май/мая/маю» целиком) и EN → номер
+_MONTHS3 = {"янв": 1, "фев": 2, "мар": 3, "апр": 4, "мае": 5, "май": 5,
+            "мая": 5, "маю": 5, "июн": 6, "июл": 7, "авг": 8, "сен": 9,
+            "окт": 10, "ноя": 11, "дек": 12, "jan": 1, "feb": 2, "mar": 3,
+            "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9,
+            "oct": 10, "nov": 11, "dec": 12}
+# «в <месяц> [год]» / «in <month> [year]»; формы — полные слова (не стемы,
+# иначе «в маршруте» совпадало бы с мартом)
+_TEMPORAL_MONTH_RE = re.compile(
+    r"\b(?:в|in)\s+(январ[ьяею]|феврал[ьяею]|март[аеу]?|апрел[ьяею]|ма[йяею]|"
+    r"июн[ьяею]|июл[ьяею]|август[аеу]?|сентябр[ьяею]|октябр[ьяею]|ноябр[ьяею]|"
+    r"декабр[ьяею]|january|jan|february|feb|march|mar|april|apr|may|june|jun|"
+    r"july|jul|august|aug|september|sept|sep|october|oct|november|nov|"
+    r"december|dec)\b(?:\s+(\d{4}))?", re.IGNORECASE)
+
+
+def _months_ago(d, n: int):
+    """Дата d минус n календарных месяцев (день клэмпится по длине месяца)."""
+    m = d.month - n
+    y = d.year + (m - 1) // 12
+    m = (m - 1) % 12 + 1
+    last = (date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1)).day
+    return date(y, m, min(d.day, last))
+
+
+def _parse_temporal(query, now=None):
+    """Временна́я фраза RU/EN в запросе → (field, from_iso, to_iso,
+    cleaned_query, phrase) | None (нераспознанное не трогаем, мусор и дикие
+    числа не ломают — fail-open).
+
+    Покрытие: сегодня/today, вчера/yesterday, на этой/прошлой неделе, this/last
+    week, в этом/прошлом месяце, this/last month, за последние N дней|недель|
+    месяцев, last N days|weeks|months, «в <месяц> [год]» / in <month> [year].
+    field — updatedAt по умолчанию; «создан/добавлен/created/added» → createdAt.
+    Диапазоны — даты ISO; «месяц без года» про прошедший месяц → прошлый год."""
+    q = str(query or "")
+    if not q.strip():
+        return None
+    now = now or datetime.now(timezone.utc)
+    today = now.date()
+    field = "createdAt" if _TEMPORAL_CREATED_RE.search(q) else "updatedAt"
+
+    def hit(span, dfrom, dto):
+        cleaned = re.sub(r"\s+", " ", q[:span[0]] + " " + q[span[1]:]).strip()
+        return (field, dfrom.isoformat(), dto.isoformat(), cleaned,
+                q[span[0]:span[1]])
+
+    try:
+        m = re.search(r"\b(?:сегодня|today)\b", q, re.IGNORECASE)
+        if m:
+            return hit(m.span(), today, today)
+        m = re.search(r"\b(?:вчера|yesterday)\b", q, re.IGNORECASE)
+        if m:
+            d = today - timedelta(days=1)
+            return hit(m.span(), d, d)
+        m = re.search(r"на\s+этой\s+неделе|\bthis\s+week\b", q, re.IGNORECASE)
+        if m:
+            return hit(m.span(), today - timedelta(days=today.weekday()), today)
+        m = re.search(r"на\s+прошлой\s+неделе|\blast\s+week\b", q, re.IGNORECASE)
+        if m:
+            mon = today - timedelta(days=today.weekday() + 7)
+            return hit(m.span(), mon, mon + timedelta(days=6))
+        m = re.search(r"в\s+этом\s+месяце|\bthis\s+month\b", q, re.IGNORECASE)
+        if m:
+            return hit(m.span(), today.replace(day=1), today)
+        m = re.search(r"в\s+прошлом\s+месяце|\blast\s+month\b", q, re.IGNORECASE)
+        if m:
+            last = today.replace(day=1) - timedelta(days=1)
+            return hit(m.span(), last.replace(day=1), last)
+        m = re.search(r"за\s+последн\w*\s+(\d+)\s+(день|дня|дней|недел\w+|месяц\w*)\b",
+                      q, re.IGNORECASE)
+        if not m:
+            m = re.search(r"\blast\s+(\d+)\s+(days?|weeks?|months?)\b",
+                          q, re.IGNORECASE)
+        if m:
+            n, unit = int(m.group(1)), m.group(2).lower()
+            if unit.startswith(("д", "day")):
+                dfrom = today - timedelta(days=n)
+            elif unit.startswith(("н", "week")):
+                dfrom = today - timedelta(weeks=n)
+            else:
+                dfrom = _months_ago(today, n)
+            return hit(m.span(), dfrom, today)
+        m = _TEMPORAL_MONTH_RE.search(q)
+        if m:
+            month = _MONTHS3[m.group(1).lower()[:3]]
+            year = (int(m.group(2)) if m.group(2)
+                    else now.year - (1 if month > now.month else 0))
+            dfrom = date(year, month, 1)
+            dto = date(year + (month == 12), month % 12 + 1, 1) - timedelta(days=1)
+            return hit(m.span(), dfrom, dto)
+    except (ValueError, OverflowError):  # дикий N/год — фразу игнорируем
+        return None
+    return None
+
+
 def op_search(query, project: str = "", all_projects: bool = False, type_filter: str = "",
-              limit: int = searchrank.DEFAULT_LIMIT, with_ids: bool = False):
+              limit: int = searchrank.DEFAULT_LIMIT, with_ids: bool = False,
+              created_from: str = "", created_to: str = "",
+              updated_from: str = "", updated_to: str = "",
+              raw_obs: bool = False):
     """Поиск. Непустой query — ранжированный FTS-lite (searchrank): BM25-подобный
     скор по полям name×3/title×2/tags×1.5/observations×1 + фразовый бонус + recency ≤10%,
     топ-limit (default 20); у сущностей ответа + score, snippet, highlights (позиции
     совпадений в snippet — без HTML, безопасно для esc()). Ранжирование идёт внутри
-    видимого корпуса: фильтры project/all_projects и type= (после нормализации)
-    комбинируются как фильтры корпуса ДО скоринга.
+    видимого корпуса: фильтры project/all_projects, type= (после нормализации)
+    и даты (ниже) комбинируются как фильтры корпуса ДО скоринга.
+
+    Temporal (1.6.0): created_from/created_to/updated_from/updated_to — даты
+    YYYY-MM-DD (включительно; to = конец дня; невалидные молча игнорируются).
+    Без явных параметров запрос прогоняется через _parse_temporal (RU/EN-фразы;
+    фраза вынимается из FTS-запроса); сработавший парсер → meta.temporal
+    {phrase, from, to, field} в ответе. Явные параметры перебивают парсер.
 
     Опционально: при заданных EMBED_URL+EMBED_KEY — гибрид FTS+косинус
     эмбеддингов (searchrank.rank(vector_weight=HYBRID_VECTOR_WEIGHT, default 0.6);
@@ -1611,10 +1860,26 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
     без поля — выведенный эвристикой _bug_is_open); task — status
     (явный open/done, битое/отсутствующее хранимое значение → "open").
 
-    with_ids: observations сущностей ответа — объекты {id, text}
+    with_ids: observations сущностей ответа — объекты {id, text, source?}
     (id = _obs_id, для delete_observations_by_id); default False — старый
-    формат (список строк), обратная совместимость."""
+    формат (список строк; объекты с source отдаются текстом, источник виден
+    только с with_ids=true)."""
     tf = _canonical_type(type_filter) if str(type_filter or "").strip() else ""
+    query_str = str(query or "")
+    cfrom, cto = _check_date(created_from), _check_date(created_to)
+    ufrom, uto = _check_date(updated_from), _check_date(updated_to)
+    temporal_meta = None
+    if not (cfrom or cto or ufrom or uto):
+        # явные фильтры дат перебивают парсер: фраза в запросе тогда — просто текст
+        parsed = _parse_temporal(query_str)
+        if parsed is not None:
+            field, pfrom, pto, query_str, phrase = parsed
+            if field == "createdAt":
+                cfrom, cto = pfrom, pto
+            else:
+                ufrom, uto = pfrom, pto
+            temporal_meta = {"phrase": phrase, "from": pfrom, "to": pto,
+                             "field": field}
     with _lock:
         ents, rels = _load()
     corpus = list(ents.values())
@@ -1622,24 +1887,27 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
         corpus = [e for e in corpus if _in_project(e, project)]
     if tf:
         corpus = [e for e in corpus if _canonical_type(e.get("entityType")) == tf]
+    if cfrom or cto or ufrom or uto:
+        corpus = [e for e in corpus
+                  if _date_in(e.get("createdAt"), cfrom, cto)
+                  and _date_in(e.get("updatedAt"), ufrom, uto)]
     # инвалидированные ([~дата]) наблюдения исключаются из поиска —
     # ни из скоринга (FTS), ни из сниппета, ни из полей ответа (устаревшая цена
     # не должна всплывать). Полная правда с маркерами — read_graph/open_nodes.
     # Векторная составляющая гибрида — по последнему embed-снимку (маркер
-    # попадёт туда при ближайшем refresh после updatedAt-бампа). Копии только
-    # для затронутых сущностей, один проход.
-    _corpus, _changed = [], False
+    # попадёт туда при ближайшем refresh после updatedAt-бампа).
+    # Поисковый корпус — только текст (searchrank считает по строкам);
+    # исходный вид (объекты с source, 1.6.0) сохраняем для полей ответа.
+    _corpus, orig_obs = [], {}
     for e in corpus:
         obs = e.get("observations", [])
-        if any(_is_invalidated(o) for o in obs):
-            _corpus.append(dict(e, observations=[o for o in obs
-                                                 if not _is_invalidated(o)]))
-            _changed = True
+        if any(_is_invalidated(o) or not isinstance(o, str) for o in obs):
+            orig_obs[e["name"]] = [o for o in obs if not _is_invalidated(o)]
+            _corpus.append(dict(e, observations=[_obs_text(o)
+                                                 for o in orig_obs[e["name"]]]))
         else:
             _corpus.append(e)
-    if _changed:
-        corpus = _corpus
-    query_str = str(query or "")
+    corpus = _corpus
     # FTS-ветка расширяется PRF (векторный топ → стемы title/name — ниже,
     # после _hybrid_search); векторный запрос остаётся исходным.
     expanded_str = query_str
@@ -1707,20 +1975,32 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
             text, highlights = searchrank.snippet(e, qts)
             v["snippet"] = text
             v["highlights"] = highlights
-        if with_ids:  # {id, text} вместо строк (id от текста как хранится)
-            v["observations"] = _obs_with_ids(v.get("observations", []))
+        # исходный вид observations (объекты с source) — из orig_obs, не из
+        # поисковой строковой копии
+        if with_ids:  # {id, text, source?} (id от текста как хранится)
+            v["observations"] = _obs_with_ids(orig_obs.get(e["name"],
+                                                           v.get("observations", [])))
+        elif e["name"] in orig_obs:
+            # raw_obs (REST /api/search → дашборд): объекты с source как есть;
+            # MCP по умолчанию — текст (обратная совместимость)
+            v["observations"] = (list(orig_obs[e["name"]]) if raw_obs
+                                 else [_obs_text(o) for o in orig_obs[e["name"]]])
         out_entities.append(v)
     if query_str.strip():
         # «осмысленное» чтение — top-20 выдачи (ranked и CJK-фоллбек).
         # Пустой query (дамп корпуса) не учитываем — как read_graph, это не
         # сигнал интереса к конкретным фактам (и это O(N) касаний на вызов).
         _touch([e["name"] for e in out_entities[:actr.TOUCH_TOP]])
-    return {"entities": out_entities, "relations": mrels}
+    out = {"entities": out_entities, "relations": mrels}
+    if temporal_meta is not None:
+        out["meta"] = {"temporal": temporal_meta}
+    return out
 
 
 def op_open(names, project: str = "", with_ids: bool = False):
-    """with_ids: observations — объекты {id, text} (id = _obs_id,
-    для delete_observations_by_id); default False — старый формат строк."""
+    """with_ids: observations — объекты {id, text, source?} (id = _obs_id,
+    для delete_observations_by_id); default False — старый формат строк
+    (объекты с source отдаются текстом, 1.6.0)."""
     want = set(names)
     with _lock:
         ents, rels = _load()
@@ -1737,6 +2017,11 @@ def op_open(names, project: str = "", with_ids: bool = False):
     if with_ids:  # копии — хранимый граф не трогаем
         found = [dict(e, observations=_obs_with_ids(e.get("observations", [])))
                  for e in found]
+    else:
+        found = [dict(e, observations=[_obs_text(o)
+                                       for o in e.get("observations", [])])
+                 if any(not isinstance(o, str) for o in e.get("observations", []))
+                 else e for e in found]
     return {"entities": found, "relations": frels}
 
 
@@ -2063,7 +2348,7 @@ def op_session_close(summary: str = "", done=(), links=(), project: str = "",
         changed = False
         if merged:
             e = ents[name]
-            have = set(e["observations"])
+            have = {_obs_text(o) for o in e["observations"]}
             added = [o for o in obs if o not in have]
             if added:
                 e["observations"].extend(added)
@@ -2191,7 +2476,7 @@ def _bug_is_open(e: dict) -> bool:
             return False
     last = ""
     for obs in e.get("observations", []):
-        for m in _BUG_STATUS_WORD.finditer(str(obs)):
+        for m in _BUG_STATUS_WORD.finditer(_obs_text(obs)):
             last = m.group(1).lower()
     if not last:
         return True
@@ -2372,7 +2657,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
         sections.append(("project", header, [notice]))
         sec_names.append([""])  # подсказка — не сущность, обращения нет
     else:
-        plines = [f"- {f}" for f in proj_facts[:_SS_CAP_PROJECT_FACTS]]
+        plines = [f"- {_obs_text(f)}" for f in proj_facts[:_SS_CAP_PROJECT_FACTS]]
         sections.append(("project", header, plines))
         sec_names.append([pname] * len(plines))  # факты — это строки project:<slug>
 
@@ -2388,7 +2673,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
             for obs in obs_valid:
                 if len(dlines) >= _SS_CAP_DECISION_LINES:
                     break
-                dlines.append(prefix + str(obs))
+                dlines.append(prefix + _obs_text(obs))
                 dnames.append(e["name"])
             if len(dlines) >= _SS_CAP_DECISION_LINES:
                 break
@@ -2412,7 +2697,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
             for obs in obs_valid:
                 if len(blines) >= _SS_CAP_BUG_LINES:
                     break
-                blines.append(head + ": " + str(obs))
+                blines.append(head + ": " + _obs_text(obs))
                 bnames.append(e["name"])
             if len(blines) >= _SS_CAP_BUG_LINES:
                 break
@@ -2431,7 +2716,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
             line = _ss_head(e)
             obs_valid = _valid_obs(e)  # первый ВАЛИДНЫЙ факт как note
             if obs_valid:
-                line += ": " + str(obs_valid[0])
+                line += ": " + _obs_text(obs_valid[0])
             tlines.append(line)
             tnames.append(e["name"])
         if tlines:
@@ -2463,7 +2748,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
         slines, snames = [], []
         for e in sessions[:_SS_CAP_SESSIONS]:
             line = _ss_head(e, "name")
-            facts2 = [str(o) for o in _valid_obs(e)[:2]]
+            facts2 = [_obs_text(o) for o in _valid_obs(e)[:2]]
             if facts2:
                 line += ": " + "; ".join(facts2)
             slines.append(line)
@@ -2540,8 +2825,9 @@ class ObservationsIn(BaseModel):
     entityName: str
     # копипаст с create_entities/delete_observations приносит поле observations —
     # принимаем оба имени (в схеме для хостов остаётся contents)
-    contents: list[str] = Field(default_factory=list,
-                                validation_alias=AliasChoices("contents", "observations"))
+    # 1.6.0: элемент — строка или {"text": str, "source": {"kind", "ref"}}
+    contents: list[str | dict] = Field(default_factory=list,
+                                       validation_alias=AliasChoices("contents", "observations"))
     # устаревшие строки этой сущности — пометить [~дата], не удалять
     supersedes: list[str] = Field(default_factory=list)
 
@@ -2690,7 +2976,7 @@ def create_relations(relations: list[RelationIn], project: str = "") -> dict:
 
 @mcp.tool()
 def add_observations(observations: list[ObservationsIn], project: str = "") -> dict:
-    """Add new observations to existing entities. Одно наблюдение = один атомарный факт (с датой, если важно). Пиши СРАЗУ, как узнал, — не в конце разговора. Факт УСТАРЕЛ (цена, версия, решение) — не удаляй и не дублируй: передай старую строку в supersedes того же item (пометится [~дата] и уйдёт из поиска/session_start, оставшись в архиве; вернуть — update_entity(restore=[...]); физически удалить можно всегда — delete_observations). Ненайденные строки — в supersedesNotFound ответа. project: kebab-slug — сущности чужого проекта считаются ненайденными."""
+    """Add new observations to existing entities. Одно наблюдение = один атомарный факт (с датой, если важно). Пиши СРАЗУ, как узнал, — не в конце разговора. Факт УСТАРЕЛ (цена, версия, решение) — не удаляй и не дублируй: передай старую строку в supersedes того же item (пометится [~дата] и уйдёт из поиска/session_start, оставшись в архиве; вернуть — update_entity(restore=[...]); физически удалить можно всегда — delete_observations). Ненайденные строки — в supersedesNotFound ответа. contents: элемент — строка или {"text": "...", "source": {"kind": "commit"|"file"|"url"|"issue", "ref": "..."}} (1.6.0; ref: url → http(s)://…, commit → hex sha 7-40); невалидный source — ошибка с индексом элемента. project: kebab-slug — сущности чужого проекта считаются ненайденными."""
     ro = _readonly_guard()
     if ro:
         return ro
@@ -2774,12 +3060,16 @@ def read_graph(project: str = "", all_projects: bool = False) -> dict:
 
 @mcp.tool()
 def search_nodes(query: str, project: str = "", all_projects: bool = False, type: str = "",
-                 limit: int = 20, with_ids: bool = False) -> dict:
-    """Search for nodes by query. Используй вместо read_graph, когда нужна одна тема, и ПЕРЕД create_entities — чтобы не создать дубликат. project: kebab-slug — искать только в этом проекте; all_projects=true — явный кросс-поиск. type: фильтр по типу после нормализации (канонические: project/session/bug/decision/request/event/task; «bugfix»/«баг» → bug; свободный тип — точное совпадение). Непустой query — ранжированный FTS-lite: сортировка по релевантности, limit — топ-N (default 20), у сущностей ответа + score, snippet, highlights (позиции совпадений в snippet, без HTML); часто и недавно читаемые сущности дополнительно всплывают (ACT-R). Пустой query — все сущности с фильтрами, как раньше. Ответ включает канонический type, а для bug/task — status (open/fixed и open/done). with_ids=true: observations — объекты {id, text} для delete_observations_by_id; default false — старый формат строк."""
+                 limit: int = 20, with_ids: bool = False,
+                 created_from: str = "", created_to: str = "",
+                 updated_from: str = "", updated_to: str = "") -> dict:
+    """Search for nodes by query. Используй вместо read_graph, когда нужна одна тема, и ПЕРЕД create_entities — чтобы не создать дубликат. project: kebab-slug — искать только в этом проекте; all_projects=true — явный кросс-поиск. type: фильтр по типу после нормализации (канонические: project/session/bug/decision/request/event/task; «bugfix»/«баг» → bug; свободный тип — точное совпадение). Непустой query — ранжированный FTS-lite: сортировка по релевантности, limit — топ-N (default 20), у сущностей ответа + score, snippet, highlights (позиции совпадений в snippet, без HTML); часто и недавно читаемые сущности дополнительно всплывают (ACT-R). Пустой query — все сущности с фильтрами, как раньше. Ответ включает канонический type, а для bug/task — status (open/fixed и open/done). with_ids=true: observations — объекты {id, text, source?} для delete_observations_by_id; default false — старый формат строк. Даты (1.6.0): created_from/created_to/updated_from/updated_to (YYYY-MM-DD, включительно) — фильтр сущности по датам до скоринга; без них временны́е фразы в query («на прошлой неделе», «last 3 days») распознаются сами (поле по умолчанию updatedAt; «создан/добавлен/created/added» → createdAt; сработавший парсер → meta.temporal в ответе)."""
     slug, err = _check_project(project)
     if err:
         return {"error": err}
-    return op_search(query, slug, all_projects, type, limit, with_ids=with_ids)
+    return op_search(query, slug, all_projects, type, limit, with_ids=with_ids,
+                     created_from=created_from, created_to=created_to,
+                     updated_from=updated_from, updated_to=updated_to)
 
 
 @mcp.tool()
@@ -2943,7 +3233,8 @@ async def api_graph(request: Request):
     slug, err = _query_project(request)
     if err:
         return JSONResponse({"error": err}, status_code=400)
-    return JSONResponse(op_read_graph(slug, _truthy(request.query_params.get("all_projects"))),
+    return JSONResponse(op_read_graph(slug, _truthy(request.query_params.get("all_projects")),
+                                      raw_obs=True),
                         headers=_NOCACHE)
 
 
@@ -2981,7 +3272,9 @@ async def api_export(request: Request):
 @mcp.custom_route("/api/search", methods=["GET"])
 async def api_search(request: Request):
     """?q= — непустой запрос → ранжированный FTS-lite (score/snippet/highlights,
-    топ-limit, default 20, cap 500); пустой — все сущности с фильтрами, как раньше."""
+    топ-limit, default 20, cap 500); пустой — все сущности с фильтрами, как раньше.
+    1.6.0: created_from/created_to/updated_from/updated_to (YYYY-MM-DD) — фильтр
+    по датам сущности; без них временны́е фразы в q парсятся (meta.temporal)."""
     slug, err = _query_project(request)
     if err:
         return JSONResponse({"error": err}, status_code=400)
@@ -2994,10 +3287,16 @@ async def api_search(request: Request):
     # op_search при включённом embed делает синхронную
     # сеть (embed.query_vector) — в async-хендлере это блокирует весь event loop.
     # Уводим в threadpool, как остальные сетевые вызовы REST-слоя.
+    qp = request.query_params
     return JSONResponse(await asyncio.to_thread(
-        op_search, request.query_params.get("q", ""), slug,
-        _truthy(request.query_params.get("all_projects")),
-        request.query_params.get("type", ""), limit))
+        op_search, qp.get("q", ""), slug,
+        _truthy(qp.get("all_projects")),
+        qp.get("type", ""), limit,
+        created_from=qp.get("created_from", ""),
+        created_to=qp.get("created_to", ""),
+        updated_from=qp.get("updated_from", ""),
+        updated_to=qp.get("updated_to", ""),
+        raw_obs=True))  # дашборд рендерит source-чипы; MCP остаётся текстовым
 
 
 # ---------------------------------------------------- recall -----
@@ -3120,8 +3419,8 @@ def _recall(query: str, slug: str) -> dict:
         score = float(e.get("score") or 0)
         if score < RECALL_MIN_SCORE:
             continue
-        obs = [str(o).strip() for o in e.get("observations", [])
-               if str(o).strip() and not _is_invalidated(o)]
+        obs = [_obs_text(o).strip() for o in e.get("observations", [])
+               if _obs_text(o).strip() and not _is_invalidated(o)]
         if not obs:
             continue
         # лучшие ≤2: больше токенов запроса в тексте → выше; при равенстве —
@@ -3337,7 +3636,10 @@ async def api_observations(request: Request):
             if sup is not None and not isinstance(sup, (list, str)):
                 return JSONResponse({"error": "supersedes must be an array of strings"},
                                     status_code=400)
-    return JSONResponse(op_add_observations(items, slug))
+    try:
+        return JSONResponse(op_add_observations(items, slug))
+    except ValueError as ex:  # невалидный элемент contents/source (1.6.0) — с индексом
+        return JSONResponse({"error": str(ex)}, status_code=400)
 
 
 @mcp.custom_route("/api/relations", methods=["POST"])
@@ -3460,7 +3762,9 @@ async def api_del_relations(request: Request):
 # Идемпотентность:
 # content-hash (SHA256 hook+project+ts+data) — последние 1000 в ingest-hashes.json
 # (ротация), повторная доставка spool'а → {"dedup": n}, без дублей в пульсе.
-HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd")
+HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd",
+               "Release", "Deploy",  # Release/Deploy (1.6.0): CI/деплой-события в пульс
+               "GitCommit")          # GitCommit (1.6.0): post-commit хук репозитория
 INGEST_MAX_EVENTS = 100       # батч до 100 событий
 INGEST_MAX_BODY = 1_000_000   # лимит тела 1MB
 INGEST_RATE_LIMIT = 60        # запросов/мин с IP
@@ -3566,6 +3870,12 @@ def _hook_digest(hook: str, data: dict) -> str:
         text = f"старт сессии ({short(data.get('source'), 60)})"
     elif hook == "SessionEnd":
         text = f"конец сессии ({short(data.get('reason'), 60)})"
+    elif hook in ("Release", "Deploy"):
+        text = f"{short(data.get('version'), 100)} {short(data.get('status'), 100)}".strip()
+    elif hook == "GitCommit":
+        sha = short(data.get("sha"), 40)
+        text = (f"{short(data.get('subject'), 150)} ({sha[:7]})" if sha
+                else short(data.get("subject"), 190)).strip()
     else:  # Stop
         text = "стоп агента"
     return text[:200]
@@ -3575,6 +3885,8 @@ def _hook_digest(hook: str, data: dict) -> str:
 async def api_ingest(request: Request):
     """Приёмник захват-хуков. Bearer — middleware TokenAuth (путь не публичный).
     Тело: {"events": [{"hook","project","ts","data"}, …]} — до 100 событий, ≤1MB.
+    Release/Deploy (1.6.0): data {version?, url?, status?} (опционально, строки
+    ≤300) → пульс hook_Release/hook_Deploy, сущности не создаются.
     SessionEnd: data.open_tasks (список строк) → открытые task-сущности
     проекта (дедуп по title среди открытых). SessionEnd-сессия + open_tasks всего
     батча пишутся ОДНИМ _load/_save.
@@ -3627,6 +3939,22 @@ async def api_ingest(request: Request):
         data = ev.get("data", {})
         if not isinstance(data, dict):
             return JSONResponse({"error": "event.data must be an object"}, status_code=400)
+        if hook in ("Release", "Deploy"):  # CI-события: поля опциональны, но строки ≤300
+            bad = next((k for k in ("version", "url", "status")
+                        if data.get(k) is not None
+                        and (not isinstance(data[k], str) or len(data[k]) > 300)), None)
+            if bad:
+                return JSONResponse(
+                    {"error": f"data.{bad} must be a string ≤300 chars"},
+                    status_code=400)
+        if hook == "GitCommit":  # поля опциональны; капы повторяем — хук уже режет
+            bad = next((k for k, cap in (("sha", 100), ("branch", 300), ("subject", 2000))
+                        if data.get(k) is not None
+                        and (not isinstance(data[k], str) or len(data[k]) > cap)), None)
+            if bad:
+                return JSONResponse(
+                    {"error": f"data.{bad} must be a string within its cap"},
+                    status_code=400)
         norm.append({"hook": hook, "project": slug, "ts": ts, "data": data})
     # идемпотентность: content-hash против последних 1000 + внутри батча
     with _lock:
@@ -3703,7 +4031,8 @@ async def api_ingest(request: Request):
                     marker = "завершена без итогов агента (автозапись страховки)"
                     # F1: дедуп по startswith, не по подстроке — пользовательский
                     # текст с такой подстрокой внутри не подавит/не подделает маркер
-                    if not any(str(o).startswith(marker) for o in sent.get("observations", [])):
+                    if not any(_obs_text(o).startswith(marker)
+                               for o in sent.get("observations", [])):
                         sent.setdefault("observations", []).append(
                             f"{marker}, {now_iso()[:10]}")
                         changed = True

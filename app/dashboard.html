@@ -168,6 +168,11 @@ a:hover{text-decoration:underline}
 .st-open{color:var(--warn);background:rgba(232,185,62,.12)}
 .st-done{color:var(--ok);background:rgba(95,184,122,.12)}
 .ptag{font-family:var(--mono);font-size:9.5px;color:var(--ink-3);background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:1px 6px}
+/* v1.6.0 source-field: чип источника факта. Текст --ink-2, не --ink-3: светлая тема #5A6472/#F6F7F9 = 3.75:1 < AA */
+.src-chip{font-family:var(--mono);font-size:9.5px;color:var(--ink-2);background:var(--bg);border:1px solid var(--border-strong);border-radius:5px;padding:1px 6px;white-space:nowrap;cursor:default}
+a.src-chip{color:var(--accent-ink);cursor:pointer}
+a.src-chip:hover{text-decoration:underline;border-color:var(--border-strong)}
+a.src-chip:focus-visible{outline:2px solid var(--accent-ink);outline-offset:2px}
 /* ═══════════ Хроника ═══════════ */
 .tl-grid{display:grid;grid-template-columns:300px 1fr;gap:20px;align-items:start}
 .sess-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-m);padding:12px 14px;margin-bottom:8px;cursor:pointer;transition:border-color var(--t-fast)}
@@ -689,6 +694,31 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
 /* ═══════════ База ═══════════ */
 const $=s=>document.querySelector(s),$$=s=>document.querySelectorAll(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+/* v1.6.0 source-field: наблюдение = строка ИЛИ {text, source:{kind: commit|file|url|issue, ref}}.
+   shortcut: только url кликабелен, апгрейд — resolve remote проекта → ссылка на коммит. */
+const obsText=o=>typeof o==='string'?o:(o&&typeof o.text==='string'?o.text:'');
+const obsSource=o=>(o&&typeof o==='object'&&o.source&&typeof o.source==='object')?o.source:null;
+/* источник для snippet-ветки поиска: чип того факта, из которого взят сниппет
+   (совпадение по тексту без многоточий), иначе первый факт с источником */
+function snippetSource(e){
+  const obs=(e.observations||[]).filter(o=>obsSource(o));
+  if(!obs.length)return null;
+  const sn=String(e.snippet||'').replace(/^[…\s]+|[…\s]+$/g,'');
+  const hit=obs.find(o=>sn&&obsText(o).includes(sn));
+  return obsSource(hit||obs[0]);
+}
+function srcHtml(src){
+  if(!src)return '';
+  const kind=String(src.kind||''),ref=String(src.ref||'');
+  if(!kind||!ref)return '';
+  if(kind==='url'){
+    if(!/^https?:\/\//i.test(ref))return '';  // security: чужой javascript:/data: из памяти не рендерим ссылкой
+    let host=ref;try{host=new URL(ref).hostname.replace(/^www\./,'');}catch(e){}
+    return ' <a class="src-chip" href="'+esc(ref)+'" target="_blank" rel="noopener noreferrer" title="'+esc(ref)+'">'+esc(host)+'<span aria-hidden="true"> ↗</span></a>';
+  }
+  const label=kind==='commit'?ref.slice(0,7):ref;
+  return ' <span class="src-chip">'+esc(kind)+' '+esc(label)+'</span>';
+}
 const REDUCED=matchMedia('(prefers-reduced-motion: reduce)').matches;
 let TOKEN=localStorage.getItem('rm_token')||'';
 // v0.48.0: вход по ссылке с токеном во фрагменте (http://localhost:8787/app#<токен>).
@@ -1114,7 +1144,7 @@ function renderRecent(){
     return '<div class="rc-card" data-open="'+esc(e.name)+'">'+
       '<span class="rc-type" style="color:'+c+'"><span class="dot" style="background:'+c+'"></span>'+esc(typeLabel(canonType(e.entityType)))+'</span>'+
       '<div class="rc-title">'+esc(e.title||e.name)+'</div>'+
-      '<div class="rc-desc">'+esc((e.observations[0]||'').slice(0,140))+'</div>'+
+      '<div class="rc-desc">'+esc(obsText(e.observations[0]).slice(0,140))+srcHtml(obsSource(e.observations[0]))+'</div>'+
       '<div class="rc-meta"><span>'+e.observations.length+' '+esc(factsN(e.observations.length))+' · '+esc(fmtTs(e.updatedAt))+'</span>'+(projTag(e.project)||'')+'</div></div>';
   }).join('')||'<div class="empty">'+esc(curProject?t('ov.emptyproj'):t('ov.empty'))+'</div>';
 }
@@ -1175,7 +1205,7 @@ document.addEventListener('click',e=>{
   catSel=r.dataset.cat;renderCatList();renderCatDetail(catSel);
 });
 function openInCatalog(name){catSel=name;renderCatList();renderCatDetail(name);switchView('v-catalog');selectNode(null);}
-document.addEventListener('click',e=>{const m=e.target.closest('[data-open]');if(!m)return;e.preventDefault();const n=m.dataset.open;if(!n)return;if(!graph.entities.find(x=>x.name===n))return;openInCatalog(n);});
+document.addEventListener('click',e=>{if(e.target.closest('a.src-chip'))return;const m=e.target.closest('[data-open]');if(!m)return;e.preventDefault();const n=m.dataset.open;if(!n)return;if(!graph.entities.find(x=>x.name===n))return;openInCatalog(n);});
 function renderCatDetail(name){
   const e=graph.entities.find(x=>x.name===name);
   const box=$('#catDetail');
@@ -1188,7 +1218,7 @@ function renderCatDetail(name){
     '<button class="btn danger-ghost sm" id="detDel">'+esc(t('det.delete'))+'</button></div>'+
     '<div class="det-meta"><span>'+esc(t('det.id'))+' '+esc(e.name)+'</span><span>'+esc(t('det.project'))+' '+esc(e.project||'—')+'</span><span>'+esc(t('det.created'))+' '+esc(fmtTs(e.createdAt))+'</span><span>'+esc(t('det.updated'))+' '+esc(fmtTs(e.updatedAt))+'</span></div>'+
     '<div class="sec-label"><span>'+esc(t('ov.obs'))+'</span><span class="line"></span><span class="mono" style="font-size:10px">'+e.observations.length+'</span></div>'+
-    '<div style="display:flex;flex-direction:column;gap:8px">'+e.observations.map((o,i)=>'<div class="fact"><span style="flex:1">'+esc(o)+'</span><button class="x" data-fi="'+i+'" title="×">×</button></div>').join('')+'</div>'+
+    '<div style="display:flex;flex-direction:column;gap:8px">'+e.observations.map((o,i)=>'<div class="fact"><span style="flex:1">'+esc(obsText(o))+srcHtml(obsSource(o))+'</span><button class="x" data-fi="'+i+'" title="×">×</button></div>').join('')+'</div>'+
     (e.observations.length?'':'<div class="empty" style="padding:14px">'+esc(t('ov.nobs'))+'</div>')+
     '<div class="fact-add"><input class="inp" id="factNew" type="text" placeholder="'+esc(t('det.newobs'))+'" autocomplete="off"><button class="btn sm" style="height:36px" id="factAdd">'+esc(t('det.remember'))+'</button></div>'+
     '<div class="sec-label" style="margin-top:26px"><span>'+esc(t('det.rels'))+'</span><span class="line"></span><span class="mono" style="font-size:10px">'+rel.length+'</span></div>'+
@@ -1208,7 +1238,7 @@ function renderCatDetail(name){
   box.querySelectorAll('.rel-row .x').forEach(x=>x.onclick=()=>{const r=rel[+x.dataset.ri];delRelation(r);});
 }
 async function addObs(n){const tx=$('#factNew').value.trim();if(!tx)return;await api('/api/observations',{method:'POST',body:JSON.stringify(withProject({observations:[{entityName:n,contents:[tx]}]}))});toast(t('toast.obsaved'));refresh();}
-async function delObs(n,i){const e=graph.entities.find(x=>x.name===n);if(!e)return;await api('/api/delete/observations',{method:'POST',body:JSON.stringify(withProject({deletions:[{entityName:n,observations:[e.observations[i]]}]}))});toast(t('toast.obdeleted'));refresh();}
+async function delObs(n,i){const e=graph.entities.find(x=>x.name===n);if(!e)return;await api('/api/delete/observations',{method:'POST',body:JSON.stringify(withProject({deletions:[{entityName:n,observations:[obsText(e.observations[i])]}]}))});toast(t('toast.obdeleted'));refresh();}
 async function delEnt(n){if(!confirm(t('det.confirm').replace('%s',n)))return;await api('/api/delete/entities',{method:'POST',body:JSON.stringify(withProject({entityNames:[n]}))});catSel=null;renderCatDetail(null);toast(t('toast.entgone'));refresh();}
 async function delRelation(r){await api('/api/delete/relations',{method:'POST',body:JSON.stringify(withProject({relations:[{from:r.from,to:r.to,relationType:r.relationType}]}))});toast(t('toast.reldel'));refresh();}
 async function updateTitle(n,v){await api('/api/entity/update',{method:'POST',body:JSON.stringify(withProject({name:n,title:v}))});toast(t('toast.title'));refresh();}
@@ -1220,9 +1250,9 @@ function renderTasks(){
   const bugs=graph.entities.filter(e=>canonType(e.entityType)==='bug'&&String(e.status||'open')==='open');
   const done=graph.entities.filter(e=>(canonType(e.entityType)==='task'&&String(e.status)==='done')||(canonType(e.entityType)==='bug'&&String(e.status)==='fixed')).sort((a,b)=>(b.updatedAt||'').localeCompare(a.updatedAt||'')).slice(0,10);
   const card=(e,kind)=>{
-    const note=e.observations[0]||'';
+    const note=obsText(e.observations[0]);
     const btn=kind==='done'?'<button class="task-check" style="cursor:default">✓</button>':(kind==='bug'?'<button class="task-check" data-fix="'+esc(e.name)+'" title="'+esc(t('task.fix'))+'"></button>':'<button class="task-check" data-td="'+esc(e.name)+'"></button>');
-    return '<div class="task-card'+(kind==='done'?' done':'')+'">'+btn+'<div style="flex:1;min-width:0"><div class="task-title">'+esc(e.title||e.name)+'</div>'+(note?'<div class="task-note">'+esc(note)+'</div>':'')+'<div class="task-meta">'+esc(e.name)+' · '+esc(fmtTs(e.updatedAt))+(e.project?' · '+esc(e.project):'')+'</div></div></div>';
+    return '<div class="task-card'+(kind==='done'?' done':'')+'">'+btn+'<div style="flex:1;min-width:0"><div class="task-title">'+esc(e.title||e.name)+'</div>'+(note?'<div class="task-note">'+esc(note)+srcHtml(obsSource(e.observations[0]))+'</div>':'')+'<div class="task-meta">'+esc(e.name)+' · '+esc(fmtTs(e.updatedAt))+(e.project?' · '+esc(e.project):'')+'</div></div></div>';
   };
   $('#colOpen').innerHTML=open.map(e=>card(e,'task')).join('')||'<div class="empty" style="padding:12px">'+esc(t('task.empty'))+'</div>';
   $('#colBug').innerHTML=bugs.map(e=>card(e,'bug')).join('')||'<div class="empty" style="padding:12px">—</div>';
@@ -1257,8 +1287,8 @@ function doSearch(q){
     $('#searchResults').innerHTML=r.entities.map(e=>{
       const badge=typeof e.score==='number'?' <span class="sr-score">'+e.score.toFixed(1)+'</span>':'';
       const body=(typeof e.snippet==='string'&&e.snippet)
-        ?'<div class="sr-snippet">'+markSnippet(e.snippet,e.highlights)+'</div>'
-        :e.observations.slice(0,3).map(o=>'<div class="sr-obs">· '+esc(o.slice(0,160))+'</div>').join('');
+        ?'<div class="sr-snippet">'+markSnippet(e.snippet,e.highlights)+srcHtml(snippetSource(e))+'</div>'
+        :e.observations.slice(0,3).map(o=>'<div class="sr-obs">· '+esc(obsText(o).slice(0,160))+srcHtml(obsSource(o))+'</div>').join('');
       return '<div class="sr-card" data-open="'+esc(e.name)+'"><div class="sr-top"><span class="sr-title">'+esc(e.title||e.name)+'</span><span class="ptag">'+esc(typeLabel(canonType(e.entityType)))+'</span>'+statusBadge(e)+badge+'</div>'+body+'</div>';
     }).join('')||'<div class="empty">'+esc(curProject?t('search.noneproj'):t('search.none'))+'</div>';
   },250);
@@ -1581,7 +1611,7 @@ function fillNodePanel(e){
   const badge=$('#npBadge');badge.textContent=typeLabel(ty);badge.style.color=c;badge.style.borderColor=c;badge.style.backgroundColor=c+'20';
   $('#npTitle').textContent=e.title||e.name;
   $('#npSub').textContent=e.name+' · '+e.observations.length+' '+factsN(e.observations.length);
-  $('#npFacts').innerHTML=e.observations.slice(0,6).map(o=>'<div class="np-fact">'+esc(o)+'</div>').join('')||'<div class="np-fact" style="color:var(--ink-4)">'+esc(t('ov.nobs'))+'</div>';
+  $('#npFacts').innerHTML=e.observations.slice(0,6).map(o=>'<div class="np-fact">'+esc(obsText(o))+srcHtml(obsSource(o))+'</div>').join('')||'<div class="np-fact" style="color:var(--ink-4)">'+esc(t('ov.nobs'))+'</div>';
   const rels=graph.relations.filter(r=>r.from===e.name||r.to===e.name);
   const rc=$('#npRels');rc.innerHTML='';
   rels.slice(0,8).forEach(r=>{

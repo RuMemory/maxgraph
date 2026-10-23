@@ -8,13 +8,13 @@ Base URL: `http://<host>:8787`. Всё, кроме `/healthz`, требует `A
 |---|---|---|
 | `create_entities` | `entities: [{name, entityType?, title?, tags?, observations?}]` | Создать сущности (существующее имя → merge observations) |
 | `create_relations` | `relations: [{from, to, relationType}]` | Создать связи (дубликаты пропускаются) |
-| `add_observations` | `observations: [{entityName, contents[]}]` (с 1.4.8 принимается и `observations[]` вместо `contents[]`) | Добавить факты (дедупликация) |
+| `add_observations` | `observations: [{entityName, contents[]}]` (с 1.4.8 принимается и `observations[]` вместо `contents[]`; с 1.6.0 элемент `contents` — строка ИЛИ `{"text", "source": {"kind": "commit\|file\|url\|issue", "ref"}}`) | Добавить факты (дедупликация) |
 | `delete_entities` | `entityNames: []` | Удалить сущности и их связи |
 | `delete_observations` | `deletions: [{entityName, observations[]}]` | Удалить конкретные факты |
 | `delete_observations_by_id` | `items: [{entity, ids[]}]` | v0.50.0: удалить факты по id (id — из `search_nodes`/`open_nodes` с `with_ids=true`) |
 | `delete_relations` | `relations: [{from, to, relationType}]` | Удалить связи |
 | `read_graph` | — | Весь граф |
-| `search_nodes` | `query`, `limit?` (default 20) | Ранжированный поиск (Ф6): score/snippet/highlights; пустой query — все сущности |
+| `search_nodes` | `query`, `limit?` (default 20), `created_from/to?`, `updated_from/to?` (1.6.0) | Ранжированный поиск (Ф6): score/snippet/highlights; пустой query — все сущности; временны́е фразы RU/EN в query (1.6.0) |
 | `open_nodes` | `names: []` | Открыть сущности по именам + связи между ними |
 | `list_timeline` | `limit?` | Последние события журнала |
 | `update_entity` | `name, title?, entityType?, tags?, status?` | Обновить метаданные сущности; `status` — для bug (`open`/`fixed`) и task (`open`/`done`) |
@@ -27,7 +27,11 @@ Base URL: `http://<host>:8787`. Всё, кроме `/healthz`, требует `A
 
 **Проекты (Ф1)**: все инструменты принимают `project` (kebab-slug, регистр приводится к нижнему; в `session_start` он обязателен, в остальных — опционален). `read_graph`/`search_nodes`/`list_timeline` — ещё и `all_projects: bool` (явный кросс-поиск по всем проектам). Без `project` — плоский граф, поведение как до Ф1.
 
-**`with_ids` (v0.50.0)**: `search_nodes`/`open_nodes` с `with_ids=true` отдают наблюдения как `{"id", "text"}` — id нужен для точечного `delete_observations_by_id`. Без флага — старый формат строк.
+**`with_ids` (v0.50.0)**: `search_nodes`/`open_nodes` с `with_ids=true` отдают наблюдения как `{"id", "text"}` — id нужен для точечного `delete_observations_by_id`. Без флага — старый формат строк. С 1.6.0 у наблюдения с источником в этом режиме добавляется поле `source` (`{"id", "text", "source"}`).
+
+**Поле `source` у наблюдения (v1.6.0)**: факт может нести структурный источник `{"kind": "commit"|"file"|"url"|"issue", "ref": "..."}` (запись — объектом в `contents` `add_observations`/`/api/observations`). Валидация fail-closed: `url` — `^https?://`, `commit` — hex 7–40, `file`/`issue` — непустые ≤500; невалидный элемент отклоняет запрос с индексом (MCP — ошибка, REST — 400). Хранение обратно совместимо: факт без источника остаётся строкой, с источником — объектом `{"text", "source"}`; все чтения (поиск, сниппеты, session_start, дедуп, supersedes, delete) работают по тексту. В дашборде `url` кликабелен, остальные виды — чипы.
+
+**Temporal-запросы (v1.6.0)**: `search_nodes` и `/api/search` принимают явные фильтры `created_from/created_to/updated_from/updated_to` (`YYYY-MM-DD`, включительно, `to` = конец дня UTC). Кроме того, временны́е фразы RU/EN прямо в `query` («вчера», «на прошлой неделе», «за последние 3 дня», «в октябре», "last week", "in October"…) распознаются и превращаются в такой же фильтр (явные параметры перебивают фразу); при срабатывании в ответе `meta.temporal = {"phrase", "from", "to", "field"}`. Фраза «создан/добавлен/created/added» переключает фильтр на `createdAt`, по умолчанию — `updatedAt`. Честное ограничение: даты есть только у сущностей (createdAt/updatedAt), у отдельных наблюдений timestamp нет — фильтрация на уровне сущности; сущности без дат (легаси) в датированный диапазон не попадают. Невалидные даты/фразы игнорируются (fail-open).
 
 **Поиск (Ф6)**: непустой `query` — ранжированный FTS-lite (BM25-подобный скоринг по полям `name ×3 / title ×2 / tags ×1.5 / observations ×1` + фразовый бонус + recency ≤10%, стабильная сортировка score desc → updatedAt desc → name). У сущностей ответа + `score` (>0), `snippet` (лучший фрагмент observation, ≤160 символов), `highlights` — позиции совпадений `[[start, end], …]` внутри snippet (без HTML, безопасно для esc()). `limit` — топ-N (default 20). Фильтры `type=` (после нормализации, Ф3) и `project`/`all_projects` (Ф1) комбинируются — применяются к корпусу до скоринга. Пустой `query` — старое поведение: все сущности с фильтрами, без `score`/`snippet`/`highlights`. Запрос без извлекаемых терминов (пунктуация, CJK) — фоллбек на подстрочный поиск, тоже без FTS-полей.
 
@@ -44,7 +48,7 @@ Base URL: `http://<host>:8787`. Всё, кроме `/healthz`, требует `A
 | `GET /` | Дашборд (HTML) |
 | `GET /healthz` | Healthcheck (без токена) |
 | `GET /api/graph` | Весь граф |
-| `GET /api/search?q=&type=&limit=` | Ранжированный поиск (Ф6): `limit` default 20, cap 500; у сущностей + `score`, `snippet`, `highlights`; с `EMBED_URL`+`EMBED_KEY` — гибрид FTS+косинус (В2.2, blended `score` 0..1) |
+| `GET /api/search?q=&type=&limit=` | Ранжированный поиск (Ф6): `limit` default 20, cap 500; у сущностей + `score`, `snippet`, `highlights`; с `EMBED_URL`+`EMBED_KEY` — гибрид FTS+косинус (В2.2, blended `score` 0..1); 1.6.0: `created_from/to`, `updated_from/to` + временны́е фразы в `q` (см. выше) |
 | `GET /api/timeline?limit=` | События (новые первыми) |
 | `GET /api/stats` | Счётчики, версия, аптайм |
 | `POST /api/entities` | `{"entities":[...]}` |
@@ -52,13 +56,13 @@ Base URL: `http://<host>:8787`. Всё, кроме `/healthz`, требует `A
 | `POST /api/task/add` | В2.1: `{"title","note"?,"project"?}` → task-сущность `task-<slug(title)>` |
 | `POST /api/task/done` | В2.1: `{"name","project"?}` → `status=done` + событие `task_done` |
 | `GET /api/tasks` | В2.1: открытые задачи (status≠`done`, recency-first); `?project=<slug>` — только этот |
-| `POST /api/observations` | `{"observations":[...]}` |
+| `POST /api/observations` | `{"observations":[...]}`; 1.6.0: элемент `contents` — строка или `{"text","source"}` |
 | `POST /api/relations` | `{"relations":[...]}` |
 | `POST /api/delete/entities` | `{"entityNames":[...]}` |
 | `POST /api/delete/observations` | `{"deletions":[...]}` |
 | `POST /api/delete/observations-by-id` | v0.50.0: `{"items":[{"entity","ids":[...]}],"project"?}` — точечное удаление фактов по id (id — из выдачи с `with_ids=true`) |
 | `POST /api/delete/relations` | `{"relations":[...]}` |
-| `POST /api/ingest` | Приёмник захват-хуков (Ф5): `{"events":[{"hook","project"?,"ts","data"}]}` — до 100 событий, тело ≤1MB; идемпотентно по content-hash (повтор → `{"dedup":n}`); `SessionEnd` → сессия дня на проект, `data.open_tasks` (список строк, В2.1) → открытые task-сущности; 400 невалидный батч, 401 без токена, 402 trial expired, 403 READONLY, 413 тело >1MB, 429 rate-limit 60/мин с IP (`Retry-After: 60`, Ф8). Клиент: `hooks/maxgraph_hook.py` (hooks/README.md) |
+| `POST /api/ingest` | Приёмник захват-хуков (Ф5): `{"events":[{"hook","project"?,"ts","data"}]}` — до 100 событий, тело ≤1MB; идемпотентно по content-hash (повтор → `{"dedup":n}`); `SessionEnd` → сессия дня на проект, `data.open_tasks` (список строк, В2.1) → открытые task-сущности; 1.6.0: hook `GitCommit` (data `{sha?,subject?,branch?}` — post-commit хук репозитория) и `Release`/`Deploy` (data `{version?,url?,status?}` — CI/деплой, сниппет в docs/HOOKS.md); 400 невалидный батч, 401 без токена, 402 trial expired, 403 READONLY, 413 тело >1MB, 429 rate-limit 60/мин с IP (`Retry-After: 60`, Ф8). Клиент: `hooks/maxgraph_hook.py` (hooks/README.md) |
 
 **Проекты (Ф1)**: GET-эндпоинты памяти принимают `?project=<slug>` (`/api/graph`, `/api/search`, `/api/timeline`, `/api/stats`, `/api/export`; плюс `all_projects=1` у graph/search/timeline/stats), POST — поле `"project"` в теле. Невалидный slug → 400. Миграция легаси-данных: `deploy/migrate-projects.py --project kimi`.
 

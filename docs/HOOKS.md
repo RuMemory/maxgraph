@@ -236,6 +236,43 @@ command = "python3 ~/.maxgraph/maxgraph_hook.py --host kimi"
 ⚠️ **Урезанный режим**: у Windsurf/Devin нет событий начала/конца сессии —
 захватываются только промпт и ответ; итоги сессии пишет сам агент (`session_close`).
 
+## Git post-commit (v1.6.0): коммиты проекта в пульс памяти
+
+По просьбе пользователя агент ставит в репозиторий проекта хук `.git/hooks/post-commit`:
+
+```bash
+#!/bin/sh
+python3 ~/.maxgraph/maxgraph_hook.py --git-post-commit
+```
+
+(Windows: первая строка не нужна, файл `post-commit` без расширения, команда
+`pythonw "C:\Users\<user>\.maxgraph\maxgraph_hook.py" --git-post-commit`.)
+
+Каждый коммит шлёт в пульс событие `GitCommit` (sha, тема, ветка) — в ленте
+дашборда видно, что происходило в проекте, а session_close связывает сессию
+с реальной работой. Fail-open: любые ошибки не мешают `git commit` (exit 0).
+Чужие репозитории без просьбы пользователя не трогаем.
+
+## CI / деплой-события (v1.6.0)
+
+Сервер принимает события `Release` и `Deploy` в тот же `/api/ingest`. Сниппет
+GitHub Actions (секреты `MG_SERVER`, `MG_TOKEN`):
+
+```yaml
+- name: Pulse to MaxGraph
+  if: success()
+  run: |
+    curl -sS -X POST "$MG_SERVER/api/ingest" \
+      -H "Authorization: Bearer $MG_TOKEN" -H "Content-Type: application/json" \
+      -d '{"events":[{"hook":"Release","project":"my-project","ts":"'"$(date -u +%Y-%m-%dT%H:%M:%S)"'","data":{"version":"${{ github.ref_name }}","url":"${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}"}}]}'
+  env:
+    MG_SERVER: ${{ secrets.MG_SERVER }}
+    MG_TOKEN: ${{ secrets.MG_TOKEN }}
+```
+
+Для деплоя — то же с `"hook":"Deploy"` и `data.status`. События видны в ленте
+дашборда.
+
 ## Хосты без хуков
 
 Cline (только TypeScript-плагины, не конфиг), Continue.dev, ChatGPT (облако) —
