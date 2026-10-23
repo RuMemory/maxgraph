@@ -586,6 +586,55 @@ def _actr_boost_fn():
     return actr.boost_fn(_actr, cfg)
 
 
+# ------------------------------------------------------------- cold (1.9.0) ---
+# Мягкая авто-архивация: cold — ВЫЧИСЛЯЕМЫЙ на чтении статус, из read-путей
+# в шарды ничего не пишется. last_access = ACT-R t (последнее обращение),
+# фолбэк — updatedAt|createdAt (сущность «свежая» при создании). Revive
+# отдельного кода не требует: open_nodes / попадание в выдачу — это уже _touch.
+COLD_AFTER_DAYS_DEFAULT = 90
+
+
+def _cold_after_days() -> int:
+    """COLD_AFTER_DAYS из env: 0 — выкл; пусто/мусор/<0 → default 90.
+    Читается на каждый вызов (как _actr_boost_fn): конфиг без рестарта."""
+    raw = str(os.environ.get("COLD_AFTER_DAYS") or "").strip()
+    if not raw:
+        return COLD_AFTER_DAYS_DEFAULT
+    try:
+        v = int(raw)
+    except ValueError:
+        return COLD_AFTER_DAYS_DEFAULT
+    return v if v >= 0 else COLD_AFTER_DAYS_DEFAULT
+
+
+def _field_ts(entity: dict, field: str) -> float:
+    """entity[field] (ISO) → epoch seconds; битое/пустое → 0.0."""
+    try:
+        dt = datetime.fromisoformat(str(entity.get(field) or ""))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (ValueError, OverflowError, OSError):
+        return 0.0
+
+
+def _is_cold(entity: dict, now: float) -> bool:
+    """cold = сущность не востребована COLD_AFTER_DAYS+ дней (строго больше:
+    ровно на границе — ещё тёплая). Выкл (0) → всегда False; возраст
+    неизвестен (ни обращений, ни валидных дат) → False: не знаем — не прячем.
+    Read-only, O(1)."""
+    days = _cold_after_days()
+    if days <= 0:
+        return False
+    last = _actr.last_ts(entity["name"])
+    if last <= 0:
+        # max: write-path всегда даёт updatedAt ≥ createdAt, поэтому на реальных
+        # данных это ровно updatedAt из спеки; createdAt страхует от ручной
+        # правки файла (updatedAt старше createdAt) — «свежая при создании»
+        last = max(_field_ts(entity, "updatedAt"), _field_ts(entity, "createdAt"))
+    return last > 0 and (now - last) > days * 86400
+
+
 # ------------------------------------------------------------- projects -----
 
 # опциональный слой проектов. slug валидируется на границе
@@ -1863,7 +1912,7 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
               limit: int = searchrank.DEFAULT_LIMIT, with_ids: bool = False,
               created_from: str = "", created_to: str = "",
               updated_from: str = "", updated_to: str = "",
-              raw_obs: bool = False):
+              raw_obs: bool = False, include_cold: bool = False):
     """Поиск. Непустой query — ранжированный FTS-lite (searchrank): BM25-подобный
     скор по полям name×3/title×2/tags×1.5/observations×1 + фразовый бонус + recency ≤10%,
     топ-limit (default 20); у сущностей ответа + score, snippet, highlights (позиции
@@ -1903,7 +1952,11 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
     with_ids: observations сущностей ответа — объекты {id, text, source?}
     (id = _obs_id, для delete_observations_by_id); default False — старый
     формат (список строк; объекты с source отдаются текстом, источник виден
-    только с with_ids=true)."""
+    только с with_ids=true).
+
+    include_cold (1.9.0, default False): cold-сущности (без обращений
+    COLD_AFTER_DAYS+ дней) исключены из корпуса до скоринга; True — вернуть
+    их в выдачу (попавшие в top-20 проходят обычный _touch → revive)."""
     tf = _canonical_type(type_filter) if str(type_filter or "").strip() else ""
     query_str = str(query or "")
     cfrom, cto = _check_date(created_from), _check_date(created_to)
@@ -1931,6 +1984,11 @@ def op_search(query, project: str = "", all_projects: bool = False, type_filter:
         corpus = [e for e in corpus
                   if _date_in(e.get("createdAt"), cfrom, cto)
                   and _date_in(e.get("updatedAt"), ufrom, uto)]
+    if not include_cold:
+        # cold (1.9.0) уходят из корпуса ДО скоринга; include_cold возвращает
+        # их в выдачу — и под обычный _touch top-20 (revive бесплатно)
+        now_ts = time.time()
+        corpus = [e for e in corpus if not _is_cold(e, now_ts)]
     # инвалидированные ([~дата]) наблюдения исключаются из поиска —
     # ни из скоринга (FTS), ни из сниппета, ни из полей ответа (устаревшая цена
     # не должна всплывать). Полная правда с маркерами — read_graph/open_nodes.
@@ -2820,6 +2878,10 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
     (после бюджетной обрезки), учитываются как обращения (_touch). Сессии —
     чистая хронология (свежесть сессии важна сама по себе), секция событий —
     журнал, не чтение фактов сущности: ни буста, ни учёта.
+
+    Cold (1.9.0): сущности без обращений COLD_AFTER_DAYS+ дней (default 90,
+    0=выкл) исключаются из ВСЕХ секций, включая global; meta.cold.skipped —
+    сколько спрятано (ключ есть только при skipped>0).
     """
     try:
         budget = max(0, int(budget_chars))
@@ -2833,7 +2895,13 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
                     if EVENTS_FILE.exists() else [])
         _reprime_writes[project] = 0  # слой 2: свежий прайм — счётчик с нуля
     proj_ent = ents.get(pname)
-    proj_ents = [e for e in ents.values() if (e.get("project") or "") == project]
+    now_ts = time.time()
+    proj_all = [e for e in ents.values() if (e.get("project") or "") == project]
+    # cold (1.9.0): невостребованные COLD_AFTER_DAYS+ дней уходят из всех
+    # секций; проверка «проект пуст» ниже — по proj_all (полностью
+    # cold-проект ≠ новый проект, подсказка create_entities была бы ложной)
+    proj_ents = [e for e in proj_all if not _is_cold(e, now_ts)]
+    cold_skipped = len(proj_all) - len(proj_ents)
     # инвалидированные ([~дата]) строки в контекст не попадают
     proj_facts = _valid_obs(proj_ent) if proj_ent else []
 
@@ -2864,7 +2932,7 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
     sections = []  # (key, header, lines) — только секции с контентом (+ всегда project)
     sec_names = []  # имя сущности каждой строки sections ("" = без сущности)
 
-    if not proj_ents and not proj_facts and not total_events:
+    if not proj_all and not proj_facts and not total_events:
         notice = (f"Проект «{project}» новый или пуст: в памяти по этому slug пока ничего нет. "
                   f'Начни с create_entities(project="{project}") — сущность проекта создастся '
                   "автоматически, факты добавляй через add_observations. Этот блок наполнится "
@@ -2873,6 +2941,11 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
         sections.append(("project", header, [notice]))
         sec_names.append([""])  # подсказка — не сущность, обращения нет
     else:
+        if proj_ent is not None and _is_cold(proj_ent, now_ts):
+            # факты cold project:<slug> не показываем; заголовок — структурный
+            proj_facts = []
+            totals["project"] = 0  # total — по показанному, иначе выглядит как кэп
+            cold_skipped += 1
         plines = [f"- {_obs_text(f)}" for f in proj_facts[:_SS_CAP_PROJECT_FACTS]]
         sections.append(("project", header, plines))
         sec_names.append([pname] * len(plines))  # факты — это строки project:<slug>
@@ -2995,10 +3068,12 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
     # «Прошлые сессии»/«Недавние события» — так порядок жертвования бюджетом
     # выходит events → sessions → global → … (локальный контекст важнее).
     if project != GLOBAL_PROJECT:
-        gdec = _ss_sort_recent(
-            (e for e in ents.values()
-             if (e.get("project") or "") == GLOBAL_PROJECT
-             and e.get("entityType") == "decision"), mult_fn)
+        gdec_all = [e for e in ents.values()
+                    if (e.get("project") or "") == GLOBAL_PROJECT
+                    and e.get("entityType") == "decision"]
+        gdec = _ss_sort_recent((e for e in gdec_all if not _is_cold(e, now_ts)),
+                               mult_fn)
+        cold_skipped += len(gdec_all) - len(gdec)
         glines, gnames, gtotal = [], [], 0
         for e in gdec:
             obs_valid = _valid_obs(e)
@@ -3036,6 +3111,8 @@ def op_session_start(project: str, budget_chars: int = SESSION_START_BUDGET):
         sec_meta[key]["items"] = n
     meta = {"project": project, "budget_chars": budget, "used_chars": len(text),
             "sections": sec_meta, "truncated": truncated}
+    if cold_skipped:
+        meta["cold"] = {"skipped": cold_skipped}  # честность: сколько спрятано
     log.info("session_start: project=%s budget=%d used=%d truncated=%s",
              project, budget, len(text), truncated)
     return {"context_block": text, "meta": meta}
@@ -3307,14 +3384,16 @@ def read_graph(project: str = "", all_projects: bool = False) -> dict:
 def search_nodes(query: str, project: str = "", all_projects: bool = False, type: str = "",
                  limit: int = 20, with_ids: bool = False,
                  created_from: str = "", created_to: str = "",
-                 updated_from: str = "", updated_to: str = "") -> dict:
-    """Search for nodes by query. Используй вместо read_graph, когда нужна одна тема, и ПЕРЕД create_entities — чтобы не создать дубликат. project: kebab-slug — искать только в этом проекте; all_projects=true — явный кросс-поиск. type: фильтр по типу после нормализации (канонические: project/session/bug/decision/request/event/task; «bugfix»/«баг» → bug; свободный тип — точное совпадение). Непустой query — ранжированный FTS-lite: сортировка по релевантности, limit — топ-N (default 20), у сущностей ответа + score, snippet, highlights (позиции совпадений в snippet, без HTML); часто и недавно читаемые сущности дополнительно всплывают (ACT-R). Пустой query — все сущности с фильтрами, как раньше. Ответ включает канонический type, а для bug/task — status (open/fixed и open/done). with_ids=true: observations — объекты {id, text, source?} для delete_observations_by_id; default false — старый формат строк. Даты (1.6.0): created_from/created_to/updated_from/updated_to (YYYY-MM-DD, включительно) — фильтр сущности по датам до скоринга; без них временны́е фразы в query («на прошлой неделе», «last 3 days») распознаются сами (поле по умолчанию updatedAt; «создан/добавлен/created/added» → createdAt; сработавший парсер → meta.temporal в ответе)."""
+                 updated_from: str = "", updated_to: str = "",
+                 include_cold: bool = False) -> dict:
+    """Search for nodes by query. Используй вместо read_graph, когда нужна одна тема, и ПЕРЕД create_entities — чтобы не создать дубликат. project: kebab-slug — искать только в этом проекте; all_projects=true — явный кросс-поиск. type: фильтр по типу после нормализации (канонические: project/session/bug/decision/request/event/task; «bugfix»/«баг» → bug; свободный тип — точное совпадение). Непустой query — ранжированный FTS-lite: сортировка по релевантности, limit — топ-N (default 20), у сущностей ответа + score, snippet, highlights (позиции совпадений в snippet, без HTML); часто и недавно читаемые сущности дополнительно всплывают (ACT-R). Пустой query — все сущности с фильтрами, как раньше. Ответ включает канонический type, а для bug/task — status (open/fixed и open/done). with_ids=true: observations — объекты {id, text, source?} для delete_observations_by_id; default false — старый формат строк. Даты (1.6.0): created_from/created_to/updated_from/updated_to (YYYY-MM-DD, включительно) — фильтр сущности по датам до скоринга; без них временны́е фразы в query («на прошлой неделе», «last 3 days») распознаются сами (поле по умолчанию updatedAt; «создан/добавлен/created/added» → createdAt; сработавший парсер → meta.temporal в ответе). include_cold (1.9.0, default false): cold-сущности (без обращений 90+ дней, env COLD_AFTER_DAYS) скрыты из выдачи; true — вернуть их (обращение делает их снова тёплыми). Точное имя cold-сущности всегда находится через open_nodes."""
     slug, err = _check_project(project)
     if err:
         return {"error": err}
     return op_search(query, slug, all_projects, type, limit, with_ids=with_ids,
                      created_from=created_from, created_to=created_to,
-                     updated_from=updated_from, updated_to=updated_to)
+                     updated_from=updated_from, updated_to=updated_to,
+                     include_cold=include_cold)
 
 
 @mcp.tool()
@@ -3337,7 +3416,7 @@ def list_timeline(limit: int = 50, project: str = "", all_projects: bool = False
 
 @mcp.tool()
 def session_start(project: str = "", budget_chars: int = 10000) -> dict:
-    """ВЫЗЫВАЙ ПЕРВЫМ на старте сессии: бюджетный блок контекста проекта — {context_block, meta}. context_block готов к вставке в промпт: # Проект → ## Решения владельца (decision, дословно) → ## Открытые баги (bug, не закрытые) → ## Открытые задачи (task, status≠done — дела на потом) → ## Глобальная память (decision-сущности спецпроекта global — общие для всех проектов знания; 1.7.0) → ## Прошлые сессии (session, имя + 2 факта) → ## Недавние события. Внутри решений/багов/задач порядок — актуальность: свежесть × частота обращений (ACT-R). Жёсткий бюджет budget_chars (default 10000): блок никогда его не превышает, усечение построчное с маркером «… (ещё N, усечено бюджетом)», флаг meta.truncated. project ОБЯЗАТЕЛЕН (kebab-slug) — без него весь граф намеренно не читается."""
+    """ВЫЗЫВАЙ ПЕРВЫМ на старте сессии: бюджетный блок контекста проекта — {context_block, meta}. context_block готов к вставке в промпт: # Проект → ## Решения владельца (decision, дословно) → ## Открытые баги (bug, не закрытые) → ## Открытые задачи (task, status≠done — дела на потом) → ## Глобальная память (decision-сущности спецпроекта global — общие для всех проектов знания; 1.7.0) → ## Прошлые сессии (session, имя + 2 факта) → ## Недавние события. Внутри решений/багов/задач порядок — актуальность: свежесть × частота обращений (ACT-R). Жёсткий бюджет budget_chars (default 10000): блок никогда его не превышает, усечение построчное с маркером «… (ещё N, усечено бюджетом)», флаг meta.truncated. Cold (1.9.0): сущности без обращений 90+ дней (env COLD_AFTER_DAYS, 0=выкл) скрыты из всех секций, meta.cold.skipped — сколько спрятано; точное имя всегда открывается через open_nodes. project ОБЯЗАТЕЛЕН (kebab-slug) — без него весь граф намеренно не читается."""
     slug, err = _check_project(project)
     if err:
         return {"error": err}
@@ -3731,7 +3810,8 @@ async def api_search(request: Request):
     """?q= — непустой запрос → ранжированный FTS-lite (score/snippet/highlights,
     топ-limit, default 20, cap 500); пустой — все сущности с фильтрами, как раньше.
     1.6.0: created_from/created_to/updated_from/updated_to (YYYY-MM-DD) — фильтр
-    по датам сущности; без них временны́е фразы в q парсятся (meta.temporal)."""
+    по датам сущности; без них временны́е фразы в q парсятся (meta.temporal).
+    1.9.0: ?include_cold=1 — включить cold-сущности (по умолчанию скрыты)."""
     slug, err = _query_project(request)
     if err:
         return JSONResponse({"error": err}, status_code=400)
@@ -3753,7 +3833,8 @@ async def api_search(request: Request):
         created_to=qp.get("created_to", ""),
         updated_from=qp.get("updated_from", ""),
         updated_to=qp.get("updated_to", ""),
-        raw_obs=True))  # дашборд рендерит source-чипы; MCP остаётся текстовым
+        raw_obs=True,  # дашборд рендерит source-чипы; MCP остаётся текстовым
+        include_cold=_truthy(qp.get("include_cold"))))  # 1.9.0: ?include_cold=1
 
 
 # ---------------------------------------------------- recall -----

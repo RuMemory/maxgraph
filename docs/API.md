@@ -14,7 +14,7 @@ Base URL: `http://<host>:8787`. Всё, кроме `/healthz`, требует `A
 | `delete_observations_by_id` | `items: [{entity, ids[]}]` | v0.50.0: удалить факты по id (id — из `search_nodes`/`open_nodes` с `with_ids=true`) |
 | `delete_relations` | `relations: [{from, to, relationType}]` | Удалить связи |
 | `read_graph` | — | Весь граф |
-| `search_nodes` | `query`, `limit?` (default 20), `created_from/to?`, `updated_from/to?` (1.6.0) | Ранжированный поиск (Ф6): score/snippet/highlights; пустой query — все сущности; временны́е фразы RU/EN в query (1.6.0) |
+| `search_nodes` | `query`, `limit?` (default 20), `created_from/to?`, `updated_from/to?` (1.6.0), `include_cold?` (1.9.0) | Ранжированный поиск (Ф6): score/snippet/highlights; пустой query — все сущности; временны́е фразы RU/EN в query (1.6.0); cold-сущности вне выдачи, `include_cold=true` возвращает (1.9.0) |
 | `open_nodes` | `names: []` | Открыть сущности по именам + связи между ними |
 | `list_timeline` | `limit?` | Последние события журнала |
 | `update_entity` | `name, title?, entityType?, tags?, status?` | Обновить метаданные сущности; `status` — для bug (`open`/`fixed`) и task (`open`/`done`) |
@@ -24,6 +24,8 @@ Base URL: `http://<host>:8787`. Всё, кроме `/healthz`, требует `A
 | `task_list` | `project?` | В2.1: открытые задачи (status≠done), recency-first; без `project` — все открытые |
 | `promote_to_global` | `name`, `project?` | 1.7.0: перенести сущность в спецпроект `global` (коллизия имени → merge наблюдений, ответ `{"merged": true}`) |
 | `demote_from_global` | `name`, `project` (обязателен) | 1.7.0: вернуть сущность из `global` в указанный проект |
+
+**Авто-архивация (v1.9.0)**: сущность без обращений дольше `COLD_AFTER_DAYS` (default 90 дней; `0` — выкл) — «холодная»: не попадает в секции `session_start` (в `meta.cold.skipped` видно, сколько спрятано) и в выдачу `search_nodes`/`/api/search` без `include_cold=true`. Cold — вычисляемый статус (последнее обращение из ACT-R `access.json`, фолбэк на `max(updatedAt, createdAt)`; без дат и обращений — «не знаем, не прячем»), схема данных не меняется и ничего не удаляется: `open_nodes` по имени и `read_graph`/`/api/export` всегда отдают всё. Обращение (попадание в выдачу с `include_cold`, `open_nodes`) само делает сущность снова тёплой (ACT-R touch). READONLY-зеркало считает cold по своему `access.json` (ресинк несёт только граф) — «тёплота» на зеркале своя.
 
 **Авто-тайпинг (v1.8.0)**: `create_entities` при отсутствующем или `general` entityType возвращает в ответе `hints.type_suggestion = {"entity", "suggested", "matched_rule"}` — подсказку типа по детерминированным RU/EN-правилам (bug/decision/task/request/session). Подсказка ничего не меняет в данных; агент волен проигнорировать.
 
@@ -56,7 +58,7 @@ Base URL: `http://<host>:8787`. Всё, кроме `/healthz`, требует `A
 | `GET /` | Дашборд (HTML) |
 | `GET /healthz` | Healthcheck (без токена) |
 | `GET /api/graph` | Весь граф |
-| `GET /api/search?q=&type=&limit=` | Ранжированный поиск (Ф6): `limit` default 20, cap 500; у сущностей + `score`, `snippet`, `highlights`; с `EMBED_URL`+`EMBED_KEY` — гибрид FTS+косинус (В2.2, blended `score` 0..1); 1.6.0: `created_from/to`, `updated_from/to` + временны́е фразы в `q` (см. выше) |
+| `GET /api/search?q=&type=&limit=` | Ранжированный поиск (Ф6): `limit` default 20, cap 500; у сущностей + `score`, `snippet`, `highlights`; с `EMBED_URL`+`EMBED_KEY` — гибрид FTS+косинус (В2.2, blended `score` 0..1); 1.6.0: `created_from/to`, `updated_from/to` + временны́е фразы в `q` (см. выше); 1.9.0: `include_cold=1` включает холодные (см. ниже) |
 | `GET /api/timeline?limit=` | События (новые первыми) |
 | `GET /api/stats` | Счётчики, версия, аптайм |
 | `POST /api/entities` | `{"entities":[...]}` |

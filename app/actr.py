@@ -266,6 +266,11 @@ class Store:
             rec = self._data.get(str(name or ""))
             return (0, 0.0) if rec is None else (rec["n"], rec["t"])
 
+    def last_ts(self, name) -> float:
+        """t (epoch последнего обращения) по имени; неизвестное → 0.0.
+        Для _is_cold в app.py (1.9.0): last_access сущности."""
+        return self.get(name)[1]
+
     def clear(self) -> None:
         """Полный сброс (тесты; осознанный «забыть обращения»)."""
         with self._lock:
