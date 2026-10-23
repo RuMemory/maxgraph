@@ -17,7 +17,6 @@
   <img src="https://img.shields.io/badge/license-BSL--1.1-orange" alt="license" />
   <img src="https://img.shields.io/badge/windows%20%C2%B7%20macos%20%C2%B7%20linux-native-38d39f" alt="native" />
   <img src="https://img.shields.io/badge/MCP-streamable--http-ff5bd8" alt="MCP" />
-  <a href="https://aiagentslisting.com/mcp/maxgraph"><img src="https://aiagentslisting.com/maxgraph/badge.svg?claim=0128507fb17c64bdcb4cc6873e9c029f" alt="MaxGraph on AI Agents Listing" height="20" /></a>
 </p>
 
 <p align="center">
