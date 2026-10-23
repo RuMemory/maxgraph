@@ -1153,7 +1153,7 @@ function renderRecent(){
 const ACT_ICON={create_entity:'✦',update_entity:'✎',merge_entity:'⑂',create_relation:'＋',add_observation:'✎',delete_entity:'×',task_done:'✓',task_add:'✦',entity_update:'✎'};
 const ACT_COLOR={create_entity:'#E8A54C',update_entity:'#7DA2E8',merge_entity:'#E8B93E',create_relation:'#5FB87A',add_observation:'#7DA2E8',delete_entity:'#E15A4F',task_done:'#5FB87A',task_add:'#E8B93E'};
 const BILLING_RE=/^(payment|digiseller|dg_|code|trial|cabinet|license)/;
-const evClass=a=>BILLING_RE.test(a||'')?'billing':'memory';
+const evClass=a=>BILLING_RE.test(a||'')?'billing':(a==='hook_PostToolUse'?'tools':'memory');
 let tlEvents=[],pulseFilter=localStorage.getItem('mg_pulse_filter')||'all';
 async function loadTimeline(){try{
   const sess=graph.entities.filter(e=>canonType(e.entityType)==='session').sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
