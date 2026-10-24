@@ -41,6 +41,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 MARK = "maxgraph_hook.py"   # метка наших записей во всех форматах
@@ -549,16 +551,57 @@ def _dsh_bridge_entry(profile_dir: Path) -> Path:
     return profile_dir / "node_modules" / _DSH_HOOKS_PKG / "lib" / "index.js"
 
 
+_EMPTY_NPMRC = None   # путь к пустому npmrc, создаётся лениво один раз
+
+
+def _empty_npmrc() -> str:
+    """Пустой npmrc для --config.userconfig: отрезает ~/.npmrc — scoped-registry
+    (@deepseek-ai:registry=…) из него обходил бы принудительный --registry
+    (security-ревизия 2026-10-24, MED-1: сторож ставит unattended). Файл наш,
+    постоянный (~/.maxgraph/empty.npmrc), перезаписывается пустым при
+    расхождении — не mkstemp: сторож перезагружает модуль каждый прогон,
+    mkstemp копил бы мусор в %TEMP% (r2 LOW-6). pnpm v11: --userconfig как
+    опция add НЕВАЛИДЕН (unknown option → exit 1, ревизия r2 HIGH-1) —
+    только config-dot форма; --globalconfig в v11 отсутствует вовсе."""
+    global _EMPTY_NPMRC
+    if _EMPTY_NPMRC is None:
+        p = _home("~/.maxgraph/empty.npmrc")
+        try:
+            if p.is_symlink():
+                raise OSError("symlink")   # r3 LOW-1: не затирать чужой ~/.npmrc
+            p.parent.mkdir(parents=True, exist_ok=True)
+            if not p.exists() or p.read_text(encoding="utf-8", errors="replace") != "":
+                p.write_text("", encoding="ascii")
+        except OSError:
+            fd, path = tempfile.mkstemp(prefix="mg-empty-", suffix=".npmrc")
+            os.close(fd)
+            p = Path(path)
+        _EMPTY_NPMRC = str(p)
+    return _EMPTY_NPMRC
+
+
+def _child_env() -> dict:
+    """env для дочерних процессов (pnpm/node) БЕЗ MEMORY_TOKEN: connect_hosts
+    ставит токен в os.environ на время регистрации, а сторож может запустить
+    pnpm в этом окне — токен не должен наследоваться (2026-10-24, LOW-4)."""
+    return {k: v for k, v in os.environ.items() if k != "MEMORY_TOKEN"}
+
+
 def _dsh_pnpm_add(node: str, pnpm: str, profile_dir: Path, specs: list) -> tuple:
     """Один вызов pnpm add для списка спек. (ok, хвост ошибки — уже
     санитизированный, для статуса). returncode не доверяем: вызыватель сверяет
     фактические версии/импорт после установки (security-ревизия M3)."""
     try:
+        empty = _empty_npmrc()
         r = subprocess.run([node, pnpm, "add", "--save-exact",
                             "--config.auto-install-peers=false",
                             "--ignore-scripts",
-                            "--registry=https://registry.npmjs.org", *specs],
-                           cwd=str(profile_dir), capture_output=True, timeout=300)
+                            "--registry=https://registry.npmjs.org",
+                            "--config.@deepseek-ai:registry=https://registry.npmjs.org",
+                            f"--config.userconfig={empty}",
+                            *specs],
+                           cwd=str(profile_dir), capture_output=True, timeout=300,
+                           env=_child_env())
     except Exception as ex:
         return (False, f" {type(ex).__name__}")
     if r.returncode == 0:
@@ -585,7 +628,7 @@ def _dsh_import_check(node: str, entry: Path) -> tuple:
               ".catch(e=>{console.error('IMPORT FAIL: '+e.message);process.exit(3)})")
     try:
         r = subprocess.run([node, "--input-type=module", "-e", script],
-                           capture_output=True, timeout=60)
+                           capture_output=True, timeout=60, env=_child_env())
         out = (r.stdout + r.stderr).decode("utf-8", "replace")
     except Exception as ex:
         return (False, "", type(ex).__name__)
@@ -652,22 +695,39 @@ def _dsh_ensure_hook_plugin(profile_dir: Path, dry: bool) -> str:
     2026-10-19 (слои 2-3): замыкание = мост + _DSH_HOOKS_PEERS; дальше —
     import-цикл: недостающий пакет из вывода node → spec (dsh-* пином к
     desktopVersion, прочие range'ом импортёра) → доустановка, максимум
-    _DSH_REPAIR_LIMIT итераций."""
+    2026-10-19 (слои 2-3): замыкание = мост + _DSH_HOOKS_PEERS; дальше —
+    import-цикл: недостающий пакет из вывода node → spec (dsh-* пином к
+    desktopVersion, прочие range'ом импортёра) → доустановка, максимум
+    _DSH_REPAIR_LIMIT итераций.
+    2026-10-24 (ревизия сторожа): LOW-1 — после установки перечитываем
+    runtime.json: версия сменилась в полёте → пин повторяем под новую
+    (до 3 раундов). LOW-2 (свежий runtime.json = апдейт в полёте) живёт
+    в dsh_ensure_all_profiles — только unattended-контур; ручная установка
+    пользователя откладываться не должна."""
     ver, node, pnpm = _dsh_runtime()
     pkgs = (_DSH_HOOKS_PKG, *_DSH_HOOKS_PEERS)
-    specs = [f"{p}@{ver}" if ver else f"{p}@<версия DSH>" for p in pkgs]
-    manual = (f'cd "{profile_dir}" && pnpm add --save-exact '
-              f"--config.auto-install-peers=false --ignore-scripts "
-              f"--registry=https://registry.npmjs.org {' '.join(specs)}")
+
+    def _manual(v: str) -> str:
+        specs = [f"{p}@{v}" if v else f"{p}@<версия DSH>" for p in pkgs]
+        return (f'cd "{profile_dir}" && pnpm add --save-exact '
+                f"--config.auto-install-peers=false --ignore-scripts "
+                f"--registry=https://registry.npmjs.org {' '.join(specs)}")
+
     if dry:
+        specs = [f"{p}@{ver}" if ver else f"{p}@<версия DSH>" for p in pkgs]
         return f"would install {' '.join(specs)} into {profile_dir}"
     if not node or not ver:
         return (f"hooks plugin NOT installed (DSH не вызовет хук) — полностью "
                 f"перезапустите DSH (runtime появится) и повторите: "
-                f"python hooks/register_hook.py --host dsh; либо вручную: {manual}")
-    stale = [p for p in pkgs if _dsh_pkg_version(profile_dir, p) != ver]
+                f"python hooks/register_hook.py --host dsh; либо вручную: "
+                f"{_manual(ver)}")
     was_present = any(_dsh_pkg_version(profile_dir, p) for p in pkgs)
-    if stale:
+    did_pin = False      # менялись основные пины (мост+пиры)
+    did_repair = False   # добивались недостающие пакеты из import-цикла
+    for _pin_round in range(3):   # LOW-1: +раунд, если версия сменилась в полёте
+        stale = [p for p in pkgs if _dsh_pkg_version(profile_dir, p) != ver]
+        if not stale:
+            break
         ok, err = _dsh_pnpm_add(node, pnpm, profile_dir, [f"{p}@{ver}" for p in stale])
         bad = [p for p in stale if _dsh_pkg_version(profile_dir, p) != ver]
         if not ok or bad:
@@ -676,33 +736,84 @@ def _dsh_ensure_hook_plugin(profile_dir: Path, dry: bool) -> str:
             else:
                 got = ", ".join(_dsh_pkg_version(profile_dir, p) or "нет" for p in stale)
                 why = f" (установлено {got} ≠ {ver})"
-            return f"hooks plugin install failed{why} — установите вручную: {manual}"
+            return (f"hooks plugin install failed{why} — установите вручную: "
+                    f"{_manual(ver)}")
+        did_pin = True
+        ver2, node2, pnpm2 = _dsh_runtime()
+        if ver2 and ver2 != ver:
+            ver, node, pnpm = ver2, node2, pnpm2
+            continue
+        break
     # import-проверка — арбитр полноты замыкания: недостающее добиваем циклом
     entry = _dsh_bridge_entry(profile_dir)
     for _ in range(_DSH_REPAIR_LIMIT):
         ok, missing, detail = _dsh_import_check(node, entry)
         if ok:
-            if not stale:
+            if not did_pin and not did_repair:
                 return "hooks plugin present"
-            return "hooks plugin re-pinned" if was_present else "hooks plugin installed"
+            # LOW-2а: работающий DSH держит плагин отключённым до перезапуска
+            if did_pin:
+                msg = ("hooks plugin re-pinned" if was_present
+                       else "hooks plugin installed")
+            else:
+                msg = "hooks plugin repaired"
+            return msg + " (подхватится после полного перезапуска DSH)"
         if not missing:
             return (f"hooks plugin import check failed ({detail}) — "
-                    f"проверьте вручную: {manual}")
+                    f"проверьте вручную: {_manual(ver)}")
         spec = _dsh_peer_spec(profile_dir, missing, detail, ver)
         if not spec:
             return (f"hooks plugin peer {missing!r} не доустановлен (небезопасное "
-                    f"имя или нет range у импортёра) — установите вручную: {manual}")
+                    f"имя или нет range у импортёра) — установите вручную: "
+                    f"{_manual(ver)}")
         ok, err = _dsh_pnpm_add(node, pnpm, profile_dir, [spec])
         if not ok:
             return (f"hooks plugin peer install failed (pnpm{err}) — "
-                    f"установите вручную: {manual}")
+                    f"установите вручную: {_manual(ver)}")
         if not _dsh_pkg_version(profile_dir, missing):
             # LOW-2 (security-ревизия): та же пост-сверка, что у основного
             # замыкания (M3) — returncode pnpm не доказательство установки
             return (f"hooks plugin peer install failed (установленный {missing} "
-                    f"не читается) — установите вручную: {manual}")
+                    f"не читается) — установите вручную: {_manual(ver)}")
+        did_repair = True
     return (f"hooks plugin import still failing после {_DSH_REPAIR_LIMIT} "
-            f"попыток — установите вручную: {manual}")
+            f"попыток — установите вручную: {_manual(ver)}")
+
+
+def dsh_ensure_all_profiles(dry: bool = False) -> list:
+    """Сторож hooks-плагина во всех DSH-профилях: для каждого профиля с нашим
+    hooks-рядом — _dsh_ensure_hook_plugin (re-pin пакета к фактической
+    desktopVersion + import-замыкание). Вызывается треем при старте и раз в
+    сутки (native.start_dsh_hook_watchdog): автообновление DSH (rc.X → rc.Y)
+    молча отключает плагин rc.X по peer-пинам — захват памяти умирал без
+    единой ошибки (инцидент 2026-10-24). При совпадении версий pnpm не
+    вызывается, но import-проверка (node -e import) гоняется на каждый
+    профиль за прогон. Профилей нет → []; сбой одного профиля не роняет
+    остальные. LOW-5 (2026-10-24): «наш ряд» — структурно (_dsh_row_spans +
+    _is_our_hooks_row), не подстрока: упоминание hooks-maxgraph в комментарии
+    или строковом значении не считается регистрацией. LOW-2: свежий
+    runtime.json (<120с) = автообновление DSH в полёте (node_modules может
+    быть в середине подмены) — весь прогон откладываем; ручной контур
+    (apply_host) этим не затронут."""
+    # LOW-2: апдейт DSH в полёте — тяжёлый путь (pnpm) под живым обновлением
+    try:
+        rt = _home(_DSH_PRIMARY_RUNTIME) / "runtime.json"
+        if time.time() - rt.stat().st_mtime < 120:
+            return ["runtime.json свежий (DSH обновляется?) — проверка отложена"]
+    except OSError:
+        pass
+    out = []
+    for p in sorted(glob.glob(str(_home("~/.dsh/profiles/*/cordis.patch.yml")))):
+        try:
+            lines = _read_cfg(Path(p)).splitlines(keepends=True)
+            ours = any(_is_our_hooks_row(lines[s:e])
+                       for s, e, _ind in _dsh_row_spans(lines))
+            if not ours:
+                continue   # профиль без нашего ряда — не наш клиент
+            out.append(f"{p}: " + _dsh_ensure_hook_plugin(Path(p).parent, dry))
+        except Exception as ex:
+            out.append(f"{p}: ERROR {ex}")
+    return out
 
 
 def _mcp_token() -> str:

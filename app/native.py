@@ -810,6 +810,67 @@ def start_host_scan(data_dir=None) -> threading.Thread:
     return t
 
 
+# --------------------------------------- сторож DSH hooks-плагина (re-pin)
+
+_DSH_WATCHDOG_INTERVAL = 86400   # сек; env MG_DSH_WATCHDOG_INTERVAL_SEC; 0 — выкл
+
+
+def dsh_hook_watchdog_once(rh=None) -> list:
+    """Один прогон сторожа: register_hook.dsh_ensure_all_profiles() — re-pin
+    hooks-плагина DSH-профилей к фактической версии DSH. При совпадении
+    версий pnpm не вызывается (только чтения package.json + быстрый
+    node import-check на профиль); тяжёлый путь (pnpm add) — только после
+    смены версии DSH. Без регистратора/DSH — пустой список.
+    Любой сбой — log.warning, не роняем."""
+    import hostscan
+    rh = rh if rh is not None else hostscan.load_registrar()
+    if rh is None:
+        return []
+    fn = getattr(rh, "dsh_ensure_all_profiles", None)
+    if fn is None:   # регистратор старше фичи — молча выключены
+        return []
+    try:
+        return fn()
+    except Exception as exc:
+        log.warning("dsh-hook-watchdog: сбой прогона: %r", exc)
+        return []
+
+
+def start_dsh_hook_watchdog(interval: int | None = None) -> threading.Thread | None:
+    """Фон: прогон при старте приложения, далее — раз в сутки (env
+    MG_DSH_WATCHDOG_INTERVAL_SEC; 0 — сторож выключен, поток не стартует).
+
+    Сценарий: DSH самообновился (rc.X → rc.Y), hooks-плагин профиля остался
+    на rc.X → DSH отключает его по peer-пинам молча → захват памяти умирает
+    без единой ошибки (инцидент 2026-10-24: тишина во всех проектах).
+    Самолечение внутри самого хука не спасало: отключённый плагин хук не
+    вызывает. Сторож живёт в трее — он независим от DSH."""
+    if interval is None:
+        try:
+            interval = int(os.environ.get("MG_DSH_WATCHDOG_INTERVAL_SEC")
+                           or _DSH_WATCHDOG_INTERVAL)
+        except ValueError:
+            interval = _DSH_WATCHDOG_INTERVAL
+    if interval <= 0:
+        return None
+
+    def _loop():
+        while True:
+            try:
+                msgs = dsh_hook_watchdog_once()
+            except Exception as exc:   # поток-сторож не умирает от разового сбоя
+                log.warning("dsh-hook-watchdog: сбой прогона: %r", exc)
+                msgs = []
+            for m in msgs:
+                if "hooks plugin present" not in m:
+                    log.info("dsh-hook-watchdog: %s", m)
+            time.sleep(interval)
+
+    t = threading.Thread(target=_loop, daemon=True, name="dsh-hook-watchdog")
+    t.start()
+    return t
+
+
 def _connect_pending_worker(hosts: list) -> None:
     """Клик «Подключить хосты…»: регистрация существующим кодом, затем пересчёт
     оставшихся (меню прячется само, когда подключать больше нечего)."""

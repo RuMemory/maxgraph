@@ -9172,6 +9172,10 @@ if __name__ == "__main__":
         import selfupdate  # фоновые обновления по подписанному каналу магазина
         selfupdate.start_update_loop(lambda: VERSION, PUBLIC_BASE_URL, DATA_DIR, PORT,
                                      on_update=native.notify_update_available)
+        # сторож hooks-плагина DSH: автообновление DSH молча отключает плагин
+        # старой версии (peer-пины) — перепинываем, иначе захват памяти умирает
+        # тихо (инцидент 2026-10-24). Свой daemon-поток, fail-open.
+        native.start_dsh_hook_watchdog()
         if os.environ.get("MG_NO_TRAY") != "1":
             native.run_tray(main)   # hostscan стартует внутри (балуну нужна иконка)
         else:
