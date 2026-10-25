@@ -3,6 +3,9 @@
 # win32_setctime (кондициональные зависимости loguru) исключены — в linux-образе не нужны.
 # 2026-10-24: certifi 2026.7.22 → 2026.10.23 (GHSA-6q48-6c7w-9gw2, critical:
 # emSign root CAs со скомпрометированными intermediate-ключами).
+# 2026-10-25: filelock 4.1.0 → 4.2.1 (6 алертов Dependabot, high GHSA-v4x8-3wr5-3wq8
+# + 3 medium + 2 low: symlink/hardlink-атаки на lock-файлы; в нашем однопользовательском
+# контейнере неэксплуатируемо, но lock-файл обязан быть чистым).
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1
@@ -11,7 +14,7 @@ charset-normalizer==3.5.2
 click==8.5.0
 fastapi==0.143.0
 fastembed==0.9.0
-filelock==4.1.0
+filelock==4.2.1
 flatbuffers==25.12.19
 fsspec==2026.9.0
 h11==0.16.0
