@@ -42,6 +42,25 @@ def _exe_path() -> str:
     return str(Path(sys.executable).resolve())
 
 
+def _scrub_pyi_env(env) -> None:
+    """In-place сброс наследуемых переменных PyInstaller onefile (env — маппинг).
+
+    Child-процесс onefile наследует _PYI_APPLICATION_HOME_DIR/_PYI_ARCHIVE_FILE/
+    _PYI_PARENT_PROCESS_LEVEL (указатель на temp-каталог parent'а). Порождённый
+    из такого процесса экземпляр того же exe (os.execv из трея) видит те же
+    переменные, считает себя child'ом, ПРОПУСКАЕТ распаковку и читает модули из
+    каталога, который старый parent удаляет при выходе → ModuleNotFoundError
+    (unicodedata и т.п., кейс 2026-10-25). PYINSTALLER_RESET_ENVIRONMENT=1 —
+    официальный сброс (PyInstaller >= 6.10, GHSA-9fxf-4qw3-ghmr); pop() —
+    страховка для старых bootloader'ов.
+    """
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    for var in ("_PYI_APPLICATION_HOME_DIR", "_PYI_PARENT_PROCESS_LEVEL",
+                "_PYI_ARCHIVE_FILE", "_PYI_SPLASH_IPC", "_PYI_LINUX_PROCESS_NAME",
+                "_MEIPASS2"):  # legacy PyInstaller < 6
+        env.pop(var, None)
+
+
 def _run_key_value(exe: str | None = None) -> str:
     """Значение Run-ключа Windows: путь к exe в кавычках (пробелы в пути)."""
     exe = exe or _exe_path()
@@ -1005,6 +1024,7 @@ def run_tray(main_callable, port: int | None = None) -> None:
         webbrowser.open(_dashboard_url(port, _read_local_token()))
 
     def _restart(icon=None, item=None):
+        _scrub_pyi_env(os.environ)  # иначе execv наследует _PYI_* → child-мод → удалённый temp-каталог
         os.execv(sys.executable, [sys.executable])  # замена процесса; сервер поднимется заново
 
     def _quit(icon=None, item=None):

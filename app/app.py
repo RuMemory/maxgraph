@@ -9140,6 +9140,14 @@ def main():
 
 
 if __name__ == "__main__":
+    if _FROZEN:
+        # onefile: child-env несёт _PYI_* (указатель на temp-каталог parent'а) —
+        # сбросить ДО любых spawn (рестарт из трея, helper обновления, ie4uinit),
+        # иначе порождённые exe читают модули из каталога, который удаляет
+        # умирающий parent (баг 2026-10-25: ModuleNotFoundError: unicodedata).
+        # На текущий процесс не влияет: bootloader уже отработал.
+        import native
+        native._scrub_pyi_env(os.environ)
     # helper-процесс подмены exe (Windows не даёт заменить бегущий файл):
     # `maxgraph.exe --mg-apply-update <new_exe> <parent_pid> <sha256> <sig>` —
     # ждёт смерти родителя, ПЕРЕПРОВЕРЯЕТ sha256+ed25519 (B-1), атомарно
