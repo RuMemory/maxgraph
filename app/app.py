@@ -1067,7 +1067,7 @@ def op_create_entities(items, project: str = "", source: str = ""):
     if nd:
         out.setdefault("warnings", []).extend(nd)
     # подсказки к записи (similar + hygiene) — вне лока (embed =
-    # HTTP к своему relay), только совет. Тексты — факты сущности (не
+    # HTTP к EMBED_URL из env), только совет. Тексты — факты сущности (не
     # entity_text как у neardup: name/title размывают containment) — отдельные
     # embed-вызовы, ≤_HINT_TEXTS_MAX на батч (шаринга LRU нет).
     created = out.get("created") or []
@@ -3986,12 +3986,11 @@ async def api_timeline(request: Request):
 
 
 def _embed_detail():
-    """Деталь семантики для дашборда — источник (env=свой endpoint,
-    relay=облако магазина) или причина «выкл». Причина telemetry_off
-    удалена — выключателя TELEMETRY=0 больше нет."""
+    """Деталь семантики для дашборда — источник (env=свой endpoint; hosted
+    relay удалён в 1.9.10) или причина «выкл»."""
     src = reason = None
     if EMBED_ON:
-        src = "env" if (os.environ.get("EMBED_URL") or "").strip() else "relay"
+        src = "env"
     elif READONLY:
         reason = "readonly"
     else:
@@ -5140,7 +5139,7 @@ def _install_id(data_dir=None) -> str:
 
 class _NoRedirectPost(urllib.request.HTTPRedirectHandler):
     """30x → HTTPError: urllib иначе повторяет POST на redirect-target, унося тело
-    (license key в _relay_config_pull) на чужой хост."""
+    (license key в license-validate) на чужой хост."""
 
     def redirect_request(self, *a, **k):
         return None
@@ -5173,7 +5172,7 @@ def _get_json(url: str, timeout: int = 5):
 
 def _client_fp_fields() -> dict:
     """Поля привязки к железу для исходящих запросов на магазин (install-ping,
-    license validate, relay/config, referral/code).
+    license validate, referral/code).
 
     fp — legacy machine_fingerprint (как раньше). Поверх: host_fp + components
     из hostfp.json (его пишет установщик НА ХОСТЕ — контейнер железо не
@@ -5228,74 +5227,18 @@ def _telemetry_ping(post=None, env=None, data_dir=None):
 
 
 def _bootstrap_hosted():
-    """install-ping (регистрирует install_id+fp на магазине) → relay-pull.
-    Порядок важен для свежей установки: триальный грант принимается магазином
-    только для известного fp. Раньше pull шёл только из суточного watchdog'а и
-    при активации лицензии — окно «семантика OFF» на минуты после КАЖДОГО
-    рестарта."""
+    """install-ping (регистрирует install_id+fp на магазине). Hosted embed-relay
+    удалён в 1.9.10 (решение владельца 2026-10-25, аудит): контент памяти не
+    покидает машину; семантика — только явный EMBED_URL/EMBED_KEY в env
+    (осознанный opt-in self-hoster'а)."""
     _telemetry_ping()
-    _relay_config_pull()
-
-
-def _relay_config_pull(env=None):
-    """zero-config hosted-фичи — relay-конфиг по license key магазина (embed).
-
-    нет ключа, но жив триал — триальный грант {install_id, fp}:
-    магазин принимает только известную по install-ping пару с неистёкшим
-    серверным якорем триала.
-
-    Fail-open, как весь watchdog. Провайдера, заданного явно в env (EMBED_URL),
-    не трогаем — свой endpoint осознанный opt-in и важнее relay.
-    Токен 7д — суточный прогон держит его свежим.
-    """
-    env = env if env is not None else os.environ
-    if (env.get("EMBED_URL") or "").strip():
-        return
-    try:
-        key = licensing.current_key(DATA_DIR, LICENSE_SECRET)
-        if key:
-            payload = {"key": key}
-        else:
-            if licensing.status(DATA_DIR, LICENSE_SECRET).get("state") != "trial":
-                return  # expired — без relay (запись и так заблокирована)
-            fields = _client_fp_fields()
-            if not fields.get("fp") and not fields.get("host_fp"):
-                return
-            payload = {"install_id": _install_id(), **fields}
-        cfg = _post_json(PUBLIC_BASE_URL + "/api/relay/config", payload, timeout=8)
-        ok = isinstance(cfg, dict) and cfg.get("ok")
-        if not ok:  # молчание мешало диагностике «нет семантики» у покупателя
-            err = cfg.get("error") if isinstance(cfg, dict) else None
-            log.warning("relay: конфиг не получен (%r)", str(err or "магазин недоступен")[:120])
-        base = (PUBLIC_BASE_URL or "").rstrip("/")
-        # SECURITY: конфиг принимаем только с origin самого магазина по
-        # https — иначе скомпрометированный ответ увёл бы relay-токен и поток
-        # текстов сущностей (основной + до 4 окон фактов, ≤4200 симв)
-        # на чужой хост.
-        emb = ok and cfg.get("embed")
-        if isinstance(emb, dict) and emb.get("url") and emb.get("key"):
-            url = str(emb["url"])
-            if not (base.startswith("https://") and url.startswith(base + "/")):
-                log.warning("relay: embed-конфиг с чужого origin отклонён: %r", url[:80])
-            else:
-                embed.configure_runtime(url=url, key=str(emb["key"]),
-                                        model=str(emb.get("model") or "") or None,
-                                        query_prefix=emb.get("query_prefix"),
-                                        passage_prefix=emb.get("passage_prefix"))
-                _ensure_embed_loop()  # цикл мог не стартовать при boot (embed был выключен)
-                log.info("relay: embed-конфиг применён (model=%.80r)",
-                         emb.get("model") or "default")
-    except Exception as e:
-        # hosted-фичи опциональны — сбой relay не ломает инстанс, но причину пишем
-        log.warning("relay: конфиг не получен: %r", e)
 
 
 def _watchdog_iteration(env):
     """Один прогон watchdog (вынесен из цикла для тестов и decouple).
 
     телеметрия всегда ON (выключатель TELEMETRY=0 удалён) — параметр
-    telemetry упразднён; отправка (ревалидация, апдейт-чип) и доставка
-    relay-конфигов работают всегда."""
+    telemetry упразднён; отправка (ревалидация, апдейт-чип) работает всегда."""
     # апдейт-чип — узнаём свежую версию даже без ключа (триал тоже обновляется)
     try:
         v = _get_json(PUBLIC_BASE_URL + "/api/version", timeout=8)
@@ -5321,7 +5264,6 @@ def _watchdog_iteration(env):
             elif resp.get("ok"):
                 if licensing.set_revoked(DATA_DIR, LICENSE_SECRET, None):
                     _event("license_unrevoked", "", "магазин снял отзыв")
-                _relay_config_pull(env)  # свежий relay-токен раз в сутки
             elif resp.get("error") == "machine_limit":
                 # host-fp: machine_limit ≠ «ключ невалиден» — локальный
                 # state НЕ затираем (fail-open), лицензия продолжает работать
@@ -7288,10 +7230,6 @@ async def api_license_activate(request: Request):
         return JSONResponse(out, headers=_NOCACHE)
     _event("license_activated", res.get("email") or "", res.get("tier", ""))
     log.info("license activated: %s · %s", res.get("tier"), res.get("email"))
-    try:
-        await asyncio.to_thread(_relay_config_pull)  # семантика сразу после активации
-    except Exception:
-        pass  # fail-open: активация уже прошла
     return JSONResponse({"ok": True, "email": res.get("email"), "tier": res.get("tier")}, headers=_NOCACHE)
 
 
@@ -7462,134 +7400,6 @@ async def api_license_validate(request: Request):
     return JSONResponse({"ok": True, "email": payload.get("email"),
                          "tier": payload.get("tier"), "exp": payload.get("exp") or 0},
                         headers=_NOCACHE)
-
-
-_RELAY_EMBED_MODEL = os.environ.get("RELAY_EMBED_MODEL", "intfloat/multilingual-e5-small")
-
-
-def _relay_pfx(name: str, default: str) -> str:
-    """RELAY_EMBED_*_PREFIX из env: валидируем по клиентскому правилу embed._pfx
-    (иначе мусор уехал бы всем клиентам, которые его молча
-    дропнут → рассинхрон конвенции без единой ошибки). Невалидное → дефолт."""
-    raw = os.environ.get(name)
-    v = embed._pfx(raw)
-    if raw and not v:
-        log.warning("%s невалиден (>32/не-printable/не-UTF-8) — дефолт %r",
-                    name, default)
-    return v or default
-
-
-# E5-конвенция текстов (prefix-migration): клиент применяет к запросу/окнам.
-_RELAY_EMBED_QUERY_PREFIX = _relay_pfx("RELAY_EMBED_QUERY_PREFIX", "query: ")
-_RELAY_EMBED_PASSAGE_PREFIX = _relay_pfx("RELAY_EMBED_PASSAGE_PREFIX", "passage: ")
-
-
-@mcp.custom_route("/api/relay/config", methods=["POST"])
-async def api_relay_config(request: Request):
-    """Zero-config hosted-фичи (семантический поиск):
-    {key} → {ok, embed:{url,key,model}}; {install_id, fp} → то же для
-    ЖИВОГО триала (известный install-ping fp, якорь не истёк; tier=trial).
-
-    Только магазин. Self-hosted инстанс предъявляет license key → получает
-    relay-токен (licensing.relay_token, TTL 7д): отзыв/истечение лицензии режут
-    доступ к relay не позже TTL — конфиг перетягивается демоном. Публичный,
-    rate-limit — как /api/license/validate.
-    """
-    g = _store_gate()
-    if g:
-        return g
-    ip = _client_ip(request)
-    if _rate_limited(ip, "relayconfig", 20, 60):
-        return JSONResponse({"ok": False, "error": "too_many_attempts"}, status_code=429)
-    # body-кап ПОТОКОВО с ранним abort (request.body()
-    # аллоцировал chunked-тело целиком до капа — memory-DoS магазина)
-    body, body_err = await _read_capped(request, 16384)
-    if body_err is not None:
-        return body_err
-    try:
-        payload = json.loads(body)
-    except Exception:
-        return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
-    if not isinstance(payload, dict):  # [1,2] / "str" → 400, не 500
-        return JSONResponse({"ok": False, "error": "bad_request"}, status_code=400)
-    key = str(payload.get("key") or "")[:512].strip()
-    if key:
-        lic, err = licensing.verify_key(LICENSE_SECRET, key)
-        revoked = lic is not None and _is_revoked(_load_codes(), key)
-        if err or revoked:
-            # единый ответ наружу (без оракула статуса ключа), деталь — в серверный лог
-            log.info("relay/config отклонён от %s: %s", ip, err or "license revoked")
-            _event("relay_config_rejected", "", err or "revoked")
-            return JSONResponse({"ok": False, "error": "invalid key"}, status_code=403,
-                                headers=_NOCACHE)
-        exp = int(lic.get("exp") or 0)
-        seed, tag, detail = key, lic.get("tier", ""), lic.get("email") or ""
-    else:
-        # триальный грант {install_id, fp} — «семантика не выключается,
-        # даже в триале». Принимаем install_id, привязанный
-        # к fp с ЖИВЫМ серверным якорем триала (install-ping); грант
-        # умирает вместе с триалом.
-        iid = str(payload.get("install_id") or "")
-        fp = str(payload.get("fp") or "")
-        host_fp, _components, _kind = _parse_hostfp_body(payload if isinstance(payload, dict) else {})
-        fp = host_fp or fp  # effective fp: якорь триала живёт под композитным при наличии
-        t = None
-        pair_known = False
-        if _INSTALL_ID_RE.match(iid) and _FP_RE.match(fp):
-            try:
-                with _installs_lock:
-                    data = _load_installs() or {}
-                    t = (data.get("trials") or {}).get(fp)
-                    pair_known = f"{iid}:{fp}" in (data.get("relay_grants") or {})
-            except Exception:  # битый installs.json → fail-closed (403), не 500
-                t = None
-            if not isinstance(t, dict) or iid not in (t.get("installs") or []):
-                t = None  # fp известен, но install_id не привязан к нему
-                pair_known = False
-        try:
-            started = float((t or {}).get("started_at") or 0)
-        except (TypeError, ValueError, OverflowError):  # NaN/Infinity/мусор
-            started = 0
-        exp = int(started + licensing.trial_days() * 86400) if started else 0
-        if not exp or time.time() > exp:
-            log.info("relay/config trial-грант отклонён от %s (unknown install или якорь истёк)", ip)
-            _event("relay_config_rejected", "", "trial grant")
-            return JSONResponse({"ok": False, "error": "invalid key"}, status_code=403,
-                                headers=_NOCACHE)
-        # кап — на НОВУЮ пару (install_id, fp) в сутки с IP;
-        # повторный pull с той же пары (рестарт, watchdog) — бесплатно:
-        # покупатель с рестартами в день установки больше не гаснет молча.
-        if not pair_known:
-            if _rate_limited(ip, "relaytrial", 2, 86400):
-                log.info("relay/config trial-грант: дневной кап IP %s (новая пара)", ip)
-                _event("relay_config_rejected", "", "trial daily cap")
-                return JSONResponse({"ok": False, "error": "too_many_attempts"},
-                                    status_code=429)
-            with _installs_lock:  # запоминаем выдачу; записи старше TTL токена чистим
-                gdata = _load_installs()
-                if gdata is not None:  # битый файл — выдачу не блокируем, просто не запоминаем
-                    grants = gdata.setdefault("relay_grants", {})
-                    grants[f"{iid}:{fp}"] = time.time()
-                    cut = time.time() - licensing.RELAY_TOKEN_TTL
-                    for gk, gts in list(grants.items()):
-                        if not isinstance(gts, (int, float)) or gts < cut:
-                            del grants[gk]
-                    try:
-                        _save_installs(gdata)
-                    except OSError:
-                        pass  # диск полон — выдачу не блокируем, просто не запоминаем
-        seed, tag, detail = f"trial:{fp}", "trial", "trial"
-    ttl = int(time.time()) + licensing.RELAY_TOKEN_TTL
-    tok_exp = min(exp, ttl) if exp else ttl
-    _event("relay_config_issued", detail, tag)
-    token = licensing.relay_token(licensing.relay_secret(LICENSE_SECRET), seed, tok_exp)
-    out = {"ok": True, "embed": {
-        "url": PUBLIC_BASE_URL + "/observer",
-        "key": token,
-        "model": _RELAY_EMBED_MODEL,
-        "query_prefix": _RELAY_EMBED_QUERY_PREFIX,
-        "passage_prefix": _RELAY_EMBED_PASSAGE_PREFIX}}
-    return JSONResponse(out, headers=_NOCACHE)
 
 
 @mcp.custom_route("/api/tenants", methods=["GET"])
@@ -8937,9 +8747,9 @@ _embed_start_lock = threading.Lock()
 
 
 def _ensure_embed_loop():
-    """embed включился в рантайме (relay zero-config после активации
-    лицензии) — поднять цикл, если при boot он не стартовал (embed был выключен).
-    Идемпотентно; READONLY-зеркало не пишет — не стартуем."""
+    """Поднять фоновый embed-цикл, если он ещё не стартовал. Идемпотентно;
+    READONLY-зеркало не пишет — не стартуем. (С 1.9.10 embed включается
+    только env EMBED_URL/EMBED_KEY при boot — вызов оставлен для совместимости.)"""
     global EMBED_ON
     if READONLY or not embed.enabled():
         return
@@ -8949,7 +8759,7 @@ def _ensure_embed_loop():
         threading.Thread(target=embed_loop, args=(embed.config_from_env(),),
                          daemon=True, name="embed").start()
         EMBED_ON = True
-        log.info("embed: enabled в рантайме (relay zero-config)")
+        log.info("embed: enabled")
 
 
 # --- actr: периодический flush счётчиков обращений → access.json ---
@@ -9005,7 +8815,6 @@ class TokenAuth:
                     "/api/version",  # апдейт-чип дашборда (публичная версия)
                     "/api/admin/me",  # страница входа админки (configured/authed — не секрет)
                     "/api/admin/login", "/api/admin/setup",  # логин/первичная настройка (rate-limited)
-                    "/api/relay/config",  # zero-config hosted embed (license key → relay-токен)
                     "/api/referral/code",  # реф-код инстанса (install_id+fp → code+статы)
                     "/api/releases/latest.tar.gz", "/api/releases/latest.sha256",  # автообновления
                     "/api/releases/latest.sig",  # ed25519-подпись релиза

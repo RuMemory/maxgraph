@@ -254,40 +254,6 @@ def verify_key(secret: str, key: str, now: float | None = None):
     return payload, None
 
 
-# ------------------------------------------------------------- relay tokens ---
-# Hosted-сервисы магазина (семантический поиск): self-hosted инстанс предъявляет
-# license key магазину → получает короткий relay-токен; сервис (services/embed)
-# проверяет подпись тем же LICENSE_HMAC_SECRET. Отдельный секрет не плодим —
-# доменная приставка "relay:" в подписываемой строке отделяет токены от ключей.
-#
-# Формат (каноничный, синхронизирован с services/embed/main.py):
-# <p64>.<hmac> где p64 = _b64e(json{"lk": sha256(license_key)[:16], "exp": epoch})
-# (без padding, ключи именно в порядке lk,exp), hmac = _hmac_hex(secret, "relay:"+p64)
-# — подпись HEX-строкой, считается по ПРИНЯТОМУ сегменту p64 без пересериализации.
-
-RELAY_TOKEN_TTL = 7 * _DAY  # короткий TTL: revoke распространяется ≤7д, конфиг перетягивается демоном
-
-
-def relay_secret(secret: str, env=None) -> str:
-    """Секрет relay-токенов: env RELAY_HMAC_SECRET, иначе — производная от
-    LICENSE_HMAC_SECRET (односторонняя). Embed-сервис знает ТОЛЬКО её: утечка
-    embed-контейнера не компрометирует лицензионную подпись."""
-    env = os.environ if env is None else env
-    val = (env.get("RELAY_HMAC_SECRET") or "").strip()
-    if val:
-        return val
-    return hmac.new(secret.encode("utf-8"), b"maxgraph-relay-v1", hashlib.sha256).hexdigest()
-
-
-def relay_token(secret: str, license_key: str, exp: int) -> str:
-    """Выпустить relay-токен для владельца license key. lk — идентификатор квоты, не секрет.
-    Секрет — relay_secret(…), НЕ сырой LICENSE_HMAC_SECRET (blast-radius embed-сервиса)."""
-    payload = {"lk": hashlib.sha256(license_key.encode("utf-8")).hexdigest()[:16],
-               "exp": int(exp)}
-    p64 = _b64e(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
-    return f"{p64}.{_hmac_hex(secret, 'relay:' + p64)}"
-
-
 REVOKE_GRACE_SEC = 72 * 3600  # отозванный ключ — 72ч на запись, потом expired
 
 
