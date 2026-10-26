@@ -64,6 +64,8 @@ bash install.sh --yes       # Linux / macOS
 
 ```powershell
 # Windows (PowerShell)
+
+[![AgentShield Security](https://merx.help/badge/A+.svg)](https://merx.help/shield)
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes
 ```
 
