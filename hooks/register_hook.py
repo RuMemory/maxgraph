@@ -985,6 +985,14 @@ def _dsh_apply_profile(p: Path, spec: dict, remove: bool, dry: bool,
                        token: str, token_ok: bool, hooks_json: Path) -> str:
     text = _read_cfg(p) if p.exists() else ""
     lines = text.splitlines(keepends=True)
+    # Пустой список «[]» (дефолтный файл DSH, напр. профиль headless) —
+    # эквивалент пустого: append ПОСЛЕ «[]» дал бы невалидный YAML, а
+    # _dsh_top_level_ok такой файл отклоняет (профиль оставался без памяти,
+    # аудит 2026-10-25, issue #33). Убираем маркер «[]» и работаем как с пустым.
+    meaningful = [ln for ln in lines if ln.strip() and not ln.lstrip().startswith("#")]
+    if [ln.strip() for ln in meaningful] == ["[]"]:
+        lines = [ln for ln in lines if ln.strip() != "[]"]
+        text = "".join(lines)
     if remove:
         # удаляем ТОЛЬКО наши ряды (hooks и mcp) — row-level, чтобы чужие
         # ряды в общем insert-блоке не пострадали; маркеры — только в

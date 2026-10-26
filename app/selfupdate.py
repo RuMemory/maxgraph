@@ -49,6 +49,7 @@ import base64
 import hashlib
 import json
 import logging
+import logging.handlers
 import os
 import platform as _platform
 import re
@@ -606,7 +607,9 @@ def _setup_helper_log(target_exe=None) -> None:
         return
     try:
         base = Path(target_exe).resolve().parent / "data" if target_exe else _helper_data_dir()
-        fh = logging.FileHandler(base / "update.log", encoding="utf-8")
+        # RotatingFileHandler (аудит #30): рос без ротации; 1 МБ × 2, как maxgraph.log
+        fh = logging.handlers.RotatingFileHandler(base / "update.log", maxBytes=1_000_000,
+                                                  backupCount=2, encoding="utf-8")
         fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
         logging.getLogger().addHandler(fh)
     except OSError:
@@ -782,7 +785,10 @@ _ARTIFACT_FILE_RE = re.compile(
 def cleanup_updates(data_dir, keep: int = 2) -> int:
     """Удалить файлы версий старше keep свежих из data/updates. → число удалённых.
     .helper.exe (подменщик exe при apply) и неартефактные файлы НЕ трогаем;
-    maxgraph.prev.exe живёт в корне установки, сюда не входит. Ошибки — warning."""
+    maxgraph.prev.exe живёт в корне установки, сюда не входит. Ошибки — warning.
+    Аудит 2026-10-25 (#29): дополнительно чистим сирот — updates/data/ (мусорный
+    каталог старых helper'ов, там залёгли СТАРЫЕ секреты) и оборванные
+    maxgraph-*.part в корне установки (вне data/updates их никто не чистил)."""
     upd = Path(data_dir) / "updates"
     try:
         entries = [(m.group("ver"), p) for p in upd.iterdir() if p.is_file()
@@ -804,6 +810,27 @@ def cleanup_updates(data_dir, keep: int = 2) -> int:
             log.warning("selfupdate: cleanup: не удалить %s: %r", p, e)
     if removed:
         log.info("selfupdate: cleanup: удалено %s файлов старых версий из %s", removed, upd)
+    # updates/data/ — легитимно не создаётся (helper пишет лог в data/ ЦЕЛИ);
+    # залёгшая копия — мусор со старыми токенами (аудит B)
+    upd_data = upd / "data"
+    if upd_data.is_dir():
+        try:
+            shutil.rmtree(upd_data)
+            removed += 1
+            log.info("selfupdate: cleanup: удалён мусорный %s", upd_data)
+        except OSError as e:
+            log.warning("selfupdate: cleanup: не удалить %s: %r", upd_data, e)
+    # оборванные .part-закачки в КОРНЕ установки (data_dir = <install>/data)
+    try:
+        for p in Path(data_dir).resolve().parent.glob("maxgraph-*.part"):
+            try:
+                p.unlink()
+                removed += 1
+                log.info("selfupdate: cleanup: удалён сирота %s", p)
+            except OSError as e:
+                log.warning("selfupdate: cleanup: не удалить %s: %r", p, e)
+    except OSError:
+        pass  # корень нечитаем — не критично
     return removed
 
 

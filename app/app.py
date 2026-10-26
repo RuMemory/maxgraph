@@ -8894,7 +8894,7 @@ def main():
     elif _TOKEN_SOURCE == "ephemeral":
         log.warning("MEMORY_TOKEN: data/ read-only — эфемерный токен процесса: %s", TOKEN)
     if not STORE_MODE:
-        threading.Thread(target=_bootstrap_hosted, daemon=True, name="bootstrap-hosted").start()  # ping → relay-pull при boot
+        threading.Thread(target=_bootstrap_hosted, daemon=True, name="bootstrap-hosted").start()  # install-ping при boot
         threading.Thread(target=_license_watchdog, daemon=True, name="license-watchdog").start()
         # heartbeat раз в 6ч — всем установкам (docker/python/native), не только exe;
         # flavor внутри: "native" при _FROZEN, иначе autodetect как у install-ping.
@@ -8945,6 +8945,9 @@ def main():
     # frozen windowed exe: sys.stdout=None — дефолтный log_config uvicorn падает;
     # логирование уже идёт в data/maxgraph.log (ротация)
     uvicorn.run(app, host=HOST, port=PORT, log_level="info", proxy_headers=True,
+                # аудит #31: access-лог uvicorn писал ?q= поисковых запросов памяти
+                # в maxgraph.log открытым текстом — выключаем (method+path не критичны)
+                access_log=False,
                 **({"log_config": None} if _FROZEN else {}))
 
 

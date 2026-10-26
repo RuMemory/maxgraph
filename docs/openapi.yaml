@@ -928,7 +928,7 @@ components:
           description: Источник эмбеддингов или причина «выкл»
           properties:
             on: { type: boolean }
-            source: { type: string, nullable: true, enum: [env], description: env — свой EMBED_URL endpoint; relay — облако магазина }
+            source: { type: string, nullable: true, enum: [env], description: env — свой EMBED_URL endpoint; hosted relay удалён в 1.9.10 }
             reason: { type: string, nullable: true, enum: [readonly, no_config] }
     CreatedEntities:
       type: object

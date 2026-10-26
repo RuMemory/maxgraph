@@ -530,8 +530,8 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml;charset=utf-
             <div>
               <div class="sec-label"><span data-i18n="tl.pulse">Хроника</span><span class="line"></span></div>
               <div class="tchips" id="pulseTabs">
-                <button class="tchip on" data-pf="all" data-i18n="tl.all">Все</button>
-                <button class="tchip" data-pf="memory" data-i18n="tl.memory">Память</button>
+                <button class="tchip" data-pf="all" data-i18n="tl.all">Все</button>
+                <button class="tchip on" data-pf="memory" data-i18n="tl.memory">Память</button>
                 <button class="tchip" data-pf="billing" data-i18n="tl.billing">Биллинг</button>
               </div>
               <div id="tlList"></div>
@@ -1082,7 +1082,14 @@ async function loadProjects(){try{
   const r=await api('/api/search?q=&type=project&all_projects=true');
   if(!r||!Array.isArray(r.entities))return;
   const slugs=[...new Set(r.entities.map(e=>e.name.indexOf('project:')===0?e.name.slice(8):e.name))].sort();
-  if(curProject&&slugs.indexOf(curProject)<0)slugs.push(curProject);
+  // аудит 2026-10-25 (#28): curProject без project-сущности — мог быть удалён
+  // целиком; держим в списке, только если в нём есть живые сущности, иначе сброс
+  if(curProject&&slugs.indexOf(curProject)<0){
+    let alive=false;
+    try{const chk=await api(scoped('/api/search?q='));alive=!!(chk&&Array.isArray(chk.entities)&&chk.entities.length);}catch(e){}
+    if(alive)slugs.push(curProject);
+    else{curProject='';try{localStorage.removeItem('mg_project');}catch(e){}}
+  }
   const sel=$('#projSel');
   const html='<option value="">'+esc(t('hdr.all'))+'</option>'+slugs.map(s=>'<option value="'+esc(s)+'"'+(s===curProject?' selected':'')+'>'+esc(s)+'</option>').join('');
   if(sel._optsHtml!==html){sel._optsHtml=html;sel.innerHTML=html;}
@@ -1097,6 +1104,9 @@ async function setProject(p){
   if(!loadCache()){renderRecent();renderCatList();buildGraph();draw();}
   try{await refresh();}catch(e){}
   loadTimeline();loadTasks();
+  // аудит 2026-10-25 (#27): смена проекта обязана пересчитать открытый поиск
+  const q=(($('#q')||{}).value||(($('#globalSearch')||{}).value)||'');
+  if(q.trim())doSearch(q);
 }
 $('#projSel').addEventListener('change',e=>setProject(e.target.value));
 const syncProjDel=()=>{const b=$('#projDel');if(b)b.style.display=curProject?'':'none';};
@@ -1153,8 +1163,8 @@ function renderRecent(){
 const ACT_ICON={create_entity:'✦',update_entity:'✎',merge_entity:'⑂',create_relation:'＋',add_observation:'✎',delete_entity:'×',task_done:'✓',task_add:'✦',entity_update:'✎'};
 const ACT_COLOR={create_entity:'#E8A54C',update_entity:'#7DA2E8',merge_entity:'#E8B93E',create_relation:'#5FB87A',add_observation:'#7DA2E8',delete_entity:'#E15A4F',task_done:'#5FB87A',task_add:'#E8B93E'};
 const BILLING_RE=/^(payment|digiseller|dg_|code|trial|cabinet|license)/;
-const evClass=a=>BILLING_RE.test(a||'')?'billing':(a==='hook_PostToolUse'?'tools':'memory');
-let tlEvents=[],pulseFilter=localStorage.getItem('mg_pulse_filter')||'all';
+const evClass=a=>BILLING_RE.test(a||'')?'billing':((a||'').startsWith('hook_')?'tools':'memory');  // аудит 2026-10-25: ВСЕ hook_* (SessionStart/UserPromptSubmit/Stop) — техшум, не только PostToolUse
+let tlEvents=[],pulseFilter=localStorage.getItem('mg_pulse_filter')||'memory';  // дефолт «Память» (аудит D: «Все» = стена техшума)
 async function loadTimeline(){try{
   const sess=graph.entities.filter(e=>canonType(e.entityType)==='session').sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   $('#sessList').innerHTML=sess.map(e=>'<div class="sess-card" data-open="'+esc(e.name)+'"><div class="st">'+esc(e.title||e.name)+'</div><div class="sm">'+e.observations.length+' '+esc(factsN(e.observations.length))+' · '+esc(fmtTs(e.createdAt))+'</div></div>').join('')||'<div class="empty" style="padding:10px">'+esc(t('tl.nosess'))+'</div>';
@@ -1162,7 +1172,7 @@ async function loadTimeline(){try{
 }catch(e){}}
 function renderJournal(){
   // Лента — только память/сессии/промпты; вызовы инструментов живут в Хронике (иначе спам)
-  const byP=tlEvents.filter(e=>e.action!=='hook_PostToolUse');
+  const byP=tlEvents.filter(e=>!(e.action||'').startsWith('hook_'));
   $('#journal').innerHTML=byP.slice(0,6).map(e=>{
     const dl=dayLabel(e.ts),today=dl===t('tl.today');
     return '<div class="j-row"><span class="j-t">'+(today?'':(dl===t('tl.yesterday')?(LANG==='ru'?'вч ':'y. '):''))+esc(fmtTime(e.ts))+'</span><span class="j-ic" style="background:'+(ACT_COLOR[e.action]||'#8F8778')+'"></span><span class="j-body"><a href="#" data-open="'+esc(e.entity||'')+'">'+esc(e.entity||'')+'</a> '+esc(e.detail||'')+(e.project?projTag(e.project):'')+'</span></div>';
@@ -1183,6 +1193,8 @@ $('#pulseTabs').addEventListener('click',e=>{
   pulseFilter=b.dataset.pf;try{localStorage.setItem('mg_pulse_filter',pulseFilter);}catch(x){}
   $$('#pulseTabs .tchip').forEach(x=>x.classList.toggle('on',x===b));renderTimeline();
 });
+// init: подсветка вкладки по сохранённому фильтру (иначе localStorage 'all' + разметка 'memory' рассинхрон)
+$$('#pulseTabs .tchip').forEach(x=>x.classList.toggle('on',x.dataset.pf===pulseFilter));
 
 /* ═══════════ Каталог ═══════════ */
 let typeFilter=localStorage.getItem('mg_type_filter')||'',catSel=null;
