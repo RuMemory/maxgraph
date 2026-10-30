@@ -8984,7 +8984,7 @@ if __name__ == "__main__":
         # иначе в памяти победителя чужой токен и снова 401 (тот самый баг).
         TOKEN = _resolve_token()
         native.ensure_hostfp()
-        native.ensure_autostart()
+        native.repair_autostart()  # opt-in: чиним существующую запись, не создаём (решение 2026-10-30)
         native.ensure_shortcuts()  # Windows: MaxGraph.lnk на рабочий стол + в меню «Пуск»
         # самолечение ~/.maxgraph (хук + hooks.env из ресурсов exe) — иначе
         # автообновление оставляет клиентам файлы хуков от старой версии

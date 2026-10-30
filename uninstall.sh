@@ -99,6 +99,14 @@ if [ "$WIPE" = 1 ] && [ -d data ]; then
 fi
 
 # --- leftovers install.sh created ---------------------------------------------
+# автозапуск (LOW-4 security-ревью 2026-10-30): opt-in запись ОС под пользователем
+if [ "$OS" = "Darwin" ]; then
+  [ -e "$HOME/Library/LaunchAgents/ru.rezonai.maxgraph.plist" ] \
+    && run rm -f "$HOME/Library/LaunchAgents/ru.rezonai.maxgraph.plist"
+else
+  [ -e "$HOME/.config/autostart/maxgraph.desktop" ] \
+    && run rm -f "$HOME/.config/autostart/maxgraph.desktop"
+fi
 # ярлык приложения (install.sh create_shortcuts / native.ensure_shortcuts):
 # Linux — XDG .desktop; macOS — симлинк в ~/Applications (rm -f снимает ссылку, не цель)
 if [ "$OS" = "Darwin" ]; then

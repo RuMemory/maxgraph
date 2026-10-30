@@ -31,7 +31,11 @@
 #
 # Extra flags: --store-url <url> (default https://rezon-ai.ru; tests point it
 # at a mock), --no-start (everything except launching the binary — for tests),
-# --install-dir <dir> (overrides the default install dir).
+# --install-dir <dir> (overrides the default install dir), --autostart
+# (opt-in: register the app in OS autostart — LaunchAgent on macOS, XDG
+# .desktop on Linux. OFF by default since 1.9.12: cautious AI agents refused
+# to install a program that silently writes itself into autostart; the tray
+# toggle «Автозапуск с системой» enables it later at any time).
 #
 # Exit codes: 0 — installed and running (or --no-start completed); 1 — error
 # (see install-native.log). Re-run = update to the latest version (idempotent).
@@ -47,10 +51,12 @@ RULES_LANG=""
 RULES_INJECTED=0
 STORE_URL="https://rezon-ai.ru"
 INSTALL_DIR=""
+AUTOSTART=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --yes|-y) YES=1 ;;
     --no-start) NO_START=1 ;;
+  --autostart) AUTOSTART=1 ;;
     --project-dir) shift
       case "${1:-}" in -*|"") echo "[maxgraph-install] FATAL: --project-dir needs a path" >&2; exit 1 ;;
         *) PROJECT_DIR="$1" ;; esac ;;
@@ -400,12 +406,78 @@ wait_healthz() {  # до 30 секунд; строгое «ok» — не под�
   return 1
 }
 
+print_plan() {
+  cat <<EOF
+[maxgraph-install] ПЛАН ДЕЙСТВИЙ — всё без прав администратора, только домашняя папка:
+  1. Скачать бинарник из магазина ($STORE_URL) в $INSTALL_DIR; целостность:
+     sha256 из манифеста + ed25519-подпись встроенным ключом (fail-closed).
+  2. Ярлык приложения (Linux: ~/.local/share/applications/maxgraph.desktop;
+     macOS: ~/Applications/MaxGraph).
+  3. Запустить программу (localhost:8787) и прочитать токен из data/local_token.txt.
+  4. Вписать блок правил памяти в AGENTS.md проекта (между маркерами <!-- maxgraph:* -->, идемпотентно).
+  5. Зарегистрировать MCP-сервер и захват-хуки в конфигах найденных AI-хостов (~/.dsh, ~/.claude, …).
+  Автозапуск с системой: $( [ "$AUTOSTART" = 1 ] && echo "ВКЛ (--autostart)" || echo "ВЫКЛ (opt-in с 1.9.12: флаг --autostart или трей «Автозапуск с системой»)" )
+  НЕ делает: не просит sudo, не трогает ничего за пределами домашней папки,
+  не меняет системные настройки, не отправляет данные памяти наружу.
+EOF
+}
+
+xml_escape() {  # & < > — иначе plist ломается и launchd молча не грузит
+  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+register_autostart() {  # opt-in --autostart: запись ОС под текущего пользователя
+  [ "$AUTOSTART" = 1 ] || return 0
+  local exe="$INSTALL_DIR/$ART_NAME"
+  if [ "$MG_OS" = "macos" ]; then
+    # НЕ объединять в один local: bash раскрывает ВСЕ слова ДО присваивания —
+    # p="$d/..." станет "/ru.rezonai..." (а под set -u — 'd: unbound variable'
+    # и смерть всего установщика; security-ревью H-1, 2026-10-30)
+    local d="$HOME/Library/LaunchAgents"
+    local plist="$d/ru.rezonai.maxgraph.plist"
+    local exe_xml
+    exe_xml="$(xml_escape "$exe")"
+    mkdir -p "$d"
+    cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ru.rezonai.maxgraph</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$exe_xml</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+EOF
+    log "autostart: $plist (LaunchAgent, RunAtLoad)"
+  else
+    local d="$HOME/.config/autostart"
+    mkdir -p "$d"
+    # Exec в кавычках: пробелы в пути иначе ломают запуск (security-ревью L-2)
+    cat > "$d/maxgraph.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=MaxGraph
+Exec="$exe"
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+EOF
+    log "autostart: $d/maxgraph.desktop (XDG)"
+  fi
+}
+
 # --- main ---------------------------------------------------------------------
 
 # MG_INSTALL_LIB_ONLY=1 — только функции (тесты source'ят скрипт и дёргают
 # verify_ed25519 с MG_TEST_PUBKEY_FILE; боевой запуск не трогаем).
 if [ "${MG_INSTALL_LIB_ONLY:-0}" = "1" ]; then return 0 2>/dev/null || exit 0; fi
 
+print_plan
 log "Store: $STORE_URL; install dir: $INSTALL_DIR ($MG_OS-$ARCH)"
 MANIFEST=""
 BIN=""
@@ -424,6 +496,7 @@ else
   log "MaxGraph is up (http://localhost:8787)."
 fi
 
+register_autostart || true   # opt-in --autostart; запись ОС под текущего пользователя
 inject_rules || true   # правила не критичны для запуска; предупреждение уже в логе
 write_hook_files || true
 register_hooks || true

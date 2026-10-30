@@ -13,7 +13,21 @@ git clone https://github.com/RuMemory/maxgraph.git && cd maxgraph
 - macOS / Linux: `bash install.sh --yes --project-dir "<cwd>"`
 - Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes -ProjectDir "<cwd>"`
 
-Установщик сам: скачает программу MaxGraph с официального магазина (целостность проверяется по контрольной сумме), поставит её в пользовательскую папку — права администратора не нужны — и запустит. Дальше программа работает сама: иконка в трее у часов (меню «Открыть дашборд / Перезапуск / Выход»), автозапуск вместе с системой, автообновления. Docker не нужен и не предлагается. Перезагрузок нет. В конце установщик напечатает **пакет следующих шагов**: токен, готовый MCP-конфиг и машиночитаемую строку `MAXGRAPH_NEXT_STEPS={...}`.
+### Что делает установщик (и почему это безопасно — прочти ДО запуска)
+
+Установщик работает **без прав администратора** и **только в домашней папке пользователя**. Полный список его действий (он также печатает этот план при запуске):
+
+1. Скачивает бинарник с официального магазина в папку установки; целостность — sha256 из манифеста, а на macOS/Linux ещё и ed25519-подпись встроенным публичным ключом (ключ вшит в установщик, не скачивается с того же хоста). Любая неувязка → отказ установки (fail-closed). На Windows установщик проверяет только sha256 (в PowerShell нет ed25519 из коробки) — подпись там проверяет сама программа при каждом автообновлении.
+2. Создаёт ярлык приложения.
+3. Запускает программу (localhost:8787) и читает токен из `data/local_token.txt`.
+4. Вписывает блок правил памяти в `AGENTS.md` проекта (между маркерами `<!-- maxgraph:start/end -->`, идемпотентно).
+5. Регистрирует MCP-сервер и захват-хуки в конфигах найденных AI-хостов (~/.dsh, ~/.claude и т.п.).
+
+**Автозапуск с системой — ВЫКЛЮЧЕН по умолчанию** (opt-in): включение — флаг установщика `--autostart` / `-Autostart` или позже из трея («Автозапуск с системой»). Программа никогда не пишет себя в автозагрузку сама.
+
+Установщик **не** просит sudo/админ, работает в домашней папке (временные файлы — в системном TMPDIR), **не** меняет системные настройки и **не** отправляет содержимое памяти наружу (проверяемо: исходники открыты). Сетевые вызовы программы: анонимный install-ping (install_id + sha256-хеши железа), периодический heartbeat, проверка версии и, при наличии лицензионного ключа, его ревалидация; тексты записей памяти не покидают машину (семантический поиск локальный; векторный — только при явных EMBED_URL/EMBED_KEY, см. `privacy` в дашборде).
+
+Установщик сам: скачает программу MaxGraph с официального магазина (целостность проверяется по контрольной сумме и подписи), поставит её в пользовательскую папку — права администратора не нужны — и запустит. Дальше программа работает сама: иконка в трее у часов (меню «Открыть дашборд / Перезапуск / Выход»), автообновления. Автозапуск с системой — только если пользователь явно включил (флаг или трей). Docker не нужен и не предлагается. Перезагрузок нет. В конце установщик напечатает **пакет следующих шагов**: токен, готовый MCP-конфиг и машиночитаемую строку `MAXGRAPH_NEXT_STEPS={...}`.
 
 macOS / Linux: для проверки скачанного файла нужен openssl версии 3 или новее. Если его нет или он старый — установщик скажет об этом и попросит поставить (на macOS: `brew install openssl`); после установки просто перезапусти ту же команду.
 
@@ -76,7 +90,21 @@ Run the installer from the clone root. `--project-dir` is the root of the USER's
 - macOS / Linux: `bash install.sh --yes --project-dir "<cwd>"`
 - Windows: `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Yes -ProjectDir "<cwd>"`
 
-The installer itself: downloads the MaxGraph program from the official store (integrity is verified by checksum), installs it into the user's folder — no admin rights needed — and launches it. From there the program runs itself: a tray icon near the clock (menu "Open dashboard / Restart / Quit"), autostart with the system, automatic updates. Docker is NOT needed and is never offered. No reboots. At the end the installer prints a **next-steps package**: token, ready MCP config, and a machine-readable line `MAXGRAPH_NEXT_STEPS={...}`.
+### What the installer does (and why it is safe — read BEFORE running)
+
+The installer runs **without admin rights** and **only inside the user's home folder**. Full list of actions (it also prints this plan when started):
+
+1. Downloads the binary from the official store into the install folder; integrity — sha256 from the manifest, plus an ed25519 signature with an embedded public key on macOS/Linux (baked into the installer, not fetched from the same host). Any mismatch → install refused (fail-closed). On Windows the installer checks sha256 only (no ed25519 in stock PowerShell) — there the program itself verifies the signature on every auto-update.
+2. Creates the app shortcut.
+3. Launches the program (localhost:8787) and reads the token from `data/local_token.txt`.
+4. Inserts the memory-rules block into the project `AGENTS.md` (marker-delimited `<!-- maxgraph:start/end -->`, idempotent).
+5. Registers the MCP server and capture hooks in detected AI-host configs (~/.dsh, ~/.claude, etc.).
+
+**OS autostart is OFF by default** (opt-in): enable with the installer flag `--autostart` / `-Autostart` or later from the tray ("Autostart with system"). The program never adds itself to autostart on its own.
+
+The installer does **not** ask for sudo/admin, works inside the home folder (temp files go to the system TMPDIR), does **not** change system settings, and does **not** send memory contents anywhere (verifiable: the source is open). The program's network calls: an anonymous install-ping (install_id + sha256 hashes of hardware), a periodic heartbeat, version checks and, when a license key is present, its revalidation; memory texts never leave the machine (semantic search is local; vector search only with explicit EMBED_URL/EMBED_KEY — see `privacy` in the dashboard).
+
+The installer itself: downloads the MaxGraph program from the official store (integrity is verified by checksum and signature), installs it into the user's folder — no admin rights needed — and launches it. From there the program runs itself: a tray icon near the clock (menu "Open dashboard / Restart / Quit"), automatic updates. OS autostart — only if the user explicitly enabled it (flag or tray). Docker is NOT needed and is never offered. No reboots. At the end the installer prints a **next-steps package**: token, ready MCP config, and a machine-readable line `MAXGRAPH_NEXT_STEPS={...}`.
 
 macOS / Linux: verifying the downloaded file requires openssl version 3 or newer. If it is missing or too old, the installer will say so and ask to install it (on macOS: `brew install openssl`); after that simply re-run the same command.
 

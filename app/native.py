@@ -297,6 +297,41 @@ def remove_shortcuts(platform: str | None = None, desktop_dir=None,
 
 # ------------------------------------------------------------------ публичное
 
+def autostart_enabled(platform: str | None = None, home: Path | None = None) -> bool:
+    """Автозапуск сейчас зарегистрирован в ОС? Источник истины — сама запись ОС
+    (HKCU Run / LaunchAgent plist / XDG .desktop), маркер-файл не нужен.
+
+    Файл-запись считается ВЫКЛЮЧЕННОЙ, если пользователь выключил автозапуск
+    штатными средствами GUI (LOW-3 security-ревью 2026-10-30: иначе
+    repair_autostart тихо возвращал X-GNOME-Autostart-enabled=true / Hidden=true).
+    Вызывается и из checked-колбэка трея — поэтому Path.home() внутри try."""
+    platform = sys.platform if platform is None else platform
+    try:
+        home = Path.home() if home is None else Path(home)
+        if platform.startswith("win"):
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _WIN_RUN_KEY, 0,
+                                winreg.KEY_QUERY_VALUE) as key:
+                winreg.QueryValueEx(key, APP_NAME)
+            return True
+        path = _autostart_path(platform, home)
+        if not path.exists():
+            return False
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return True  # не читается — считаем включённым (не перезаписываем вслепую)
+        if "X-GNOME-Autostart-enabled=false" in text or "Hidden=true" in text:
+            return False
+        if "<key>Disabled</key>" in text and "<true/>" in text:
+            return False
+        return True
+    except FileNotFoundError:
+        return False
+    except Exception as exc:
+        log.warning("autostart: не удалось проверить (%s): %s", platform, exc)
+        return False
+
 def ensure_autostart(platform: str | None = None, home: Path | None = None) -> bool:
     """Идемпотентная регистрация автозапуска текущего exe. True = успех (или уже было)."""
     platform = sys.platform if platform is None else platform
@@ -313,6 +348,16 @@ def ensure_autostart(platform: str | None = None, home: Path | None = None) -> b
     except Exception as exc:  # автозапуск не критичен — сервер живёт и без него
         log.warning("autostart: не удалось зарегистрировать (%s): %s", platform, exc)
         return False
+
+
+def repair_autostart(platform: str | None = None, home: Path | None = None) -> bool:
+    """Починить запись автозапуска, ЕСЛИ она есть; не создавать с нуля.
+    Автозапуск — opt-in (решение владельца 2026-10-30: осторожные AI-агенты
+    отказывались ставить программу, сама пишущую себя в автозагрузку).
+    Включается: трей «Автозапуск с системой» или флаг установщика --autostart."""
+    if not autostart_enabled(platform, home):
+        return False
+    return ensure_autostart(platform, home)
 
 
 def remove_autostart(platform: str | None = None, home: Path | None = None) -> bool:
@@ -1049,6 +1094,23 @@ def run_tray(main_callable, port: int | None = None) -> None:
         # MG_NO_UPDATE=1 выключает всё, включая пункт меню
         return bool(_pending_update()) and os.environ.get("MG_NO_UPDATE") != "1"
 
+    def _toggle_autostart(icon=None, item=None):
+        # opt-in (решение владельца 2026-10-30): галка = запись в ОС, без маркеров.
+        # LOW-5 (ревью 2026-10-30): сообщать о результате — молча не ставится галка
+        # при блокировке AV/политикой, пользователь должен увидеть причину.
+        if autostart_enabled():
+            ok = remove_autostart()
+            msg = "Автозапуск выключен" if ok else "Не удалось выключить автозапуск — см. maxgraph.log"
+        else:
+            ok = ensure_autostart()
+            msg = "Автозапуск включён" if ok else "Не удалось включить автозапуск — см. maxgraph.log"
+        log.info("tray: autostart toggle → %s", msg)
+        try:
+            if icon is not None:
+                icon.notify(msg, APP_NAME)
+        except Exception:
+            pass  # backend без балунов (Linux без libnotify) — лог уже есть
+
     def _connect_pending(icon=None, item=None):
         if _pending_hosts:
             threading.Thread(target=_connect_pending_worker, args=(list(_pending_hosts),),
@@ -1066,6 +1128,8 @@ def run_tray(main_callable, port: int | None = None) -> None:
                          _connect_pending, visible=_hosts_visible),
         pystray.MenuItem("Открыть дашборд", _open_dashboard, default=True),
         pystray.MenuItem("Проверить обновления", _check_updates),
+        pystray.MenuItem("Автозапуск с системой", _toggle_autostart,
+                         checked=lambda item: autostart_enabled()),
         pystray.MenuItem("Перезапуск", _restart),
         pystray.MenuItem("Выход", _quit),
     )
